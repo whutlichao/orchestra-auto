@@ -199,7 +199,7 @@ python3 -m unittest discover -s tests -v
   eval JSON 的形状与唯一性、`eval.yaml` 白名单、Python 的 `py_compile`、shell wrapper 的
   `bash -n`、MIT 许可，以及脱敏扫描。
 
-已记录结果为 **78 OK（1 skipped）**。这是主要的结构与行为门禁。
+已记录结果为 **79 OK（1 skipped）**。这是主要的结构与行为门禁。
 
 想单独跑某一条也可以：
 

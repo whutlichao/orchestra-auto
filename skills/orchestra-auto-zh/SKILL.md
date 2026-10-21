@@ -118,7 +118,7 @@ description: >-
 
 ### 4.0 派活前 preflight
 
-按 [派活前检查](references/dispatch-preflight.md) 逐项打勾，未全绿不 dispatch；两条机械判据是实施票 spec 里的 `code-review`，以及每个基线数字的 base commit 核对。
+按 [派活前检查](references/dispatch-preflight.md) 逐项打勾，未全绿不 dispatch；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，以及每个基线数字的 base commit 核对。
 worker 报 `worker_done` 之后、宣称门禁通过之前，跑该文件的收尾 / 格式化噪声检查。
 
 ### 4.1 只读探索
@@ -155,7 +155,7 @@ Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆�
 
 ### 4.4 spec 契约
 
-按 [spec 契约](references/spec-contract.md) 模板写 spec；每一项都必需，包括行为规则、前置 skill 绝对路径、票型与门禁行、「本票不跑」行。worker 只看得到 spec，漏写就不会做。
+按 [spec 契约](references/spec-contract.md) 模板写 spec；每一项都必需，包括行为规则、前置 skill 绝对路径、票型与门禁行、实施票的 `测试档：` 行（窄/宽；窄档写明为何影响面可圈定）、「本票不跑」行。worker 只看得到 spec，漏写就不会做。
 
 ### 4.5 通信闭环
 

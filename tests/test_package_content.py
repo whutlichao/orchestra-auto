@@ -326,6 +326,32 @@ class ReferenceIntegrityTests(unittest.TestCase):
                     f"{name}: the escalation rule is missing the trigger {trigger!r}",
                 )
 
+    def test_spec_contract_requires_a_test_tier_line(self):
+        """Narrow/wide is a coordinator decision the worker can only see through the spec.
+
+        G-impl rule 1 and the pre-dispatch tick sheet both make the coordinator choose a test
+        tier, but a tier that never reaches the spec is invisible to the worker: it falls back to
+        the full suite or picks a few tests itself. The template line is what turns that judgement
+        into a deliverable, and the preflight must demand it mechanically rather than from memory.
+        """
+        pairs = (
+            ("orchestra-auto", ("Test tier:", "narrow", "wide", "blast radius is bounded")),
+            ("orchestra-auto-zh", ("测试档：", "窄", "宽", "影响面可圈定")),
+        )
+        for name, phrases in pairs:
+            references = REPO_ROOT / "skills" / name / "references"
+            contract = (references / "spec-contract.md").read_text()
+            preflight = (references / "dispatch-preflight.md").read_text()
+            for phrase in phrases:
+                self.assertIn(
+                    phrase, contract,
+                    f"{name}: the spec template is missing the test-tier wording {phrase!r}",
+                )
+            self.assertIn(
+                phrases[0], preflight,
+                f"{name}: the preflight does not require the spec's {phrases[0]!r} line",
+            )
+
     def test_no_reference_link_uses_a_fragment(self):
         """Every #fragment must resolve to a real heading in the target document.
 

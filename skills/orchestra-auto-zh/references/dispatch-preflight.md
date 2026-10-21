@@ -56,9 +56,14 @@ sqlite3 -readonly "$STATE_DB" \
       coordinator 在 main 上只读验收（§4.4）。
 - [ ] **门禁已点名且可判定**：本阶段该过哪几道（G-docs / G-spec / G-tickets / G-impl /
       G-merge），每条的证据形式都能按 §6 机械判定。实施票多勾两笔：
-      ① 按 §6 G-impl 第 1 条选定测试档（窄/宽），若选「窄」已能说出为何影响面可圈定；
+      ① 按 §6 G-impl 第 1 条选定测试档（窄/宽），并**已写进 spec 的 `测试档：` 行**（紧接
+      `门禁：` 行）；若选「窄」，同一行里已写明为何影响面可圈定，并给出能照着直接跑的选择器
+      （`node glob`，或本仓库等价的测试路径 / 标记）；
       ② 若本票要省双轴 review，已按 §3 的可数判据确认并写明理由。
-      **机械判定法**：实施票 spec 的 `Observable acceptance` 里必须**逐字出现 `code-review`**
+      测试档只存在于你的判断里、spec 里没有这一行，等于没选：worker 看不到你的推理，
+      只会跑全量或自己挑几条测试。
+      **机械判据（测试档）**：`grep -c '测试档：' <spec>` 得 0 就不许 dispatch（实施票）。
+      **机械判定法（review）**：实施票 spec 的 `Observable acceptance` 里必须**逐字出现 `code-review`**
       （连同「双轴 / Standards + Spec」字样），除非按 §3 省掉。长程票图写「integration branch
       上的一次双轴 code-review」加逐票 TDD，不得再要求逐票双轴 review。跑一句
       `grep -c 'code-review' <spec>`，得 0 就是没写、不许 dispatch。

@@ -214,7 +214,7 @@ python3 -m unittest discover -s tests -v
   the `eval.yaml` allowlist, `py_compile` on the Python, `bash -n` on the shell wrapper, the MIT
   licence, and the leak scan.
 
-The recorded result is **78 OK (1 skipped)**. This is the primary structural and behavioral gate.
+The recorded result is **79 OK (1 skipped)**. This is the primary structural and behavioral gate.
 
 Individual check commands, if you want them directly:
 

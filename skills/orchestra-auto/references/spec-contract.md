@@ -72,11 +72,12 @@ evidence. Nested decision-class questions go up through the top-level worker; th
 answer them on the human's behalf. Per-ticket TDD plus one `code-review` on the integration branch
 is this path's review model; do not also schedule a per-ticket two-axis review.
 
-**Ticket-type line: write the type and gates immediately after the pre-skill**:
+**Ticket-type line: write the type, the gates and the test tier immediately after the pre-skill**:
 
 ```text
 Type: research | design | spec | ticket splitting | implementation
 Gates: <research = source and conclusion verification / design = G-docs / spec = G-spec / splitting = G-tickets / implementation = G-impl>
+Test tier: narrow (affected tests + node glob) | wide (full suite)   ← required for implementation; narrow must state why the blast radius is bounded
 Not run this ticket: <list the inapplicable source gates>   ← required for research/design/spec/splitting; fill in truthfully for implementation
 ```
 
@@ -91,6 +92,18 @@ Likewise, with no "not run" line the two-axis review becomes a universal require
 reviews the diff — a design ticket's diff is documentation, so the Standards axis can only pick
 at the evidence directory (which is exactly where it reported "missing `pnpm test`" and goaded
 the worker into the full run).
+
+**The test tier is the same kind of line**: narrow-vs-wide is a decision the coordinator has already
+made before dispatch (G-impl rule 1 and the pre-dispatch tick sheet), but the worker cannot see that
+decision — only what the spec says. With no tier in the spec it falls back to "the full suite is
+safest" or to picking a few tests itself; with a narrow tier but no reason, it cannot tell whether a
+given test counts as "affected". So a narrow tier must carry one sentence on **why the blast radius
+is bounded** (which layer changed, who depends on it, why shared interfaces, build configuration and
+types are not reached), plus a selector the worker can run as written — `node glob` is the example,
+not a requirement: a non-node repository names the equivalent test path or marker (for example
+`python3 -m unittest tests.test_x`) instead of leaving the worker to assemble the command. If the
+tier is wrong, the coordinator re-decides on send-back; the worker does not change the criterion on
+the spot.
 
 **Criterion**: decide the type before dispatch from Target / Change and the expected files, and
 recheck it against the real diff once the worker finishes. If the real change crosses the type

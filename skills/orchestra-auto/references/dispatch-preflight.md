@@ -74,10 +74,16 @@ falls off. The parenthesised section is where it belongs.
 - [ ] **The gates are named and decidable**: which apply at this stage (G-docs / G-spec /
       G-tickets / G-impl / G-merge) and what evidence each demands, so §6 can judge mechanically.
       Implementation tickets get two extra ticks: ① per §6's first G-impl rule, choose the test
-      tier (narrow or wide), and if "narrow" is chosen, be able to say why the blast radius is
-      bounded; ② if this ticket skips the two-axis review, confirm §3's count-based criterion
-      and write the reason down.
-      **The mechanical test**: an implementation ticket's `Observable acceptance` must contain
+      tier (narrow or wide) and **write it into the spec's `Test tier:` line** (directly after
+      `Gates:`); if "narrow", the same line must say why the blast radius is bounded and name a
+      selector that runs as written (`node glob`, or this repository's equivalent test path or
+      marker); ② if this ticket skips the two-axis review, confirm §3's
+      count-based criterion and write the reason down.
+      A tier that exists only in your head is a tier the spec does not have: the worker cannot see
+      your reasoning, so it runs the full suite or picks a few tests on its own.
+      **Mechanical test for the tier**: `grep -c 'Test tier:' <spec>` returns 0 → do not dispatch an
+      implementation ticket.
+      **Mechanical test for review**: an implementation ticket's `Observable acceptance` must contain
       the literal string `code-review` (together with a two-axis / Standards + Spec phrase)
       unless §3 exempts it. A long-horizon map writes "one two-axis code-review on the
       integration branch" plus per-ticket TDD; it must not also require a per-ticket two-axis

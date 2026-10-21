@@ -43,6 +43,11 @@ question per §5.
    behaviour leaves observable red→green evidence. Pure copy, style or configuration changes prove
    the result with real rendering, a check, or an applicable test. A UI ticket's evidence must land
    on text, elements, accessible names or real browser behaviour produced by the product.
+   Check that the spec's `Test tier:` line matches what actually ran: a narrow tier's selector,
+   its results and the stated reason must line up. Running narrower than declared (just one picked
+   test) or running the full suite on every round (slow, unexplained) is a send-back; a
+   re-decision is the coordinator rewriting that line. The tier scopes iteration, it does not
+   exempt the final head from CI or the one local full run above.
 2. **Quality**: run the static checks, lint and format gates the project actually has, as the
    repository's own configuration defines them — a TS typecheck, Python's mypy/ruff, `go vet`,
    Rust's clippy/fmt are examples by language, not a required checklist. When the repository has no

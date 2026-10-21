@@ -166,9 +166,9 @@ Documentation tickets run their own gates. Small size never changes the role bou
 ### 4.0 Pre-dispatch preflight
 
 Run the checklist in [dispatch preflight](references/dispatch-preflight.md) and tick every line
-before dispatching; its two mechanical criteria are the `code-review` mention in an implementation
-spec and the base-commit check on every baseline number. After `worker_done` and before declaring a
-gate passed, run that file's teardown / formatter-noise check.
+before dispatching; its three mechanical criteria are the `Test tier:` line in an implementation
+spec, the `code-review` mention, and the base-commit check on every baseline number. After
+`worker_done` and before declaring a gate passed, run that file's teardown / formatter-noise check.
 
 ### 4.1 Read-only exploration
 
@@ -213,9 +213,9 @@ prove it, gather evidence per §9 rather than blind-waiting.
 ### 4.4 The spec contract
 
 Write the spec from the template in [the spec contract](references/spec-contract.md); every element
-there is required, including the behaviour rules, the pre-skill's absolute path, the ticket-type and
-gate line, and the `Not run this ticket` line. A worker sees only the spec, so anything left out is
-something it will not do.
+there is required — behaviour rules, the pre-skill's absolute path, the ticket-type and gate line, an
+implementation ticket's `Test tier:` line (narrow/wide, with the bounded-radius reason for narrow),
+and the `Not run this ticket` line. A worker sees only the spec, so anything left out is not done.
 
 ### 4.5 Communication loop
 
