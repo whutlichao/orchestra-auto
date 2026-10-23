@@ -15,7 +15,12 @@ Pre-skill: <absolute path> — read it in full before starting, follow its proce
 **This line is the only entry point to the other skills.** Without it the worker never reads
 `grill-with-docs` / `tdd` / `diagnosing-bugs` / `code-review`, and the "we didn't use the other
 skills" failure reproduces itself. Put the path in the spec and let the worker read the whole
-file; do not paraphrase it for them.
+file; do not paraphrase it for them. **The path is the skill of the stage this round is actually
+running** (SKILL.md §1), not a fixed one per channel: a round holding a valid spec names
+`to-tickets`, one with a complete map names `implement-spec`, a bug fix names `diagnosing-bugs`
+and `implement`. Confirm it resolves and is readable before writing it down; if it does not, report
+that with evidence instead of inventing a path or installing something this round was not
+authorized to install.
 
 Template for an implementation ticket on channel B; write only the gates that apply. Rewrite
 documentation tickets against their own documentation gates:

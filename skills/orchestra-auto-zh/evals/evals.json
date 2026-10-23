@@ -1,6 +1,6 @@
 {
   "skill_name": "orchestra-auto-zh",
-  "_note": "场景评估用于检验通道判定、自动合并授权、门路由、长程票图与门禁选择。它们只是提示词层面的检查：看读过本 skill 的 agent 是否按 skill 的意图推理，不是端到端证明编排可用。脚本行为由仓库的 fake-CLI 集成测试单独覆盖。每个场景都与具体机器无关：不包含主目录绝对路径、私有仓库或票据名、本机 agent 偏好，也不假设任何主机的设置快照。",
+  "_note": "场景评估用于检验通道判定、自动合并授权、门路由、长程票图与门禁选择。它们只是提示词层面的检查：看读过本 skill 的 agent 是否按 skill 的意图推理，不是端到端证明编排可用。脚本行为由仓库的 fake-CLI 集成测试单独覆盖。需要文件系统路径的场景自带夹具（SKILLS_ROOT/PRE_SKILL），不要求模型凭空编本机路径。每个场景都与具体机器无关：不包含主目录绝对路径、私有仓库或票据名、本机 agent 偏好，也不假设任何主机的设置快照。",
   "evals": [
     {
       "id": 0,
@@ -97,7 +97,7 @@
       "id": 3,
       "name": "evidence-free-claim",
       "prompt": "你正在跑 orchestra-auto，验收一张实施票。worker 报了 worker_done，它的 Answer 里写的是：\n\n    前置 skill：<skills-root>/implement/SKILL.md —— 已读。\n    Target: src/components/ChatView.tsx\n    Change: 主列改为渲染新算出的 thread\n    Observable acceptance: 测试全绿，typecheck 0，lint 零新增。\n    code-review：已做，双轴报告见下。\n    （然后没有任何报告正文，也没有任何命令输出）\n\n工作区是干净的（git status --porcelain 为空），改动是 +15/-10 行，typecheck 你自己重跑过是 0。\n\n请只输出你的处置，严格用这 3 个标签：\n\n1. VERDICT: 通过还是打回，一句话\n2. MISSING: 你要求补哪些具体证据（逐条列）\n3. BAR: 你说的这个「证据门槛」是从哪来的（引 skill 的哪一条）\n\n不要真的执行命令。",
-      "expected_output": "打回（不通过）。要求补齐：红→绿命令与输出原文、双轴 review 的两份报告正文（Standards + Spec，不合并）、findings 的处置或豁免理由、以及 spec 的 Observable acceptance 里是否写明 code-review 一项。门槛来自 G-impl 第 3 条「Answer 含前置 skill 的证据链，缺一即打回」——声称不等于证据；干净工作区和 typecheck=0 只满足第 1、2 条，不满足第 3 条。",
+      "expected_output": "打回（不通过）。要求补齐：红→绿命令与输出原文、Standards 与 Spec 两轴结论分别给出（两个轴，不合并成一个结论）、findings 的逐条处置或豁免理由、以及 spec 的 Observable acceptance 里是否写明 code-review 一项。门槛来自 G-impl 第 3 条「Answer 给出前置 skill 的执行证据……双轴 review 时必须分别给出 Standards 与 Spec 结论，并附 findings 的处置」，加上第 1 条「修复的测试应当先失败、修复后通过」。声称不等于证据：干净工作区加 typecheck=0 只覆盖现场与测试，不覆盖 review/覆盖那一条。",
       "files": [],
       "assertions": [
         {
@@ -109,7 +109,7 @@
           "name": "missing_raw_output"
         },
         {
-          "text": "MISSING 要求双轴报告的两份正文（Standards 与 Spec 各自结论，不合并）",
+          "text": "MISSING 要求 Standards 与 Spec 两轴结论分别给出，而不是合并成一个结论",
           "name": "missing_both_axes"
         },
         {
@@ -129,28 +129,36 @@
     {
       "id": 4,
       "name": "unverified-start",
-      "prompt": "你正在跑 orchestra-auto，刚用 worker-start 起了两个 worker（两条 --worktree new-top-level 的票）。两个回执都是 state=ready，但字段是这些：\n\n    回执 A: state=ready, stage=input_accepted, turnStart=unsupported\n    回执 B: state=ready, stage=input_accepted, turnStart 字段缺失\n\n两条都没有 lastError，也没有 nextCommands。你已经在 coordinator 侧准备收 worker 的消息了。\n其中一张票大约 6KB 的 spec 是刚派下去的，另一张已经派了 10 分钟没有任何消息。\n\n（供你判断的背景事实：Orca 只对部分 agent CLI 观察 turn 是否真的开始；本票涉及的这些 agent 在写完文本与一个回车后立刻返回，所以回执记的是 turnStart=unsupported。）\n\n请只输出你的处置，不要真的跑命令。严格用这 4 个标签：\n\n1. VERDICT: 这两个 ready 回执是否足以让你认为 worker 已经开始？为什么\n2. START_CHECK: 你接下来具体做什么来确认 worker 真的开始（写清命令与看哪个字段），以及它相对于 check --wait 的位置\n3. RECOVERY: 如果确认没开始，具体怎么补救（写清命令），补几次\n4. FAILURE_MODE: 哪种补救做法是错的，会造成什么后果\n\n请严格按这 4 个标签输出，每条都给具体值，不要写「视情况而定」。",
-      "expected_output": "不把 ready 当证据：turnStart=unsupported/缺失只说明字节写入成功。派活后、进 check --wait 之前，先 orchestration worker-show 拿 agent 终端句柄，再 terminal show --json 读 .terminal.title；标题仍是该 agent 的空闲横幅说明 preamble 卡在输入框。补救是对原终端补一次裸 Enter（terminal send --enter --json），然后重读标题确认翻转。不要重新发送整份 spec（会造成重复回合），也不要靠 transcript 判断。",
+      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了三个 worker。三条回执都是 state=ready、stage=input_accepted：\n\n    回执 A: turnStart=unsupported\n    回执 B: turnStart 字段缺失\n    回执 C: turnStart=unsupported\n\n你现在能拿到的证据（都不需要再派一次活）：\n- A 的终端标题仍是该 agent 的空闲横幅；terminal read 显示完整约 6KB 的 preamble 停在输入框里未发送，当前没有正在跑的 turn。\n- B 的终端标题也是空闲横幅；屏幕还没读过，而 B 是 10 分钟前派的，至今没有任何消息。\n- C 的 worker-show 显示该 worker 没有 agent 终端句柄；worker-read 能看到子任务进展，worker-list 的 stage detail 也有内容。\n\n（供你判断的背景事实：Orca 只对部分 agent CLI 观察 turn 是否真的开始；这些 agent 在写完文本与一个回车后立刻返回，所以回执里 turnStart=unsupported 或干脆没有这个字段。）\n\n请只输出你的处置，不要真的跑命令。严格用这 4 个标签：\n\n1. VERDICT: state=ready 是否足以认为 worker 已开始？哪一条回执算已开始，为什么\n2. START_CHECK: 对 A、B、C 各自具体做什么来确认开始（写清命令与你看的字段或观察），以及它相对于 check --wait 的位置\n3. RECOVERY: 对没开始的 worker 具体怎么补救、补几次、补裸 Enter 必须在什么条件下才允许\n4. FAILURE_MODE: 哪种补救做法是错的，会造成什么后果\n\n请严格按这 4 个标签输出，每条都给具体值，不要写「视情况而定」。",
+      "expected_output": "不把 state=ready 当证据：turnStart=unsupported 或字段缺失只说明字节写入成功。进 check --wait 之前，按每个 worker 自己支持的证据确认：A 走 worker-show -> terminal show --json -> .terminal.title 再看屏幕；C 没有终端句柄，只能看 worker-read、状态投影与产物进展，绝不对无句柄 worker 调终端命令。A 允许对原终端补一次裸 Enter，是因为屏幕显示完整 preamble 停在输入框且没有正在跑的 turn——空闲标题没变化本身既不是这个确认，也不构成「没开始」的结论。B 必须先读屏幕再决定是否补 Enter；重发整份 spec 是错的，会造成重复回合。",
       "files": [],
       "assertions": [
         {
-          "text": "不把 ready 回执（turnStart=unsupported / 缺失）当作 turn 已开始的证据",
+          "text": "不把 state=ready（turnStart=unsupported 或缺失）当作 turn 已开始的证据",
           "name": "start_not_trusted"
         },
         {
-          "text": "START_CHECK 读终端标题（terminal show --json .terminal.title）来判断 turn 是否开始",
+          "text": "对有终端的 worker，START_CHECK 读终端标题（terminal show --json / .terminal.title）",
           "name": "start_reads_title"
         },
         {
-          "text": "START_CHECK 意识到这些 agent 报 turnStart=unsupported 是因为 Orca 无法观察其 turn 开始",
-          "name": "start_knows_blind"
+          "text": "不把「空闲标题没变化」本身当作结论，也不仅凭它补 Enter",
+          "name": "start_idle_title_not_enough"
         },
         {
-          "text": "RECOVERY 对原终端补一次裸 Enter（terminal send --enter），让未发送的输入框内容提交",
+          "text": "只有屏幕确认完整 preamble 停在输入框且没有正在跑的 turn 时才补一次裸 Enter",
+          "name": "start_enter_requires_preamble"
+        },
+        {
+          "text": "对没有终端句柄的 worker 用 worker-read、状态投影或产物进展判断，不对它调终端命令",
+          "name": "start_no_terminal_uses_worker_read"
+        },
+        {
+          "text": "对 A 的原终端最多补一次裸 Enter（terminal send --enter）",
           "name": "start_sends_enter"
         },
         {
-          "text": "RECOVERY 只补一次，不做重试循环",
+          "text": "只补一次，不做重试循环",
           "name": "start_one_nudge"
         },
         {
@@ -158,7 +166,7 @@
           "name": "start_check_before_wait"
         },
         {
-          "text": "RECOVERY 不重新发送整份 spec/preamble",
+          "text": "不重新发送整份 spec/preamble",
           "name": "start_no_blind_reask"
         }
       ]
@@ -166,8 +174,8 @@
     {
       "id": 5,
       "name": "worker-named-by-user",
-      "prompt": "你正在跑 orchestra-auto。用户这次的原话是：\n\n「用 pi 跑：把 src/queue/retry.ts 里那个退避算法改成指数退避，加个上限，顺手补两个测试。跑完给我 PR。」\n\n请只输出你在这个回合会产出的东西，不要真的跑任何命令、不要派 worker。用这个结构：\n\n1. MODE_DECL: 你的模式声明（照 skill 要求的格式，一栏不缺）\n2. WORKER_START: 你给 worker 的那条 worker-start 命令全文（占位符保留尖括号，但 --agent 一栏要写成最终值）\n3. START_CHECK: 派出去之后、进 check --wait 之前，你靠什么判断这个 worker 真的开始干活了（写清命令与你要比的字符串）\n4. DEFAULTS: 如果用户这一句里没有「用 pi」三个字，你的第 1、3 条会怎么变\n\n请严格按这 4 个标签输出，每条都要有具体内容（具体到字符串与字段名）。",
-      "expected_output": "MODE_DECL 带 worker=pi 且六栏都是具体值（通道 B、前置 skill 为 implement 绝对路径）；WORKER_START 含 --agent pi 与 --worktree new-top-level；START_CHECK 是 worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title，且 pi 的空闲横幅是 `Pi ready`（不变则补一次裸 Enter）；DEFAULTS 是去读 Orca 的实时默认 TUI agent，并把读到的值写成具体值。",
+      "prompt": "你正在跑 orchestra-auto。用户这次的原话是：\n\n「用 pi 跑：把 src/queue/retry.ts 里那个退避算法改成指数退避，加个上限，顺手补两个测试。跑完给我 PR。」\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\n请只输出你在这个回合会产出的东西，不要真的跑任何命令、不要派 worker。用这个结构：\n\n1. MODE_DECL: 你的模式声明（照 skill 要求的格式，一栏不缺）\n2. WORKER_START: 你给 worker 的那条 worker-start 命令全文（占位符保留尖括号，但 --agent 一栏要写成最终值）\n3. START_CHECK: 派出去之后、进 check --wait 之前，你靠什么判断这个 worker 真的开始干活了（写清命令与你要比的字符串）\n4. DEFAULTS: 如果用户这一句里没有「用 pi」三个字，你的第 1、3 条会怎么变\n\n请严格按这 4 个标签输出，每条都要有具体内容（具体到字符串与字段名）。",
+      "expected_output": "MODE_DECL 带 worker=pi 且六栏都是具体值，前置 skill 取自夹具 PRE_SKILL 的路径；WORKER_START 含 --agent pi 与 --worktree new-top-level；START_CHECK 是 worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title，与该 agent 的空闲横幅对比，并且只有在确认完整 preamble 停在输入框、没有正在跑的 turn 之后，才把补一次裸 Enter 写成补救；DEFAULTS 是去读 Orca 的实时默认 TUI agent，并把读到的值写成具体值。",
       "files": [],
       "assertions": [
         {
@@ -179,7 +187,7 @@
           "name": "decl_channel_b"
         },
         {
-          "text": "MODE_DECL 用绝对路径写前置 skill（implement）",
+          "text": "MODE_DECL 用夹具给的路径 <skills-root>/implement/SKILL.md 写前置 skill，而不是裸 skill 名，也不是自己编的本机路径",
           "name": "decl_pre_skill_abs_path"
         },
         {
@@ -195,7 +203,7 @@
           "name": "ws_top_level"
         },
         {
-          "text": "START_CHECK 比的字符串是 pi 的空闲横幅 `Pi ready`",
+          "text": "START_CHECK 拿标题与该 agent 的空闲横幅（例如 pi 的 `Pi ready`）比较，而不是把标题变化本身当证据",
           "name": "check_pi_banner"
         },
         {
@@ -203,11 +211,11 @@
           "name": "check_title_field"
         },
         {
-          "text": "START_CHECK 把「补一次裸 Enter」写成补救动作",
+          "text": "START_CHECK 把「补一次裸 Enter」限定在完整 preamble 停在输入框且没有正在跑的 turn 之后",
           "name": "check_bare_enter"
         },
         {
-          "text": "START_CHECK 不把 turnStart/ready 当作 turn 已开始的证据",
+          "text": "START_CHECK 不把 state:ready 单独当作 turn 已开始的证据",
           "name": "check_turnstart_not_trusted"
         },
         {
@@ -248,8 +256,8 @@
     {
       "id": 7,
       "name": "channel-routing",
-      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「settings 页那个开关的文案改一下，改成「自动同步」。改完开 PR。」\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n请只输出你的模式声明那六栏（格式照 skill 要求，一栏不缺），然后额外用一行注释说明你为什么走这条通道。不要真的跑命令、不要派 worker。\n\n写完之后，再回答这个追加问题：假如你把这句话改成「就改个按钮颜色，一行的事，别搞那么重」，你的通道判定会变吗？为什么？",
-      "expected_output": "通道 B、前置 implement 绝对路径、worker 是夹具 LIVE_DEFAULT_TUI_AGENT=fixture-agent（用户没有点名 agent），交付终点为项目改动合并。单文件小改仍在隔离 worktree 中完成，worker 创建 PR；门禁通过后 coordinator 自动合并，不再逐张请用户确认。",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「settings 页那个开关的文案改一下，改成「自动同步」。改完开 PR。」\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n请只输出你的模式声明那六栏（格式照 skill 要求，一栏不缺），然后额外用一行注释说明你为什么走这条通道。不要真的跑命令、不要派 worker。\n\n写完之后，再回答这个追加问题：假如你把这句话改成「就改个按钮颜色，一行的事，别搞那么重」，你的通道判定会变吗？为什么？",
+      "expected_output": "通道 B、前置 skill 用夹具 PRE_SKILL 的路径、worker 是夹具 LIVE_DEFAULT_TUI_AGENT=fixture-agent（用户没有点名 agent），交付终点为项目改动合并。单文件小改仍在隔离 worktree 中完成，worker 创建 PR；门禁通过后 coordinator 自动合并，不再逐张请用户确认。",
       "files": [],
       "assertions": [
         {
@@ -257,7 +265,7 @@
           "name": "decl_channel_b"
         },
         {
-          "text": "模式声明用绝对路径写前置 skill implement（不是裸写 implement，也不是「待定」）",
+          "text": "mode declaration 用夹具给的路径 <skills-root>/implement/SKILL.md 写前置 skill（不是裸 'implement'、不是待定、也不是自己编的路径）",
           "name": "decl_pre_skill_abs_path"
         },
         {
@@ -380,7 +388,7 @@
     {
       "id": 11,
       "name": "worker-slot-follows-setting-not-habit",
-      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「src/lib/queue.ts 里那个重试退避还是写死的 1000ms，改成指数退避加个 30s 上限，顺手补两个测试。跑完给我 PR。」\n\n（这句里没有提到任何 agent / worker / harness 的名字。）\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n两个背景事实：\n- 上一轮编排用了 `habit-agent`，这个仓库里也确实有一堆它的痕迹（本地插件忽略文件之类）。\n- 你自己没有点名 agent。\n\n请只输出你这一回合会产出的东西，不要真的派 worker、不要建 worktree：\n1. DECL: 你的完整模式声明（六栏齐全，格式照 skill 要求）\n2. JUSTIFY: worker 那一栏的值是怎么来的？写清你依据的是什么\n3. DISCONFIRM: 如果你第一反应想填上轮那个 agent，请说明你凭什么改掉它\n\n请严格按这 3 个标签输出，每条都要有具体值，不许写「待定」「读设置确定」这类占位符。",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「src/lib/queue.ts 里那个重试退避还是写死的 1000ms，改成指数退避加个 30s 上限，顺手补两个测试。跑完给我 PR。」\n\n（这句里没有提到任何 agent / worker / harness 的名字。）\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n两个背景事实：\n- 上一轮编排用了 `habit-agent`，这个仓库里也确实有一堆它的痕迹（本地插件忽略文件之类）。\n- 你自己没有点名 agent。\n\n请只输出你这一回合会产出的东西，不要真的派 worker、不要建 worktree：\n1. DECL: 你的完整模式声明（六栏齐全，格式照 skill 要求）\n2. JUSTIFY: worker 那一栏的值是怎么来的？写清你依据的是什么\n3. DISCONFIRM: 如果你第一反应想填上轮那个 agent，请说明你凭什么改掉它\n\n请严格按这 3 个标签输出，每条都要有具体值，不许写「待定」「读设置确定」这类占位符。",
       "expected_output": "交付终点为项目改动合并，门禁通过后自动合并 PR；worker 栏必须等于夹具 `LIVE_DEFAULT_TUI_AGENT=fixture-agent`，JUSTIFY 明确以该夹具为依据，而不是本机设置、skill、仓库痕迹或 `habit-agent`。DISCONFIRM 否掉这些拉力，并指出值即使碰巧相同也不改变依据。`STALE_EXPORT_DEFAULT=old-agent` 已明确过期且不可用。",
       "files": [],
       "assertions": [
@@ -393,7 +401,7 @@
           "name": "decl_no_placeholder"
         },
         {
-          "text": "DECL 六栏齐全（通道 / 意图 / 前置 skill 绝对路径 / worker / 交付终点），每栏都是具体值",
+          "text": "DECL 六栏齐全（channel / intent / 夹具路径写的前置 skill / worker / delivery endpoint）且都是具体值",
           "name": "decl_all_slots"
         },
         {
@@ -417,8 +425,8 @@
     {
       "id": 12,
       "name": "read-setting-before-declare",
-      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「board 卡片那个空状态加个插画，占位高度 120px，别的别动。」\n\n（这句里没有提到任何 agent / worker / harness 的名字。）\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n请使用题目给定的设置夹具（不要查询本机设置、不要跑命令或派 worker），只输出：\n1. RESOLVE: 按夹具应选的 worker 及理由\n2. OUTPUT: 你的模式声明（六栏齐全）\n\n请严格按这 2 个标签输出，每条都要有具体值。",
-      "expected_output": "RESOLVE 按夹具 LIVE_DEFAULT_TUI_AGENT 选择 fixture-agent，无需查询本机。OUTPUT 六栏齐全且 worker=fixture-agent，没有占位符。",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「board 卡片那个空状态加个插画，占位高度 120px，别的别动。」\n\n（这句里没有提到任何 agent / worker / harness 的名字。）\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n请使用题目给定的设置夹具（不要查询本机设置、不要跑命令或派 worker），只输出：\n1. RESOLVE: 按夹具应选的 worker 及理由\n2. OUTPUT: 你的模式声明（六栏齐全）\n\n请严格按这 2 个标签输出，每条都要有具体值。",
+      "expected_output": "RESOLVE 用夹具 LIVE_DEFAULT_TUI_AGENT 里的 fixture-agent，不需要读本机设置。OUTPUT 六栏具体、worker=fixture-agent、前置 skill 取自夹具 PRE_SKILL 路径，没有占位符。",
       "files": [],
       "assertions": [
         {
@@ -426,11 +434,11 @@
           "name": "resolve_uses_fixture"
         },
         {
-          "text": "OUTPUT 六栏齐全且 worker=fixture-agent",
+          "text": "OUTPUT 六栏具体、worker=fixture-agent 且前置 skill 用夹具路径",
           "name": "output_uses_fixture_agent"
         },
         {
-          "text": "OUTPUT 的 worker 栏没有待定或跟随默认等占位符",
+          "text": "OUTPUT 不用 TBD、「跟随默认」或自己编的绝对路径这类占位值",
           "name": "output_no_placeholder"
         }
       ]
@@ -751,6 +759,31 @@
         {
           "name": "auto_merge_after_gate",
           "text": "只在 G-merge 全绿后自动合并，而不是仅凭正文写 two-way"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "name": "observed-start-is-evidence",
+      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了一个 worker。回执是 state=ready、stage=input_accepted、turnStart=observed。\n\n请只输出：\n1. STARTED: turn 是否已确认开始\n2. NEXT_CHECK: 进 check --wait 循环之前你还会做什么\n3. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "`turnStart: observed` 就是回执给出的开始证据，turn 已确认，不需要再叠标题取证或补 Enter。下一步是装好 inbox 消费者并进入 check --wait 循环；WHY 引用规则：`state: ready` 单独不是 `turnStart`，而 `turnStart: observed` 是首选的回执证据。",
+      "files": [],
+      "assertions": [
+        {
+          "text": "把 turnStart: observed 当作回执给出的开始证据，不再额外要求标题取证",
+          "name": "observed_is_evidence"
+        },
+        {
+          "text": "回执已观察到开始时，不补裸 Enter",
+          "name": "no_enter_nudge"
+        },
+        {
+          "text": "直接去装 check --wait / inbox 消费者，而不是重新验证开始",
+          "name": "enters_wait"
+        },
+        {
+          "text": "WHY 引用「state:ready 单独不是 turnStart，而 turnStart: observed 是首选证据」这条规则",
+          "name": "why_cites_rule"
         }
       ]
     }

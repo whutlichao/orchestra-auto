@@ -20,7 +20,7 @@ cases:
       - "WORKER_START_FLAGS includes an explicit --agent pi (or --agent with value pi)."
 
   - name: ready_is_not_turnstart
-    description: "state:ready is not proof a turn started."
+    description: "state:ready is not proof a turn started; the nudge is conditional."
     prompt: |
       A worker-start receipt just returned: state: ready, turnStart: unsupported.
       You have not yet observed any other start evidence.
@@ -31,7 +31,36 @@ cases:
     expectations:
       - "MAY_ENTER_WAIT_LOOP is no (or equivalent refusal to treat ready as start)."
       - "NEXT_CHECK says worker-show is only used to obtain the handle; then it reads available start evidence (terminal title when available, turnStart: observed, worker-read, status projection, or artifact progress as supported by the agent). worker-show alone is not sufficient."
+      - "NEXT_CHECK does not treat an unchanged idle title as a conclusion by itself, and does not send Enter on that basis alone."
+      - "NEXT_CHECK allows one bare Enter only when the screen confirms the complete preamble is parked in the composer and no turn is running."
       - "WHY explains that state: ready is not turnStart / not proof a turn began."
+
+  - name: turnstart_observed_is_evidence
+    description: "turnStart: observed is the preferred start evidence; no title forensics on top."
+    prompt: |
+      A worker-start receipt just returned: state: ready, stage: input_accepted,
+      turnStart: observed.
+      Output ONLY:
+      1. STARTED — yes or no
+      2. NEXT — what you do next
+      3. WHY — one or two sentences
+    expectations:
+      - "STARTED is yes: turnStart: observed is the receipt's start evidence."
+      - "NEXT does not re-verify the start with title forensics and does not send a bare Enter."
+      - "NEXT goes on to install the check --wait / inbox consumer."
+
+  - name: worker_without_terminal_start_check
+    description: "A worker with no terminal is judged from worker-read and artifacts, never terminal commands."
+    prompt: |
+      A worker-start receipt says state: ready, turnStart: unsupported. worker-show returns the
+      worker with no agent terminal handle; worker-read shows subtask progress.
+      Output ONLY:
+      1. START_CHECK — what you read, and what you refuse to run
+      2. WHY — one sentence
+    expectations:
+      - "START_CHECK uses worker-read / the status projection / artifact progress for a worker with no terminal."
+      - "START_CHECK does not call terminal show or terminal send for it."
+      - "START_CHECK does not invent a title to read."
 
   - name: ask_decision_vs_detail
     description: "Reply protocol: decisions escalate; pure detail may be auto-answered."
@@ -152,5 +181,3 @@ cases:
       - "DOOR is two-way because the addition is purely additive and backward-compatible."
       - "MERGE is automatic only after G-merge is green."
       - "WHY does not treat every public API addition as a one-way door."
-
-

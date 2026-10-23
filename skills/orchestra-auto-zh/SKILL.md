@@ -38,7 +38,7 @@ description: >-
 
 | 文件 | 什么时候读 |
 | --- | --- |
-| `references/dispatch-preflight.md` | 每次派活之前（逐项打勾），以及收尾检查格式化噪声时 |
+| `references/dispatch-preflight.md` | 每次派活前（§4.0.1 打勾）、拿到回执后（§4.0.2 启动与隔离证据）、以及收尾时（§4.0.3 格式化噪声） |
 | `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
 | `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型 |
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
@@ -47,7 +47,7 @@ description: >-
 | `references/inbox-and-waiting.md` | 每个 Run 首次派活前（身份绑定、收件器、唤醒如何安装与开关、失联恢复）；每次唤醒后装回下一次等待；worker 的消息收不到时 |
 | `references/worker-start-and-recovery.md` | `turnStart` 未确认、权限提示或 worker 失联 |
 | `references/gates-docs-planning.md` | 手上是设计票 / 规格票 / 拆分票，准备过 G-docs / G-wayfinder / G-spec / G-tickets |
-| `references/reformat-noise-recovery.md` | §4.0.1 检出万行级未提交改动（格式化重排噪声） |
+| `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
 | `references/failed-dispatch-recovery.md` | `worker-start` 回执 `state: failed` |
 | `references/failure-and-reporting.md` | CLI 起不来、熔断触发、或 Orca app 运行中重启时 |
 
@@ -64,12 +64,13 @@ description: >-
 模式 orchestra-auto | 通道 <A|B|C> | 意图 <任务类型> | 前置 skill <实际路径 / 无> | worker <实际 agent / 无> | 交付终点 <答复 / 报告 / 项目改动合并 / 用户明确指定的其他终点>
 ```
 
-六栏都要给**具体值**，不许写「待定」。不派活时 worker 写「无」；派活时前置 skill 栏必须是实际绝对路径
-（B 通道是 `implement`，C 通道是 `grill-with-docs`，§1 的表现在就能定）。worktree 名派活时再取 slug。
+六栏都要给**具体值**，不许写「待定」。不派活时 worker 写「无」；派活时前置 skill 栏写的是
+**本阶段与本票型**对应的那个 skill（§4.3），并给它的实际绝对路径（派活前确认可读）。
+worktree 名派活时再取 slug。
 
 `worker-start` 不会查询本地默认值，缺少或无法识别 `--agent` 时会抛 `agent_unconfigured`，所以必须显式传入已选值。
 更多理由与完整派活叙述见 [派活闭环](references/dispatch-loop.md)。若所选 agent 不受支持或被禁用，按 §9 报告并停止，不猜测或替换。
-§4.3 的表只记录启动/标题判据，不代表默认值或禁用状态；优先使用回执 `turnStart: observed`，否则按 §4.3.1 取证。
+§4.3 的表只记录启动/标题判据，不代表默认值或禁用状态。
 
 ## 1. 通道与交付终点
 
@@ -79,10 +80,13 @@ description: >-
 | 请求 | 通道 | 处理 |
 | --- | --- | --- |
 | 解释、状态、讨论或口头研究结论 | A | 直接答复；不派 worker，不写仓库 |
-| 边界清楚的小改动、修 bug、已有 spec 或票 | B | 只读探索后派实施 worker；修 bug 先用 `diagnosing-bugs` |
-| 必须落盘的研究、设计、规格或拆票 | B/C | 用对应的 `research` / `grill-with-docs` / `to-spec` / `to-tickets`；停在约定产物 |
+| 边界清楚的小改动、修 bug、已有 spec 或票 | B | 只读探索后派实施 worker；前置 skill 是 `implement`（修 bug 先 `diagnosing-bugs`） |
+| 必须落盘的研究、设计、规格或拆票 | B/C | 对应的 `research` / `grill-with-docs` / `to-spec` / `to-tickets`；停在约定产物 |
 | 多票或尚未收敛的完整实施请求 | C | 先收敛需求与依赖；G-tickets 验收完整票图后，只派 **一个** 长程 `implement-spec` worker |
-| 外部 issue/PR、冲突或术语治理 | B/C | 走仓库的 triage、冲突处理或领域建模流程 |
+| 外部 issue/PR、冲突或术语治理 | B/C | 仓库的 triage、冲突处理或 `domain-modeling` 流程 |
+
+前置 skill 是本阶段那个 skill，不是通道那个（§4.3）；缺失按 §9 带证据报告。
+具体对照表见[派活闭环](references/dispatch-loop.md)。
 
 雾重到形不成稳定需求时，可用 `wayfinder` 产出地图与决策票；先读目标仓库的寻路约定，不要发明标签。
 若改动会推翻已有 ADR 或计划决策，先定夺该决策。完整实施请求通常走
@@ -118,8 +122,11 @@ description: >-
 
 ### 4.0 派活前 preflight
 
-按 [派活前检查](references/dispatch-preflight.md) 逐项打勾，未全绿不 dispatch；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，以及每个基线数字的 base commit 核对。
-worker 报 `worker_done` 之后、宣称门禁通过之前，跑该文件的收尾 / 格式化噪声检查。
+[派活前检查](references/dispatch-preflight.md) 有三个检查点，只有第一个能阻止派活：
+**§4.0.1 派活前**（逐项打勾；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，
+以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据，以及长程 worker 的隔离报告）、
+**§4.0.3 收尾时**（`worker_done` 之后、宣称门禁通过之前的格式化噪声）。启动证据与隔离报告
+是派活后的事实：它们不可能让 tick sheet 变红，因为 Dispatch 存在之前根本没有 worker 可观察。
 
 ### 4.1 只读探索
 
@@ -148,14 +155,14 @@ Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆�
 
 ### 4.3.1 派活后确认 turn 开始
 
-`state: ready` ≠ `turnStart`。
-`state: ready` **不是** `turnStart`，只表示 Dispatch 就绪。优先看回执 `turnStart: observed`；若为 `unsupported` / `unobserved` / 缺失，按
+`state: ready` **不是** `turnStart`，只表示 Dispatch 就绪。`turnStart: observed` 就是启动证据：接受它；
+当它为 `unsupported` / `unobserved` / 缺失时，按
 [启动与恢复参考](references/worker-start-and-recovery.md) 用该 agent 实际支持的证据确认。
 不要对无终端 worker 强行 `terminal show`；无法证实时按 §9 取证，不盲等。
 
 ### 4.4 spec 契约
 
-按 [spec 契约](references/spec-contract.md) 模板写 spec；每一项都必需，包括行为规则、前置 skill 绝对路径、票型与门禁行、实施票的 `测试档：` 行（窄/宽；窄档写明为何影响面可圈定）、「本票不跑」行。worker 只看得到 spec，漏写就不会做。
+按 [spec 契约](references/spec-contract.md) 模板写 spec；每一项都必需，包括行为规则、**本阶段**前置 skill 的绝对路径（写 spec 前已确认可读）、票型与门禁行、实施票的 `测试档：` 行（窄/宽；窄档写明为何影响面可圈定）、「本票不跑」行。worker 只看得到 spec，漏写就不会做。
 
 ### 4.5 通信闭环
 

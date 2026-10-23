@@ -18,7 +18,7 @@ cases:
       - "WORKER_START_FLAGS 包含显式 --agent pi。"
 
   - name: ready_is_not_turnstart
-    description: "state:ready 不等于 turn 已开始。"
+    description: "state:ready 不等于 turn 已开始；补 Enter 是有条件的。"
     prompt: |
       worker-start 回执：state: ready，turnStart: unsupported。
       你还没有任何其他启动证据。
@@ -29,7 +29,35 @@ cases:
     expectations:
       - "MAY_ENTER_WAIT_LOOP 为 no（不把 ready 当启动证据）。"
       - "NEXT_CHECK 明确 worker-show 只用于取得句柄；之后读取可用启动证据（按 agent 是否有终端，可看终端标题、turnStart: observed、worker-read、状态投影或产物进展）。单独 worker-show 不通过。"
+      - "NEXT_CHECK 不把「空闲标题没变化」本身当结论，也不仅凭它补 Enter。"
+      - "NEXT_CHECK 只在屏幕确认完整 preamble 停在输入框且没有正在跑的 turn 时，允许补一次裸 Enter。"
       - "WHY 说明 state: ready 不是 turnStart、不能证明 turn 已开始。"
+
+  - name: turnstart_observed_is_evidence
+    description: "turnStart: observed 是首选启动证据，不需要再叠标题取证。"
+    prompt: |
+      worker-start 回执：state: ready，stage: input_accepted，turnStart: observed。
+      只输出：
+      1. STARTED — yes 或 no
+      2. NEXT — 你下一步做什么
+      3. WHY — 一两句
+    expectations:
+      - "STARTED 为 yes：turnStart: observed 就是回执给出的启动证据。"
+      - "NEXT 不再用标题取证重复验证启动，也不补裸 Enter。"
+      - "NEXT 直接去装 check --wait / inbox 消费者。"
+
+  - name: worker_without_terminal_start_check
+    description: "没有终端的 worker 用 worker-read 与产物判断，绝不调终端命令。"
+    prompt: |
+      worker-start 回执是 state: ready、turnStart: unsupported。worker-show 返回的 worker 没有
+      agent 终端句柄；worker-read 能看到子任务进展。
+      只输出：
+      1. START_CHECK — 你读什么，以及你拒绝跑什么
+      2. WHY — 一句
+    expectations:
+      - "START_CHECK 对没有终端的 worker 用 worker-read / 状态投影 / 产物进展。"
+      - "START_CHECK 不对它调 terminal show 或 terminal send。"
+      - "START_CHECK 不凭空编一个标题去读。"
 
   - name: ask_decision_vs_detail
     description: "应答协议：决策问人，纯细节可代答。"
@@ -148,5 +176,3 @@ cases:
       - "DOOR 是双向门，因为新增是纯增量且向后兼容。"
       - "MERGE 只在 G-merge 全绿后自动合并。"
       - "WHY 不把所有公共 API 新增都当成单向门。"
-
-

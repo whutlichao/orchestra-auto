@@ -50,7 +50,7 @@ constraints. Each reference states its own trigger in its opening lines:
 
 | File | When to read it |
 | --- | --- |
-| `references/dispatch-preflight.md` | Before every dispatch (tick every line), and at teardown when checking for formatter noise |
+| `references/dispatch-preflight.md` | Before every dispatch (§4.0.1 tick sheet), right after the receipt (§4.0.2 start and isolation evidence), and at teardown (§4.0.3 formatter noise) |
 | `references/dispatch-loop.md` | Every B/C dispatch for the full worker-start flags, turn-start confirmation, guide fetch, or communication-loop detail |
 | `references/spec-contract.md` | When writing a worker's spec, on any channel and for any ticket type |
 | `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
@@ -59,7 +59,7 @@ constraints. Each reference states its own trigger in its opening lines:
 | `references/inbox-and-waiting.md` | Before each Run's first dispatch (identity binding, inbox, installing the wake and its switches, lost-contact recovery); after every wake, to install the next wait; also when a worker's message never shows up |
 | `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
 | `references/gates-docs-planning.md` | This ticket is a design / spec / ticket-splitting ticket heading for G-docs / G-wayfinder / G-spec / G-tickets |
-| `references/reformat-noise-recovery.md` | §4.0.1 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
+| `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
 | `references/failed-dispatch-recovery.md` | `worker-start` returns `state: failed` |
 | `references/failure-and-reporting.md` | The CLI will not start, a breaker trips, or the Orca app restarts mid-run |
 
@@ -72,18 +72,18 @@ this round needs a worker.
 
 Read live Orca settings only when about to dispatch; record the default TUI agent and the disabled TUI agent list.
 A user-named agent wins, otherwise use the recorded default. A disabled agent, or a failed, missing or empty read, stops the run.
-Never infer settings from stale exports, this skill, or evals.
-`worker-start` requires an explicit `--agent`. `--agent` must be recognized by `worker-start --help`
-and be absent from the disabled list. Lookup steps: [dispatch preflight](references/dispatch-preflight.md).
+Never infer settings from stale exports, this skill, or evals. `worker-start` requires an explicit
+`--agent`; `--agent` must be recognized by `worker-start --help` and be absent from the disabled
+list. Lookup steps: [dispatch preflight](references/dispatch-preflight.md).
 
 ```text
 mode orchestra-auto | channel <A|B|C> | intent <task type> | pre-skill <actual path / none> | worker <actual agent / none> | delivery endpoint <answer / report / merged project change / other endpoint the user named>
 ```
 
 All six columns need **concrete values**; "TBD" is not allowed. When not dispatching, write
-"none" for worker. When dispatching, the pre-skill column must be that skill's real absolute
-path (channel B is `implement`, channel C is `grill-with-docs`; §1's table settles it right now).
-The worktree name is a slug you take at dispatch time; it is not part of the delivery endpoint.
+"none" for worker. When dispatching, the pre-skill column is the skill of **this stage and ticket
+type** (§4.3), written as its real absolute path, confirmed readable before dispatch. The worktree
+name is a slug you take at dispatch time; it is not part of the delivery endpoint.
 
 `worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is
 missing or unrecognized; pass the selected value explicitly. More rationale and the full dispatch
@@ -91,7 +91,7 @@ narrative: [dispatch loop](references/dispatch-loop.md).
 
 Before dispatch, confirm the selected agent is recognized and enabled; if not, report per §9 and
 stop rather than guessing or substituting. §4.3's table gives start/title criteria only, never
-defaults or disabled state. Prefer receipt `turnStart: observed`; otherwise use §4.3.1 evidence.
+defaults or disabled state.
 
 ## 1. Channel and delivery endpoint
 
@@ -102,14 +102,14 @@ stays open for a human. Exploration may change the implementation path; it may n
 | Request | Channel | Handling |
 | --- | --- | --- |
 | Explanation, status, discussion, or a verbal research conclusion | A | Answer directly; no worker, no writes |
-| A clearly bounded small change, a bug fix, an existing spec or ticket | B | Read-only exploration, then dispatch an implementation worker; for bugs start with `diagnosing-bugs` |
-| Research, design, spec or tickets that must land on disk | B/C | Use the matching `research`, `grill-with-docs`, `to-spec`, `to-tickets`; stop at the named artifact |
+| A clearly bounded small change, a bug fix, an existing spec or ticket | B | Read-only exploration, then dispatch an implementation worker; pre-skill `implement` (`diagnosing-bugs` first for a bug) |
+| Research, design, spec or tickets that must land on disk | B/C | The matching `research` / `grill-with-docs` / `to-spec` / `to-tickets`; stop at the named artifact |
 | A multi-ticket or not-yet-settled full implementation request | C | Converge on requirements and dependencies first; once G-tickets accepts a complete map, dispatch **one** long-horizon `implement-spec` worker |
-| External issues/PRs, conflicts, or terminology governance | B/C | Use the repository's triage, conflict-handling or domain-modeling flow |
+| External issues/PRs, conflicts, or terminology governance | B/C | The repository's triage, conflict-handling or `domain-modeling` flow |
 
 When the fog is heavy and no stable requirement can be formed, `wayfinder` can produce a map and
-decision tickets; read the target repo's wayfinding conventions first and do not invent labels.
-If the change would overturn an existing ADR or planned decision, settle that decision first. A
+decision tickets; read the target repo's wayfinding conventions first and do not invent labels, and
+settle an existing ADR or planned decision the change would overturn before going further. A
 full implementation request normally runs `grill-with-docs → to-spec → to-tickets →
 implement-spec`, but with a valid spec or ticket you enter at the matching stage. A single settled
 ticket stays on B; only a complete map uses `implement-spec`. If only design was asked for,
@@ -165,10 +165,10 @@ Documentation tickets run their own gates. Small size never changes the role bou
 
 ### 4.0 Pre-dispatch preflight
 
-Run the checklist in [dispatch preflight](references/dispatch-preflight.md) and tick every line
-before dispatching; its three mechanical criteria are the `Test tier:` line in an implementation
-spec, the `code-review` mention, and the base-commit check on every baseline number. After
-`worker_done` and before declaring a gate passed, run that file's teardown / formatter-noise check.
+[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a
+dispatch. **§4.0.1 pre-dispatch**: tick every line (mechanical criteria: the `Test tier:` line, the
+`code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**: start
+evidence and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
 
 ### 4.1 Read-only exploration
 
@@ -203,9 +203,8 @@ Every task worker must be started as an isolated top-level worktree with an expl
 
 ### 4.3.1 Confirming the turn started after dispatch
 
-`state: ready` ≠ `turnStart`.
-`state: ready` is **not** `turnStart`; it only means the Dispatch is ready. Prefer the receipt's
-`turnStart: observed`; if it is `unsupported`, `unobserved`, or absent, follow
+`state: ready` is **not** `turnStart`; it only means the Dispatch is ready. `turnStart: observed`
+is start evidence — accept it. When it is `unsupported`, `unobserved`, or absent, follow
 [start and recovery](references/worker-start-and-recovery.md) and confirm the start with evidence
 that agent supports. Never force `terminal show` onto a worker with no terminal; if you cannot
 prove it, gather evidence per §9 rather than blind-waiting.
@@ -213,7 +212,7 @@ prove it, gather evidence per §9 rather than blind-waiting.
 ### 4.4 The spec contract
 
 Write the spec from the template in [the spec contract](references/spec-contract.md); every element
-there is required — behaviour rules, the pre-skill's absolute path, the ticket-type and gate line, an
+there is required — behaviour rules, this stage's pre-skill path, the ticket-type and gate line, an
 implementation ticket's `Test tier:` line (narrow/wide, with the bounded-radius reason for narrow),
 and the `Not run this ticket` line. A worker sees only the spec, so anything left out is not done.
 
@@ -225,8 +224,8 @@ whole batch, and the part that keeps it alive — the consumer **ends on a wake 
 is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never as
 `nohup`, and after every wake handle the batch and install the next wait: a wake with no new wait
 behind it is a silent stall. Without a job-completion channel, keep the turn in ≤60-second waits
-with evidence-based recovery after three no-progress rounds. Detail:
-[dispatch loop](references/dispatch-loop.md).
+with evidence-based recovery after three no-progress rounds.
+Detail: [dispatch loop](references/dispatch-loop.md).
 
 ## 5. Reply protocol: decisions go to the human, details are answered for them
 

@@ -5,13 +5,16 @@
 
 ## 确认 turn
 
-`state: ready` / `stage: input_accepted` 不证明模型已开始。先用
-`orca orchestration worker-show --dispatch <id> --json` 查看实际 worker 与终端句柄。
-无终端 worker 通过 `worker-read --source auto`、状态投影与产物进展判断，不调用 terminal 命令。
+`state: ready` / `stage: input_accepted` 不证明模型已开始。`turnStart: observed` 则证明：它就是回执
+自带的启动证据，不需要在它之上再叠取证——下面的步骤用于 `unsupported`、`unobserved` 或字段缺失、
+即 agent 无法回报 turn 开始的场合。先用 `orca orchestration worker-show --dispatch <id> --json`
+查看实际 worker 与终端句柄。无终端 worker 通过 `worker-read --source auto`、状态投影与产物进展判断，
+不调用 terminal 命令。
 
 有终端时读 `orca terminal show --terminal <handle> --json`。`Pi ready` / `OMP ready` 等空闲横幅
 只说明尚无开始证据；`opencode` 可观察 `OC | <标题>`，`codebuddy` 标题可能一直为 `Terminal 1`，
 需结合屏幕或会话文件进展。标题形态随版本变化，不能单凭一次标题翻转判断工作已完成。
+空闲标题没变化是「去看屏幕」的信号，不是判决：它既不能证明 turn 已开始，也不能证明它没开始。
 
 若屏幕确认完整 preamble 停在输入框，且当前未运行 turn，可对**原终端**补一次裸 Enter，
 随后复核状态。输入框为空、内容不完整或状态不明时，按 Orca recovery 指南取证，

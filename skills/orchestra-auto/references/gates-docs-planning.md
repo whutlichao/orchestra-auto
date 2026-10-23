@@ -62,12 +62,22 @@ and its child tickets, native blocking, frontier queries, claiming and resolving
   body — only native relations let the tracker UI draw the frontier **visibly**, and that view is
   how a human judges "which one do I take next". Bot/API work takes the database id, not the
   issue number (commands are in the repository's wayfinding section).
-- **An empty frontier is this stage's endpoint**: among the map's open child tickets, drop those
-  with open blockers and those with an assignee; what remains should be empty, and **nothing left
-  in "not yet specified" should still be able to become a ticket** (the fog has cleared).
-  **The two conditions are verified separately**: an empty frontier ≠ cleared fog (the first only
+- **Sort every child ticket into one of four states before judging anything**: *takeable* (no open
+  blocker, no assignee), *in progress* (assigned, decision not yet recorded), *blocked* (at least
+  one open blocker), *done* (the decision is recorded and the tracker closed it). Write the four
+  counts down — a filtered tracker view can make the second and third states invisible, which is how
+  an empty frontier gets mistaken for a finished map.
+- **An empty frontier is not completion.** It only says nothing is currently takeable, and three
+  different situations produce it: every ticket assigned, every remaining ticket blocked, or the
+  work genuinely finished. Only the last one closes this stage. The closing condition is: every
+  required decision is *done*, no ticket is left in progress or blocked with work unfinished, and
+  **nothing in "not yet specified" can still become a ticket** (the fog has cleared). When the
+  frontier is empty but tickets are in progress or blocked, the stage is **not** done: wait for
+  them, unblock them, or report the blockage — do not accept the map.
+- **The two conditions are verified separately**: an empty frontier ≠ cleared fog (the first only
   means nothing is currently takeable; the second requires every formable question to have taken
-  form).
+  form). "Every ticket is done" ≠ "the frontier is empty" either: an assigned or blocked ticket is
+  unfinished work the frontier query cannot see.
 - **Every "decisions so far" entry points at the ticket that made it** and does not restate the
   decision — the map is an **index, not a repository**, and a decision lives in exactly one place
   (its own ticket).

@@ -1,6 +1,6 @@
 {
   "skill_name": "orchestra-auto",
-  "_note": "Scenario evaluations exercise routing, auto-merge authorization, door routing, long-horizon ticket maps and gate choices. They are prompt-level checks: they show whether an agent that has read the skill reasons the way the skill intends, and they are NOT end-to-end proof that orchestration works. Script behaviour is tested separately by the repository's fake-CLI integration test. Every scenario is machine-independent: no absolute home path, no private repository or ticket name, no local agent preference, and no snapshot of a particular host's settings is assumed.",
+  "_note": "Scenario evaluations exercise routing, auto-merge authorization, door routing, long-horizon ticket maps and gate choices. They are prompt-level checks: they show whether an agent that has read the skill reasons the way the skill intends, and they are NOT end-to-end proof that orchestration works. Script behaviour is tested separately by the repository's fake-CLI integration test. Where a scenario needs a filesystem path it supplies a self-contained fixture (SKILLS_ROOT/PRE_SKILL), so no scenario asks the model to invent a real machine path. Every scenario is machine-independent: no absolute home path, no private repository or ticket name, no local agent preference, and no snapshot of a particular host's settings is assumed.",
   "evals": [
     {
       "id": 0,
@@ -97,7 +97,7 @@
       "id": 3,
       "name": "evidence-free-claim",
       "prompt": "You are running orchestra-auto, accepting an implementation ticket. The worker reported worker_done and its Answer reads:\n\n    Pre-skill: <skills-root>/implement/SKILL.md -- read.\n    Target: src/components/ChatView.tsx\n    Change: main column now renders the newly computed thread\n    Observable acceptance: all tests green, typecheck 0, lint zero new.\n    code-review: done, two-axis report below.\n    (and then there is no report body at all, and no command output)\n\nThe working tree is clean (`git status --porcelain` empty), the change is +15/-10 lines, and you re-ran typecheck yourself and got 0.\n\nOutput only your disposition, strictly with these 3 labels:\n\n1. VERDICT: accept or send back, in one sentence\n2. MISSING: which concrete evidence you require (list them)\n3. BAR: where does this 'evidence bar' come from (cite which rule)\n\nDo not actually run commands.",
-      "expected_output": "Send back (not accepted). Require: the red->green commands and their raw output; both bodies of the two-axis review (Standards + Spec, not merged); each finding's disposition or the reason it was waived; and confirmation that the spec's Observable acceptance actually listed the code-review item. The bar comes from G-impl item 3, 'the Answer contains the pre-skill's evidence chain and any gap sends it back' -- a claim is not evidence, and a clean worktree plus typecheck=0 satisfies only items 1 and 2, not item 3.",
+      "expected_output": "Send back (not accepted). Require: the red->green commands and their raw output; the Standards and Spec conclusions stated separately (two axes, not merged into one verdict); each finding's disposition or the reason it was waived; and confirmation that the spec's Observable acceptance actually listed the code-review item. The bar comes from G-impl item 3 - 'the Answer gives execution evidence for the pre-skill ... give the Standards and Spec conclusions separately, with findings and their disposition' - plus item 1, where a fix's test fails before the fix and passes after it. A claim is not evidence: a clean worktree and typecheck=0 cover the scene and the tests, not the review and coverage item.",
       "files": [],
       "assertions": [
         {
@@ -109,7 +109,7 @@
           "name": "missing_raw_output"
         },
         {
-          "text": "MISSING requires both axes of the review report (Standards + Spec as separate conclusions)",
+          "text": "MISSING requires the Standards and Spec conclusions as two separate conclusions, not one merged verdict",
           "name": "missing_both_axes"
         },
         {
@@ -129,28 +129,36 @@
     {
       "id": 4,
       "name": "unverified-start",
-      "prompt": "You are running orchestra-auto and have just started two workers for two tickets (both with `--worktree new-top-level`). Both receipts say state=ready, but the fields look like this:\n\n    Receipt A: state=ready, stage=input_accepted, turnStart=unsupported\n    Receipt B: state=ready, stage=input_accepted, turnStart field missing\n\nNeither has lastError and neither has nextCommands. On the coordinator side you have already prepared to receive worker messages.\nOne of the tickets got a freshly dispatched ~6KB spec; the other was dispatched 10 minutes ago and has produced no message at all.\n\n(Background fact for your judgement: Orca only observes whether a turn actually started for some agent CLIs; for the agents in play here the CLI writes the prompt text and a carriage return and returns immediately, so the receipt records turnStart=unsupported.)\n\nOutput only your disposition; do not actually run commands. Strictly use these 4 labels:\n\n1. VERDICT: are these two ready receipts enough for you to treat the workers as started? Why?\n2. START_CHECK: what exactly do you do next to confirm a worker really started (state the command and which field you read), and where does it sit relative to check --wait?\n3. RECOVERY: if you confirm it did not start, what exactly do you do (state the command), and how many times?\n4. FAILURE_MODE: which 'recovery' would be wrong, and what does it cause?\n\nOutput exactly those 4 labels, each with concrete values. Do not write 'it depends'.",
-      "expected_output": "Do not treat ready as evidence: turnStart=unsupported or missing only means the bytes were written. After dispatching and before entering the check --wait loop, call `orchestration worker-show` to get the agent terminal handle, then `terminal show --json` and read the terminal title; a title still showing the agent's idle banner means the preamble is parked in the composer. The recovery is exactly one bare Enter to the original terminal (`terminal send --terminal <handle> --enter --json`) followed by re-reading the title. Do not resend the whole spec (that creates a duplicate turn) and do not judge from the transcript.",
+      "prompt": "You are running orchestra-auto and have just dispatched three workers with `--worktree new-top-level`. Every receipt says state=ready, stage=input_accepted:\n\n    Receipt A: turnStart=unsupported\n    Receipt B: turnStart field missing\n    Receipt C: turnStart=unsupported\n\nEvidence you can gather now; none of it needs a second dispatch:\n- A's terminal title still shows the agent's idle banner, and `terminal read` shows the complete ~6KB preamble parked unsent in the composer, with no turn running.\n- B's terminal title also shows the idle banner; the screen has not been read yet, and B was dispatched 10 minutes ago with no message since.\n- C's `worker-show` returns a worker with no agent terminal handle; `worker-read` shows subtask progress and `worker-list` reports a stage detail.\n\n(Background fact: Orca observes whether a turn actually started only for some agent CLIs; for these agents the CLI writes the prompt text and a carriage return and returns immediately, so the receipt records turnStart=unsupported or omits the field.)\n\nOutput only your disposition; do not actually run commands. Strictly use these 4 labels:\n\n1. VERDICT: is state=ready enough to treat a worker as started? Which receipt is actually started, and why?\n2. START_CHECK: what exactly you do for A, B and C to confirm a start (name the command and the field or observation you read), and where it sits relative to check --wait\n3. RECOVERY: what you do for each worker that did not start, how many times, and the exact condition under which a bare Enter is allowed\n4. FAILURE_MODE: which 'recovery' would be wrong, and what does it cause?\n\nOutput exactly those 4 labels, each with concrete values. Do not write 'it depends'.",
+      "expected_output": "Do not treat state=ready as evidence: turnStart=unsupported or a missing field only means the bytes were written. Before entering check --wait, confirm each worker on the evidence that worker supports: for A, worker-show -> terminal show --json -> .terminal.title plus the screen; for C, worker-read and the status projection and artifact progress, never terminal commands for a worker with no handle. A single bare Enter on A's original terminal is allowed because the screen shows the complete preamble parked in the composer and no turn running - the unchanged idle title alone is neither that confirmation nor proof that nothing started. B needs its screen read before any Enter, and a resend of the whole spec is wrong because it creates a duplicate turn.",
       "files": [],
       "assertions": [
         {
-          "text": "Does not treat the ready receipt (turnStart=unsupported / missing) as proof the turn began",
+          "text": "Does not treat state=ready (turnStart=unsupported or missing) as proof the turn began",
           "name": "start_not_trusted"
         },
         {
-          "text": "START_CHECK reads the terminal title (terminal show --json .terminal.title) to decide whether the turn began",
+          "text": "START_CHECK reads the terminal title (terminal show --json / .terminal.title) for a worker that has a terminal",
           "name": "start_reads_title"
         },
         {
-          "text": "START_CHECK recognizes that these agents report turnStart=unsupported because Orca cannot observe their turn start",
-          "name": "start_knows_blind"
+          "text": "Does not treat an unchanged idle title as a conclusion by itself, and never sends Enter on that basis alone",
+          "name": "start_idle_title_not_enough"
         },
         {
-          "text": "RECOVERY sends a bare Enter (terminal send --enter) to nudge the unsent composer text",
+          "text": "Allows the single bare Enter only when the screen confirms the complete preamble sits in the composer and no turn is running",
+          "name": "start_enter_requires_preamble"
+        },
+        {
+          "text": "Judges the worker with no terminal handle from worker-read, the status projection or artifact progress, and does not run terminal commands for it",
+          "name": "start_no_terminal_uses_worker_read"
+        },
+        {
+          "text": "Sends at most one bare Enter (terminal send --enter) to A's original terminal",
           "name": "start_sends_enter"
         },
         {
-          "text": "RECOVERY sends exactly one nudge, not a retry loop",
+          "text": "Sends exactly one nudge, not a retry loop",
           "name": "start_one_nudge"
         },
         {
@@ -158,7 +166,7 @@
           "name": "start_check_before_wait"
         },
         {
-          "text": "RECOVERY does not resend the whole spec/preamble a second time",
+          "text": "Does not resend the whole spec/preamble a second time",
           "name": "start_no_blind_reask"
         }
       ]
@@ -166,8 +174,8 @@
     {
       "id": 5,
       "name": "worker-named-by-user",
-      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Run it with pi: change the backoff algorithm in src/queue/retry.ts to exponential backoff, add a cap, and throw in two tests. Give me a PR when it's done.\"\n\nOutput only what you would produce this turn; do not actually run any command and do not dispatch a worker. Use this structure:\n\n1. MODE_DECL: your mode declaration (in the format the skill requires, no column missing)\n2. WORKER_START: the full worker-start command you would give the worker (keep placeholders in angle brackets, but the --agent column must hold the final value)\n3. START_CHECK: after dispatching and before entering check --wait, what tells you this worker really started (state the command and the string you compare)\n4. DEFAULTS: if the words \"with pi\" were absent from this sentence, how would items 1 and 3 change?\n\nOutput exactly those 4 labels, each with concrete content (concrete down to the string and the field name).",
-      "expected_output": "MODE_DECL carries worker=pi and every column is concrete (channel B, pre-skill as an absolute path); WORKER_START contains --agent pi and --worktree new-top-level; START_CHECK is worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title, comparing against pi's idle banner `Pi ready` (unchanged means one bare Enter nudge); DEFAULTS is to read Orca's live default TUI agent and write the value you read as the concrete value.",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Run it with pi: change the backoff algorithm in src/queue/retry.ts to exponential backoff, add a cap, and throw in two tests. Give me a PR when it's done.\"\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\nOutput only what you would produce this turn; do not actually run any command and do not dispatch a worker. Use this structure:\n\n1. MODE_DECL: your mode declaration (in the format the skill requires, no column missing)\n2. WORKER_START: the full worker-start command you would give the worker (keep placeholders in angle brackets, but the --agent column must hold the final value)\n3. START_CHECK: after dispatching and before entering check --wait, what tells you this worker really started (state the command and the string you compare)\n4. DEFAULTS: if the words \"with pi\" were absent from this sentence, how would items 1 and 3 change?\n\nOutput exactly those 4 labels, each with concrete content (concrete down to the string and the field name).",
+      "expected_output": "MODE_DECL carries worker=pi and every column is concrete, with the pre-skill taken from the supplied PRE_SKILL fixture path; WORKER_START contains --agent pi and --worktree new-top-level; START_CHECK is worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title, compared against the agent's idle banner, and a bare Enter is only mentioned as the recovery once the complete preamble is confirmed in the composer with no turn running; DEFAULTS is to read Orca's live default TUI agent and write the value read as the concrete value.",
       "files": [],
       "assertions": [
         {
@@ -179,7 +187,7 @@
           "name": "decl_channel_b"
         },
         {
-          "text": "MODE_DECL names the pre-skill by an absolute path (implement)",
+          "text": "MODE_DECL names the pre-skill with the supplied fixture path <skills-root>/implement/SKILL.md, not a bare skill name and not an invented machine path",
           "name": "decl_pre_skill_abs_path"
         },
         {
@@ -195,7 +203,7 @@
           "name": "ws_top_level"
         },
         {
-          "text": "START_CHECK compares against pi's idle banner `Pi ready`",
+          "text": "START_CHECK compares the title against the agent's idle banner (e.g. `Pi ready` for pi) rather than treating any title change as proof",
           "name": "check_pi_banner"
         },
         {
@@ -203,11 +211,11 @@
           "name": "check_title_field"
         },
         {
-          "text": "START_CHECK states the one bare Enter nudge as the recovery",
+          "text": "START_CHECK makes the single bare Enter conditional on the complete preamble being parked in the composer with no turn running",
           "name": "check_bare_enter"
         },
         {
-          "text": "START_CHECK does not treat turnStart/ready as proof the turn began",
+          "text": "START_CHECK does not treat state:ready alone as proof the turn began",
           "name": "check_turnstart_not_trusted"
         },
         {
@@ -248,8 +256,8 @@
     {
       "id": 7,
       "name": "channel-routing",
-      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Change the copy on that settings-page toggle to 'Auto sync'. Open a PR when you're done.\"\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nOutput only your mode declaration's six columns (in the format the skill requires, none missing), then one extra comment line explaining why you chose this channel. Do not actually run commands and do not dispatch a worker.\n\nAfter that, also answer this follow-up: if you changed that sentence to \"it's just a button colour, one line, don't make it heavy\", would your channel decision change? Why?",
-      "expected_output": "Channel B, pre-skill implement as an absolute path, worker `fixture-agent` from the supplied LIVE_DEFAULT_TUI_AGENT fixture (no agent is user-named), delivery endpoint merged project change. A single-file tweak still happens in an isolated worktree with the worker creating the PR; once the gates pass the coordinator merges automatically without asking again per ticket.",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Change the copy on that settings-page toggle to 'Auto sync'. Open a PR when you're done.\"\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\nOutput only your mode declaration's six columns (in the format the skill requires, none missing), then one extra comment line explaining why you chose this channel. Do not actually run commands and do not dispatch a worker.\n\nAfter that, also answer this follow-up: if you changed that sentence to \"it's just a button colour, one line, don't make it heavy\", would your channel decision change? Why?",
+      "expected_output": "Channel B, pre-skill from the supplied PRE_SKILL fixture path, worker `fixture-agent` from the supplied LIVE_DEFAULT_TUI_AGENT fixture (no agent is user-named), delivery endpoint merged project change. A single-file tweak still happens in an isolated worktree with the worker creating the PR; once the gates pass the coordinator merges automatically without asking again per ticket.",
       "files": [],
       "assertions": [
         {
@@ -257,7 +265,7 @@
           "name": "decl_channel_b"
         },
         {
-          "text": "The mode declaration names implement by ABSOLUTE PATH as the pre-skill (not bare 'implement', not TBD)",
+          "text": "The mode declaration names the pre-skill with the supplied fixture path <skills-root>/implement/SKILL.md (not bare 'implement', not TBD, not an invented path)",
           "name": "decl_pre_skill_abs_path"
         },
         {
@@ -380,7 +388,7 @@
     {
       "id": 11,
       "name": "worker-slot-follows-setting-not-habit",
-      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"The retry backoff in src/lib/queue.ts is still hardcoded at 1000ms -- make it exponential with a 30s cap, and add two tests while you're at it. Give me a PR when it's done.\"\n\n(No agent / worker / harness is named in that sentence.)\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nTwo background facts:\n- The previous orchestration round used `habit-agent`, and this repository does contain a pile of artefacts from that agent (a local plugin ignore file and the like).\n- You did not name an agent yourself.\n\nOutput only what you would produce this turn; do not actually dispatch a worker or create a worktree:\n1. DECL: your complete mode declaration (six columns, in the skill's format)\n2. JUSTIFY: how did the value in the worker column come about? State exactly what you based it on\n3. DISCONFIRM: if your first instinct was to write the agent from the previous round and the repository artefacts, explain why you changed it\n\nOutput exactly those 3 labels, each with concrete values; do not write TBD or 'read the settings to decide' style placeholders.",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"The retry backoff in src/lib/queue.ts is still hardcoded at 1000ms -- make it exponential with a 30s cap, and add two tests while you're at it. Give me a PR when it's done.\"\n\n(No agent / worker / harness is named in that sentence.)\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\nTwo background facts:\n- The previous orchestration round used `habit-agent`, and this repository does contain a pile of artefacts from that agent (a local plugin ignore file and the like).\n- You did not name an agent yourself.\n\nOutput only what you would produce this turn; do not actually dispatch a worker or create a worktree:\n1. DECL: your complete mode declaration (six columns, in the skill's format)\n2. JUSTIFY: how did the value in the worker column come about? State exactly what you based it on\n3. DISCONFIRM: if your first instinct was to write the agent from the previous round and the repository artefacts, explain why you changed it\n\nOutput exactly those 3 labels, each with concrete values; do not write TBD or 'read the settings to decide' style placeholders.",
       "expected_output": "The delivery endpoint is merged project changes with the PR auto-merged once the gates pass; the worker column must equal the supplied `LIVE_DEFAULT_TUI_AGENT=fixture-agent`, and JUSTIFY must identify that fixture as the source rather than machine settings, the skill, repository artefacts, or `habit-agent`. DISCONFIRM rejects those pulls and notes that even a coincidental match would not change the basis. `STALE_EXPORT_DEFAULT=old-agent` is explicitly stale and unavailable.",
       "files": [],
       "assertions": [
@@ -393,7 +401,7 @@
           "name": "decl_no_placeholder"
         },
         {
-          "text": "DECL contains all six slots (channel / intent / pre-skill by absolute path / worker / delivery endpoint) with concrete values",
+          "text": "DECL contains all six slots (channel / intent / pre-skill from the fixture path / worker / delivery endpoint) with concrete values",
           "name": "decl_all_slots"
         },
         {
@@ -417,8 +425,8 @@
     {
       "id": 12,
       "name": "read-setting-before-declare",
-      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Add an illustration to the board card's empty state, 120px placeholder height, and don't touch anything else.\"\n\n(This sentence names no agent / worker / harness.)\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nUse the supplied settings fixture; do not inspect machine settings, run commands, or dispatch a worker. Output only:\n1. RESOLVE: the worker value from the fixture and why it is the applicable value\n2. OUTPUT: your mode declaration (all six columns)\n\nOutput exactly those 2 labels, each with concrete values.",
-      "expected_output": "RESOLVE selects fixture-agent from LIVE_DEFAULT_TUI_AGENT in the supplied fixture; no machine read is needed. OUTPUT has all six concrete declaration fields and worker=fixture-agent, with no placeholder.",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Add an illustration to the board card's empty state, 120px placeholder height, and don't touch anything else.\"\n\n(This sentence names no agent / worker / harness.)\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\n\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\nUse the supplied settings fixture; do not inspect machine settings, run commands, or dispatch a worker. Output only:\n1. RESOLVE: the worker value from the fixture and why it is the applicable value\n2. OUTPUT: your mode declaration (all six columns)\n\nOutput exactly those 2 labels, each with concrete values.",
+      "expected_output": "RESOLVE selects fixture-agent from LIVE_DEFAULT_TUI_AGENT in the supplied fixture; no machine read is needed. OUTPUT has all six concrete declaration fields, worker=fixture-agent and the pre-skill from the PRE_SKILL fixture path, with no placeholder.",
       "files": [],
       "assertions": [
         {
@@ -426,11 +434,11 @@
           "name": "resolve_uses_fixture"
         },
         {
-          "text": "OUTPUT contains all six mode-declaration fields with worker=fixture-agent",
+          "text": "OUTPUT contains all six mode-declaration fields with worker=fixture-agent and the fixture's pre-skill path",
           "name": "output_uses_fixture_agent"
         },
         {
-          "text": "OUTPUT does not use a worker placeholder such as TBD or 'follow the default'",
+          "text": "OUTPUT does not use a worker or pre-skill placeholder such as TBD, 'follow the default', or an invented absolute path",
           "name": "output_no_placeholder"
         }
       ]
@@ -751,6 +759,31 @@
         {
           "name": "auto_merge_after_gate",
           "text": "Auto-merges only after G-merge is green, not merely because the body says two-way"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "name": "observed-start-is-evidence",
+      "prompt": "You are running orchestra-auto and have just dispatched one worker with `--worktree new-top-level`. The receipt says state=ready, stage=input_accepted, turnStart=observed.\n\nOutput only:\n1. STARTED: is the turn confirmed started?\n2. NEXT_CHECK: what else you do before entering the check --wait loop\n3. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "`turnStart: observed` is the receipt's start evidence, so the turn is confirmed and no title forensics or Enter nudge is needed on top of it. The next step is to install the inbox consumer and enter the check --wait loop; WHY cites the rule that `state: ready` alone is not `turnStart`, while `turnStart: observed` is the preferred receipt evidence.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Treats turnStart: observed as the receipt's start evidence and does not demand title forensics on top of it",
+          "name": "observed_is_evidence"
+        },
+        {
+          "text": "Does not send a bare Enter nudge when the receipt observed the start",
+          "name": "no_enter_nudge"
+        },
+        {
+          "text": "Moves on to install the check --wait / inbox consumer instead of re-verifying the start",
+          "name": "enters_wait"
+        },
+        {
+          "text": "WHY grounds the answer in the rule that state:ready alone is not turnStart while turnStart: observed is the preferred evidence",
+          "name": "why_cites_rule"
         }
       ]
     }

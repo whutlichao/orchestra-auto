@@ -57,14 +57,41 @@ Every task worker, without exception:
 - Immediately after the receipt, confirm the turn really started per §4.3.1, and verify §4.5's
   inbox consumer and waiting method.
 
+## 4.3.0 Pre-skill: pick it by stage and ticket type, not by channel
+
+The `Pre-skill:` line in the spec names the skill of the stage you are actually running. There is no
+fixed channel-to-skill mapping: a round that already holds a valid spec enters at `to-tickets`, one
+with an existing ticket map enters at `implement-spec`, a research question answered on disk uses
+`research`, and a bug fix uses `diagnosing-bugs` and then `implement`.
+
+| This round's stage | Pre-skill |
+| --- | --- |
+| Explanation, status, discussion | none (channel A) |
+| Bounded change, bug fix, existing spec or ticket | `implement` (`diagnosing-bugs` first for a bug) |
+| Research that lands on disk | `research` |
+| A design made sharp against the codebase | `grill-with-docs` |
+| A spec | `to-spec` |
+| A ticket split | `to-tickets` |
+| Implementation of a complete map | `implement-spec` |
+| External issues, conflicts, terminology | the repository's triage / conflict / `domain-modeling` flow |
+
+Before dispatch, confirm the chosen path is readable and that this stage's dependencies exist: the
+tracker configuration for `to-spec` / `to-tickets`, the map and tracker for `implement-spec`, and the
+skills it will reach for any of them. Missing → report per §9 with the resolution that failed. Do not
+substitute a path from memory, and do not install anything this round was not authorized to install.
+
 ## 4.3.1 Confirming the turn started after dispatch
 
-`state: ready` only means the Dispatch is ready. Prefer the receipt's `turnStart: observed`; if
-it is `unsupported`, `unobserved`, or absent, read the
-[start and recovery reference](worker-start-and-recovery.md) and confirm the start
-with evidence that agent actually supports. Orca allows workers without a terminal: check
-`worker-show` for the handle first, and never force `terminal show` onto a worker that has no
-terminal. If you cannot prove it, gather evidence per §9 rather than entering a blind wait.
+`state: ready` only means the Dispatch is ready. The receipt's `turnStart: observed` **is** the
+start evidence: accept it and go on to the wait — the steps below are for the receipts that cannot
+carry it. If `turnStart` is `unsupported`, `unobserved`, or absent, read the [start and recovery
+reference](worker-start-and-recovery.md) and confirm the start with evidence that agent actually
+supports. Orca allows workers without a terminal: check `worker-show` for the handle first, and
+never force `terminal show` onto a worker that has no terminal. An unchanged idle title is not a
+verdict either way: one bare Enter is allowed only when the screen shows the complete preamble in
+the composer with no turn running. If you cannot prove it, gather evidence per §9 rather than
+entering a blind wait. The checklist form of this step is §4.0.2 of
+[dispatch preflight](dispatch-preflight.md).
 
 ### 4.3.2 Long-horizon dispatch (one worker per map)
 

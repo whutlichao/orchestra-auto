@@ -98,14 +98,31 @@ the top-level worker remains accountable for their worktrees, branches and outpu
 
 ## 4. Coordinator acceptance
 
-The coordinator accepts the **integration PR**, not each nested branch. Check:
+The coordinator accepts the **integration PR**, not each nested branch. Four things are reported
+separately, because collapsing them is where a merge gets claimed as a close-out:
+
+1. **Ticket implementation complete** — each ticket's branch is merged into the integration branch
+   and its acceptance criteria are demonstrated. Nothing is left only in a worktree.
+2. **Integration accepted** — the final tree passes the applicable full gate, and a spot-check of at
+   least two tickets' evidence confirms what the summary claims.
+3. **PR merged** — the integration PR is open with its head matching the final accepted SHA, and the
+   integration branch was rebased onto the current default base before it was marked ready; it is
+   merged only through §5's door rules.
+4. **Tickets closed per tracker** — the tracker's own rule closes them, usually from the PR body's
+   `Closes` links when that PR merges. Closure is therefore *after* the merge, and reconciling it
+   is a post-merge step (§6.5 of [gate acceptance](gate-acceptance.md)), not a precondition.
+
+Check:
 
 - The PR is one PR for the map (or the documented fallback), its head matches the final accepted
   SHA, and the integration branch was rebased onto the current default base before the PR was
   marked ready.
-- Every ticket's branch is merged; no ticket branch is left only in a worktree. Every ticket is
-  closed the way the tracker closes work, and the PR body carries `Closes` links for the spec and
-  the tickets.
+- Every ticket's branch is merged; no ticket branch is left only in a worktree. The PR body carries
+  `Closes` links for the spec and the tickets. At acceptance the tickets may still be **open** —
+  the `Closes` links are what close them when the PR merges, so requiring every ticket to be closed
+  before the merge would deadlock a correct run. What acceptance requires is that every ticket's
+  work is in the branch and that each will close; what it forbids is reporting a ticket as closed
+  while the PR is only open.
 - The final tree passes the applicable full gate. Spot-check at least two tickets' evidence —
   their tests and their acceptance criteria — rather than trusting the summary alone. Per-ticket
   TDD is the implementer's contract; the one two-axis `code-review` on the integration branch is
@@ -113,8 +130,8 @@ The coordinator accepts the **integration PR**, not each nested branch. Check:
 - The worker cleaned up nested worktrees; the main working copy is untouched; there is no
   unexplained uncommitted change.
 
-On a missing branch, a red test, an unclosed ticket or a stale head, send the finding back to the
-top-level worker. The coordinator does not enter nested worktrees or finish a ticket itself.
+On a missing branch, a red test, a ticket whose work is absent or a stale head, send the finding back
+to the top-level worker. The coordinator does not enter nested worktrees or finish a ticket itself.
 
 ## 5. Door-aware merge
 
@@ -122,29 +139,20 @@ The worker writes the PR body with the `pr` skill, including `Door`, `Blast Radi
 The coordinator then verifies the door claim against the real diff. The worker's label is input,
 not proof.
 
-**One-way triggers** — any one makes the whole PR one-way:
+**The one-way trigger list lives in [gate acceptance](gate-acceptance.md) G-merge step 0** — read it
+there instead of keeping a second copy here; any single trigger makes the whole PR one-way, an
+additive backward-compatible addition is not a trigger by itself, and an uncertain claim is treated
+as one-way. This section adds only what is specific to a long-horizon map: the door decides whether
+the **integration PR** may merge at all, and the ticket reconciliation below follows from that.
 
-- schema or data migration, backfill or deletion;
-- breaking public API, CLI, SDK or persisted-format change: removing or renaming an exported
-  symbol, changing an existing signature, semantics or default, or changing a stored format.
-  A purely additive, backward-compatible addition is two-way unless it also changes data or an
-  external contract;
-- auth, permissions, secrets or trust-boundary change;
-- billing, pricing or entitlement change;
-- deploy, infrastructure or runtime-config change;
-- irreversible external side effect;
-- feature removal, or a major dependency upgrade;
-- a broad blast radius with no simple revert.
-
-If the diff contains a trigger, the PR is one-way even when the body says two-way. Send it back to
-correct the body, then treat it as one-way. If you are unsure, treat it as one-way. A two-way door
-is necessary but not sufficient: G-merge must still pass, and repository rules still win.
-
-- **Two-way + G-merge green + repository allows** → auto-merge, sync main, close the tickets.
+- **Two-way + G-merge green + repository allows** → auto-merge, sync main, then reconcile the
+  tickets against the tracker: confirm the `Closes` links actually closed what they named, and
+  record anything the tracker left open (and why) in the report.
 - **One-way, uncertain, a gate red, or a rule blocks** → stop at the open PR. Report the door, the
   evidence, the blast radius and the exact human merge action. Do not merge it, do not sync main,
-  and do not ask for a second automatic approval. A human merges it manually; the run's endpoint is
-  the open PR.
+  and do not ask for a second automatic approval. The tickets stay **open**: the PR is open, not
+  merged, so nothing is closed and no ticket status may claim otherwise. A human merges it
+  manually; the run's endpoint is the open PR, and reconciling the tickets happens after that merge.
 
 ## 6. Retro on process errors
 

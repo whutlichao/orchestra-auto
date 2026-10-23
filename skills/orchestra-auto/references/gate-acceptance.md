@@ -77,14 +77,16 @@ question per §5.
 ### G-merge — door-aware merge gate for project PRs
 
 0. **Door check**: read the PR body's `Door` and `Blast Radius`, then verify the claim against the
-   diff yourself. One-way triggers: schema/data migration or deletion; breaking public
-   API/CLI/SDK change (removal, rename, or a changed signature/semantics/default) or a persisted
-   format change — a purely additive, backward-compatible addition is not itself one-way; auth/
-   permissions/secrets; billing/pricing; deploy/infra; irreversible external side effect; feature
-   removal; major dependency upgrade; a broad blast radius with no simple revert. Any one makes
-   the whole PR one-way; when unsure, treat it as one-way. A two-way claim contradicted by the diff
-   goes back to the worker to correct the body and is then treated as one-way. A one-way PR stops
-   here: leave it open and report the exact human merge action. Never auto-merge a one-way door.
+   diff yourself. **This list is the single authoritative definition of a one-way door**; every
+   other document points here instead of restating it. One-way triggers: schema/data migration or
+   deletion; breaking public API/CLI/SDK change (removal, rename, or a changed
+   signature/semantics/default) or a persisted format change — a purely additive,
+   backward-compatible addition is not itself one-way; auth/permissions/secrets; billing/pricing;
+   deploy/infra; irreversible external side effect; feature removal; major dependency upgrade; a
+   broad blast radius with no simple revert. Any one makes the whole PR one-way; when unsure, treat
+   it as one-way. A two-way claim contradicted by the diff goes back to the worker to correct the
+   body and is then treated as one-way. A one-way PR stops here: leave it open and report the exact
+   human merge action. Never auto-merge a one-way door.
 
 Check the repository's conventions for CI and merging first. Separate known baseline failures
 from real failures this ticket introduced. For several PRs, an integration worker composes the
@@ -108,9 +110,17 @@ explicitly asked to keep an open PR, stop here.
 3. After all merges, confirm the final main branch contains the expected commits, do a quick
    check and record the SHA. On an anomaly, preserve the scene and dispatch a fix ticket rather
    than writing a merged state as a passed acceptance.
-4. Close out at the stage matching this round's scope; merging a design PR does not by itself
+4. **Reconcile the tickets against the tracker after the merge.** A merged PR is not a closed
+   ticket: the tracker closes work by its own rule (usually the `Closes` links firing on merge, and
+   sometimes only by hand). Read the ticket states back and record, per ticket, whether it closed,
+   and for any that did not, what it is waiting on. Claiming a ticket closed because the PR merged,
+   or because the PR is open, is exactly the false close-out this step exists to catch; a
+   long-horizon map's ticket table in the report carries the four states — implemented, integrated,
+   merged, tracker-closed — separately.
+5. Close out at the stage matching this round's scope; merging a design PR does not by itself
    authorize creating implementation tickets. A one-way PR is not in this merge loop: the human
-   merges it manually, and a later turn records the merge SHA and syncs main.
+   merges it manually, the tickets stay open until that merge, and a later turn records the merge
+   SHA, syncs main and reconciles the tickets.
 
 #### §6.5.1 Syncing local main after each PR merge
 

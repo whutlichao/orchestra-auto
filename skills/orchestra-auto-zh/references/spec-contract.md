@@ -13,7 +13,10 @@ Observable acceptance**。外加第一条固定为：
 
 **这一行是其余 skills 的唯一入口。** 没有它，worker 就不会去读 grill-with-docs /
 tdd / diagnosing-bugs / code-review，于是「不用其他 skills」的故障就复现了。路径写在 spec 里，
-让 worker 自己读全文，不要由你转述。
+让 worker 自己读全文，不要由你转述。**这条路径是本轮实际所处阶段对应的 skill**（SKILL.md §1），
+不是按通道固定：已持有有效 spec 的一轮写 `to-tickets`，有完整票图的写 `implement-spec`，
+修 bug 写 `diagnosing-bugs` 与 `implement`。落笔前先确认路径可解析、可读；
+不可读就带证据报告，而不是编一个路径或擅自安装本轮未获授权的 skill。
 
 实施类 B 通道的 spec 模板；只写本票适用的门禁。文档票按对应文档门禁改写：
 

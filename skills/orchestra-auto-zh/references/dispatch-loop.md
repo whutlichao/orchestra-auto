@@ -45,12 +45,35 @@ Orca 的这条默认**。
   需要计划式 fan-out 或重试已知 Task 时才用 `task-create` + `worker-start --task <id>`。
 - 回执拿到后**立刻**走 §4.3.1 确认 turn 真的开始，并核验 §4.5 的收件器与等待方式。
 
+### 4.3.0 前置 skill：按阶段与票型选，不按通道
+
+spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 skill。没有固定的「通道→skill」映射：
+已持有有效 spec 的一轮从 `to-tickets` 进入，已有票图的从 `implement-spec` 进入，
+需要落盘回答的研究问题用 `research`，修 bug 先 `diagnosing-bugs` 再 `implement`。
+
+| 本轮的阶段 | 前置 skill |
+| --- | --- |
+| 解释、状态、讨论 | 无（A 通道） |
+| 边界清楚的小改动、修 bug、已有 spec 或票 | `implement`（修 bug 先 `diagnosing-bugs`） |
+| 必须落盘的研究 | `research` |
+| 对着代码库把设计问尖锐 | `grill-with-docs` |
+| 规格 | `to-spec` |
+| 拆票 | `to-tickets` |
+| 实施完整票图 | `implement-spec` |
+| 外部 issue、冲突、术语 | 仓库的 triage / 冲突处理 / `domain-modeling` 流程 |
+
+派活前确认所选路径可读，且本阶段的依赖齐备：`to-spec` / `to-tickets` 要 tracker 配置，
+`implement-spec` 要票图与 tracker，任一阶段都要它后续会用到的 skill。缺失 → 按 §9 带证据报告那次失败的解析。不凭记忆换一个路径，也不在本轮擅自安装。
+
 ### 4.3.1 派活后确认 turn 开始
 
-`state: ready` 仅表示 Dispatch 就绪。优先看回执 `turnStart: observed`；若为
-`unsupported`、`unobserved` 或缺失，读取[启动与恢复参考](worker-start-and-recovery.md)
-并用该 agent 实际支持的证据确认开始。Orca 允许无终端 worker，先看 `worker-show` 的句柄，
-不能对无终端 worker 强行使用 `terminal show`。无法证实时按 §9 取证，不进入盲等。
+`state: ready` 仅表示 Dispatch 就绪。回执的 `turnStart: observed` **就是**启动证据：接受它，
+直接进入等待——下面的取证步骤是给无法携带它的回执用的。当它为 `unsupported`、`unobserved`
+或缺失时，读取[启动与恢复参考](worker-start-and-recovery.md) 并用该 agent 实际支持的证据确认开始。
+Orca 允许无终端 worker，先看 `worker-show` 的句柄，不能对无终端 worker 强行使用 `terminal show`。
+空闲标题没变化也不是判决：只有在屏幕显示完整 preamble 停在输入框且没有正在跑的 turn 时，
+才允许补一次裸 Enter。无法证实时按 §9 取证，不进入盲等。这一步的清单形式见
+[派活前检查](dispatch-preflight.md) §4.0.2。
 
 ### 4.3.2 长程派活（一张票图一个 worker）
 
