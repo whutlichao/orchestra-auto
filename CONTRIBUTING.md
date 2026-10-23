@@ -55,7 +55,11 @@ the tests exist, and a change that weakens one needs a very good argument:
 - only a batch whose **every** message is a heartbeat is auto-acknowledged — normal and mixed
   batches are left for the coordinator;
 - a CLI error exits non-zero and is reported, and is never reinterpreted as an empty queue;
-- one consumer per state directory, enforced by a file lock.
+- one consumer per state directory, enforced by a file lock;
+- a CLI child never outlives the call that owns it: an exception, a wake or a signal reaps every
+  process the loop started. A survivor keeps its CLI waiter slot, so the next install fails while
+  the Run still looks watched — which is why cleanup walks every child rather than only the
+  innermost one, and why nothing outside the loop's own children is ever signalled.
 
 The script also owns the wake contract, because a file on disk cannot start a coordinator turn:
 it **ends the process** and prints one machine-readable line on stdout when a newly persisted
@@ -85,8 +89,11 @@ every install would spin instead of waiting for the next message.
 Keep them **machine-independent**. A scenario must not contain a home-directory path, a private
 repository or ticket name, a specific host's settings snapshot, or a claim that a test was run when
 it was not. A scenario may test the *reasoning* (read the live setting; do not guess) without
-baking in a value. The `_note` field states that these are prompt-level checks, not end-to-end
-proof — keep that accurate.
+baking in a value. When a scenario needs a filesystem path — a pre-skill's absolute path, say —
+supply a self-contained fixture (`SKILLS_ROOT` / `PRE_SKILL`) and assert against that fixture, so
+the model never has to invent a real machine path and a genuine path requirement still gets tested.
+The `_note` field states that these are prompt-level checks, not end-to-end proof — keep that
+accurate.
 
 ## Disclosure discipline
 

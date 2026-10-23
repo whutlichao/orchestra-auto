@@ -207,14 +207,19 @@ python3 -m unittest discover -s tests -v
   the single-consumer lock. It also pins the wake contract — a newly persisted non-heartbeat batch
   ends the process with one parseable line on stdout, a heartbeat-only batch does not, and a worker
   state change does — plus the native `check --wait` path, its stderr keepalives, and the reinstall
-  after a timeout.
+  after a timeout. It also pins process lifetime: a CLI child never outlives the call that owns it,
+  so a failing worker-state probe or a signal that lands during a nested call reaps every child the
+  loop started instead of leaving one holding a waiter slot.
 - `tests/test_package_content.py` checks the package itself: parity between the two language
   variants, frontmatter validity with `name` matching the directory, every relative link resolving,
   every shipped reference being reachable and declaring its trigger, eval JSON shape and uniqueness,
   the `eval.yaml` allowlist, `py_compile` on the Python, `bash -n` on the shell wrapper, the MIT
-  licence, and the leak scan.
+  licence, and the leak scan. A prose-contract suite pins the decisions the documents used to
+  get wrong: the three dispatch checkpoints and which of them can block a dispatch, the four
+  frontier states, the four acceptance levels, one authoritative Merge Danger definition, the
+  start-verification scenarios and the real eval count in this README.
 
-The recorded result is **79 OK (1 skipped)**. This is the primary structural and behavioral gate.
+The recorded result is **90 OK (1 skipped)**. This is the primary structural and behavioral gate.
 
 Individual check commands, if you want them directly:
 
@@ -280,10 +285,12 @@ Two manual checks belong beside it, and neither can be automated from inside the
 
 ## Evals
 
-Each language variant ships an `evals/evals.json` with 20 prompt-level scenarios covering channel
-routing, worker-slot resolution, start verification, gate choice, review arrangement, send-back
+Each language variant ships an `evals/evals.json` with 29 prompt-level scenarios covering channel
+routing, worker-slot resolution, start verification (including `turnStart: observed`, an
+unsupported receipt, and a worker with no terminal), gate choice, review arrangement, send-back
 judgement, decision classification, escalation, the merge exceptions and the wake-then-reinstall
-contract.
+contract. A scenario that needs a filesystem path supplies a self-contained `SKILLS_ROOT` /
+`PRE_SKILL` fixture, so no scenario asks the model to invent a real machine path.
 
 These are **scenario checks, not end-to-end proof**: they show whether an agent that has read the
 skill reasons the way the skill intends. They do not prove that orchestration works against a live

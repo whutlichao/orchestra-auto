@@ -442,6 +442,335 @@ class ReferenceIntegrityTests(unittest.TestCase):
                 )
 
 
+def squash(text):
+    """Collapse whitespace so an assertion survives re-wrapping."""
+    return " ".join(text.split())
+
+
+def markdown_sections(text):
+    """Split Markdown into ``(heading, body)`` pairs, ignoring '#' inside fenced code."""
+    sections, current, fenced = [], None, False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        if not fenced and line.startswith("#"):
+            current = (line, [])
+            sections.append(current)
+        elif current is not None:
+            current[1].append(line)
+    return [(heading, "\n".join(body)) for heading, body in sections]
+
+
+def find_section(sections, prefix, where):
+    """Return the heading and body of the section whose title starts with ``prefix``."""
+    for heading, body in sections:
+        if heading.lstrip("# ").startswith(prefix):
+            return heading + "\n" + body
+    raise AssertionError(f"{where}: no section starts with {prefix!r}")
+
+
+class ContractRegressionTests(unittest.TestCase):
+    """Regressions that live in the prose, pinned where the reader meets them.
+
+    Every case here guards a *decision* the documents used to get wrong: which section owns a
+    fact, how many states a frontier has, which level of completion a merge may claim, who is
+    allowed to re-run setup. Asserting that a sentence exists would be the weak version of
+    this; where the defect was structural (a fact in the wrong section, a rule duplicated so
+    the copies could drift), the check is structural too.
+    """
+
+    def corpus(self, name):
+        """Return the entrypoint and the reference files of one language variant."""
+        directory = REPO_ROOT / "skills" / name
+        entrypoint = (directory / "SKILL.md").read_text()
+        references = {path.name: path.read_text() for path in (directory / "references").glob("*.md")}
+        return entrypoint, references
+
+    def test_entrypoints_accept_an_observed_start_and_drop_the_duplicate(self):
+        """Both entrypoints must state the same start rule, not one rule each.
+
+        The review caught the Chinese entrypoint keeping the duplicated
+        "`state: ready` ≠ `turnStart`" line after the English one had replaced it with the
+        `observed` rule: two texts carrying two rules is exactly the drift this repository
+        forbids, and it is the same class of defect as the pre-skill mapping item 5 removed.
+        """
+        expectations = {
+            "orchestra-auto": "start evidence",
+            "orchestra-auto-zh": "启动证据",
+        }
+        for name, evidence in expectations.items():
+            entrypoint, references = self.corpus(name)
+            self.assertIn(evidence, squash(entrypoint),
+                          f"{name}: the entrypoint must accept an observed start as evidence")
+            self.assertIn(evidence, squash(references["dispatch-loop.md"]),
+                          f"{name}: the dispatch loop lost the observed-start rule")
+            self.assertNotIn("`state: ready` ≠ `turnStart`", entrypoint,
+                             f"{name}: the duplicated ready rule came back")
+
+    def test_dispatch_preflight_separates_the_three_checkpoints(self):
+        """A pre-dispatch fact and a post-dispatch fact must not share one gate.
+
+        The defect: one tick sheet listed "the turn really started" and "the worker's first
+        report proves isolation" next to "the spec has a test tier". Neither of the first two
+        can be observed before the Dispatch exists, so "not every line is green" read as "do
+        not dispatch".
+        """
+        expectations = {
+            "orchestra-auto": {
+                "verdict": "Only §4.0.1 can block a dispatch",
+                "isolation": "isolated worktree",
+                "missing_worker": "do not exist before the Dispatch does",
+                "teardown": "formatter",
+                "exemption": ("bounded blast radius", "spec and the Answer"),
+            },
+            "orchestra-auto-zh": {
+                "verdict": "只有 §4.0.1 能阻止派活",
+                "isolation": "隔离 worktree",
+                "missing_worker": "Dispatch 存在之前",
+                "teardown": "重排",
+                "exemption": ("影响面可圈定", "spec 与 Answer"),
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = references["dispatch-preflight.md"]
+            flat = squash(text)
+            self.assertIn(expected["verdict"], flat,
+                          f"{name}: the 'no dispatch' rule must name the checkpoint it scopes")
+            sections = markdown_sections(text)
+            before = find_section(sections, "4.0.1", name)
+            after = find_section(sections, "4.0.2", name)
+            teardown = find_section(sections, "4.0.3", name)
+            numbers = [heading.lstrip("# ").split()[0]
+                       for heading, _body in sections
+                       if heading.lstrip("# ").startswith("4.0.")]
+            self.assertEqual(numbers, ["4.0.1", "4.0.2", "4.0.3"],
+                             f"{name}: expected exactly the three ordered checkpoints, got {numbers}")
+            self.assertNotIn("turnStart", before,
+                             f"{name}: the turn-start check cannot be a pre-dispatch line")
+            self.assertIn("turnStart", after, f"{name}: the start check is missing after dispatch")
+            self.assertIn(expected["isolation"], after,
+                          f"{name}: the isolation proof belongs to the post-dispatch section")
+            self.assertIn(expected["missing_worker"], squash(after),
+                          f"{name}: the post-dispatch section must say why it is not a tick line")
+            self.assertIn(expected["teardown"], squash(teardown),
+                          f"{name}: the teardown section lost its formatter-noise check")
+            for phrase in expected["exemption"]:
+                self.assertIn(phrase, squash(before),
+                              f"{name}: the review exemption lost its condition {phrase!r}")
+
+    def test_wayfinder_frontier_is_not_completion(self):
+        """An empty frontier has three causes; only one of them finishes the stage."""
+        expectations = {
+            "orchestra-auto": {
+                "states": ("takeable", "in progress", "blocked", "done"),
+                "causes": "every ticket assigned, every remaining ticket blocked, or the",
+                "not_done": "the frontier is empty but tickets are in progress or blocked",
+                "forbidden": "An empty frontier is this stage's endpoint",
+            },
+            "orchestra-auto-zh": {
+                "states": ("可领取", "处理中", "阻塞", "完成"),
+                "causes": "全部票已分配",
+                "not_done": "frontier 为空但有票在「处理中」或「阻塞」",
+                "forbidden": "frontier 为空才是这一阶段的终点",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["gates-docs-planning.md"])
+            for state in expected["states"]:
+                self.assertIn(state, text, f"{name}: the frontier states are incomplete: {state!r}")
+            self.assertIn(expected["causes"], text,
+                          f"{name}: the doc must name the other causes of an empty frontier")
+            self.assertIn(expected["not_done"], text,
+                          f"{name}: an empty frontier with unfinished tickets must not pass")
+            self.assertNotIn(expected["forbidden"], text,
+                             f"{name}: an empty frontier must not be the stage's endpoint")
+
+    def test_long_horizon_acceptance_separates_the_four_levels(self):
+        """Implemented, integrated, merged and tracker-closed are four different claims."""
+        expectations = {
+            "orchestra-auto": {
+                "levels": ("**Ticket implementation complete**", "**Integration accepted**",
+                           "**PR merged**", "**Tickets closed per tracker**"),
+                "no_premerge_closure": "requiring every ticket to be closed before the merge",
+                "no_false_close": "reporting a ticket as closed while the PR is only open",
+                "reconcile": "Reconcile the tickets against the tracker after the merge",
+            },
+            "orchestra-auto-zh": {
+                "levels": ("**票实施完成**", "**集成已验收**", "**PR 已合并**", "**票据按 tracker 关闭**"),
+                "no_premerge_closure": "合并前所有票都必须关闭",
+                "no_false_close": "PR 还开着就报告票已关闭",
+                "reconcile": "合并后按 tracker 对账",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            long_horizon = squash(references["long-horizon-tickets.md"])
+            for level in expected["levels"]:
+                self.assertIn(level, long_horizon, f"{name}: missing acceptance level {level!r}")
+            self.assertIn(expected["no_premerge_closure"], long_horizon,
+                          f"{name}: closing every ticket before the merge must be rejected")
+            self.assertIn(expected["no_false_close"], long_horizon,
+                          f"{name}: a false close-out must be named as forbidden")
+            self.assertIn(expected["reconcile"], squash(references["gate-acceptance.md"]),
+                          f"{name}: the post-merge tracker reconciliation is missing")
+
+    def test_pre_skill_is_chosen_by_stage_not_by_channel(self):
+        """A stage chooses its pre-skill; the old channel-to-skill mapping must be gone."""
+        expectations = {
+            "orchestra-auto": {
+                "old_mapping": ("channel B is `implement`, channel C is `grill-with-docs`"),
+                "stages": ("`research`", "`to-tickets`", "`implement-spec`"),
+                "by_stage": "not by channel",
+                "missing": "Missing → report per §9",
+            },
+            "orchestra-auto-zh": {
+                "old_mapping": ("B 通道是 `implement`，C 通道是 `grill-with-docs`"),
+                "stages": ("`research`", "`to-tickets`", "`implement-spec`"),
+                "by_stage": "按阶段与票型选",
+                "missing": "按 §9 带证据报告",
+            },
+        }
+        for name, expected in expectations.items():
+            entrypoint, references = self.corpus(name)
+            everything = squash("\n".join([entrypoint, *references.values()]))
+            self.assertNotIn(expected["old_mapping"], everything,
+                             f"{name}: the fixed channel-to-skill mapping is still published")
+            loop = squash(references["dispatch-loop.md"])
+            self.assertIn(expected["by_stage"], loop,
+                          f"{name}: the stage-based rule is missing from the dispatch loop")
+            for stage in expected["stages"]:
+                self.assertIn(stage, loop, f"{name}: the stage table is missing {stage!r}")
+            self.assertIn(expected["missing"], loop,
+                          f"{name}: a missing skill must be reported, not invented or installed")
+
+    def test_failed_dispatch_is_classified_before_acting(self):
+        """Zero-output setup evidence is a signal to investigate, not proof of a transient fault."""
+        expectations = {
+            "orchestra-auto": {
+                "classes": ("Transient infrastructure", "Setup fault",
+                            "Isolation / placement fault", "Artifact already present",
+                            "Authority / configuration fault"),
+                "not_proof": "does **not** by itself prove",
+                "setup": ("**Idempotent**", "**Authorized**", "**Side-effect aware**"),
+                "executor": "**Who executes it**",
+                "protection": "Reconcile any uncommitted work",
+                "old_unconditional": "It passes ⇒ **transient**",
+            },
+            "orchestra-auto-zh": {
+                "classes": ("瞬态基础设施", "setup 故障", "隔离/落点故障", "产物已存在",
+                            "权限/配置故障"),
+                "not_proof": "它本身**不**证明",
+                "setup": ("**幂等**", "**授权**", "**副作用已知**"),
+                "executor": "**谁执行**",
+                "protection": "任何未提交工作先对账",
+                "old_unconditional": "不是配置问题，可以安全重派",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["failed-dispatch-recovery.md"])
+            for label in expected["classes"]:
+                self.assertIn(label, text, f"{name}: missing failure class {label!r}")
+            self.assertIn(expected["not_proof"], text,
+                          f"{name}: the zero-output combination must stop claiming to be proof")
+            for condition in expected["setup"]:
+                self.assertIn(condition, text, f"{name}: the setup re-run condition {condition!r} is missing")
+            self.assertIn(expected["executor"], text,
+                          f"{name}: the doc must say who runs setup again")
+            self.assertIn(expected["protection"], text,
+                          f"{name}: existing artifacts must be protected before release")
+            self.assertNotIn(expected["old_unconditional"], text,
+                             f"{name}: the old unconditional 'safe to re-dispatch' claim came back")
+
+    def test_merge_danger_has_one_authoritative_definition(self):
+        """Two copies of the trigger list drift apart; one authority plus pointers does not."""
+        expectations = {
+            "orchestra-auto": {
+                "trigger": "major dependency upgrade",
+                "authority": "single authoritative definition",
+            },
+            "orchestra-auto-zh": {
+                "trigger": "主版本依赖升级",
+                "authority": "唯一权威定义",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            holders = [filename for filename, text in references.items()
+                       if expected["trigger"] in squash(text)]
+            self.assertEqual(holders, ["gate-acceptance.md"],
+                             f"{name}: the one-way trigger list must live only in gate-acceptance.md, "
+                             f"found in {holders}")
+            self.assertIn(expected["authority"], squash(references["gate-acceptance.md"]),
+                          f"{name}: the authoritative copy is not labelled as such")
+            self.assertIn("gate-acceptance.md", references["long-horizon-tickets.md"],
+                          f"{name}: the second copy was removed without leaving a pointer")
+
+    def test_readme_states_the_real_eval_count(self):
+        """A stale scenario count is a claim about coverage the package does not have."""
+        counts = {}
+        for name in SKILL_NAMES:
+            payload = json.loads((REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text())
+            counts[name] = len(payload["evals"])
+        english = (REPO_ROOT / "README.md").read_text()
+        chinese = (REPO_ROOT / "README.zh-CN.md").read_text()
+        self.assertIn(f"{counts['orchestra-auto']} prompt-level scenarios", english,
+                      "README.md must state the number of scenarios that actually ship")
+        self.assertIn(f"{counts['orchestra-auto-zh']} 个提示词层面的场景", chinese,
+                      "README.zh-CN.md must state the number of scenarios that actually ship")
+
+    def test_start_verification_scenarios_match_the_body(self):
+        """The scenarios must test the current rule, conditions included.
+
+        The old case demanded an idle-banner comparison as *the* recovery and read an unchanged
+        title as "the preamble is parked": that makes a blind Enter correct. The current rule
+        accepts `turnStart: observed`, needs real evidence for a receipt that cannot carry it,
+        reads a no-terminal worker through `worker-read`, and allows the Enter only on a
+        confirmed parked preamble with no turn running.
+        """
+        expectations = {
+            "orchestra-auto": {
+                "scenario": "unverified-start",
+                "assertions": ("start_enter_requires_preamble", "start_no_terminal_uses_worker_read",
+                               "start_idle_title_not_enough"),
+                "observed_scenario": "observed-start-is-evidence",
+                "body": ("complete preamble is parked in the composer", "no turn is currently"),
+                "fixture_paths": ("worker-named-by-user", "channel-routing",
+                                   "worker-slot-follows-setting-not-habit", "read-setting-before-declare"),
+            },
+            "orchestra-auto-zh": {
+                "scenario": "unverified-start",
+                "assertions": ("start_enter_requires_preamble", "start_no_terminal_uses_worker_read",
+                               "start_idle_title_not_enough"),
+                "observed_scenario": "observed-start-is-evidence",
+                "body": ("完整 preamble 停在输入框", "当前未运行 turn"),
+                "fixture_paths": ("worker-named-by-user", "channel-routing",
+                                   "worker-slot-follows-setting-not-habit", "read-setting-before-declare"),
+            },
+        }
+        for name, expected in expectations.items():
+            payload = json.loads((REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text())
+            scenarios = {entry["name"]: entry for entry in payload["evals"]}
+            assertions = {assertion["name"] for assertion in scenarios[expected["scenario"]]["assertions"]}
+            for assertion in expected["assertions"]:
+                self.assertIn(assertion, assertions,
+                              f"{name}: {expected['scenario']} lost the assertion {assertion!r}")
+            self.assertIn(expected["observed_scenario"], scenarios,
+                          f"{name}: a scenario accepting `turnStart: observed` is missing")
+            _entrypoint, references = self.corpus(name)
+            body = squash(references["worker-start-and-recovery.md"])
+            for phrase in expected["body"]:
+                self.assertIn(phrase, body, f"{name}: the start rule lost {phrase!r}")
+            for scenario_name in expected["fixture_paths"]:
+                prompt = scenarios[scenario_name]["prompt"]
+                self.assertIn("PRE_SKILL=", prompt,
+                              f"{name}: {scenario_name} demands a path without supplying a fixture")
+                self.assertIn("<skills-root>/implement/SKILL.md", prompt,
+                              f"{name}: {scenario_name} has no self-contained pre-skill fixture")
+
+
 class EvalMetadataTests(unittest.TestCase):
     def test_eval_files_parse_and_use_the_expected_shape(self):
         for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
