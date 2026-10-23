@@ -11,7 +11,10 @@ Four safety guarantees must survive every change to this file:
   carries no decision; any other batch is left for the coordinator to handle and
   acknowledge itself;
 * a CLI failure, a JSON error or a lost binding is reported as an error and exits
-  non-zero. It is never reinterpreted as "the queue was empty".
+  non-zero. It is never reinterpreted as "the queue was empty";
+* a CLI child never outlives the call that owns it. An exception from the worker-state probe,
+  a wake, or a signal reaps every process this loop started, because a survivor keeps its
+  waiter slot: the next install then fails while the Run still looks watched.
 
 On top of them this process owns the wake contract, because a file on disk cannot start a
 coordinator turn by itself — only the end of a command the harness surfaces can:
@@ -47,7 +50,18 @@ import uuid
 from pathlib import Path
 
 CLI = os.environ.get("ORCA_CLI_COMMAND", "orca")
+
+#: The child the signal handler names first — always the innermost CLI call.
 CHILD = None
+
+#: Every child this process started and has not reaped yet. ``CHILD`` alone cannot serve
+#: cleanup: a nested call restores the previous registration on its way out, so the outer
+#: waiter is no longer in the slot when the exception or the signal arrives. Nothing outside
+#: this list is ever signalled, which is what keeps cleanup off unrelated processes.
+LIVE_CHILDREN = []
+
+#: Set by the signal handler, so a child spawned just before the signal is still reaped.
+STOPPING = False
 
 #: The wake condition handed to a blocking ``check --wait``. It decides when the wait
 #: returns; the returned Delivery is always the whole FIFO batch, so it is never filtered.
@@ -160,29 +174,68 @@ def parse_cli_result(code, raw, problem):
 
 @contextlib.contextmanager
 def cli_streams(directory, command, suffix):
-    """Run a CLI child with its streams in files, and clean up after it.
+    """Run a CLI child with its streams in files, and reap it on every exit path.
 
     Streams go to files rather than pipes so a CLI that keeps the connection alive cannot
     fill a pipe buffer and wedge the loop. Yields ``(child, output, error)``: the caller
     decides how to wait — a bounded wait, or the supervised block ``check`` needs — and
     reads the two paths once the child has exited. The child is published as ``CHILD`` so
-    the signal handler reaps it, and the previous registration is restored afterwards so a
-    short call nested inside a long ``check --wait`` cannot hide the waiter from it.
+    the signal handler reaps it, and registered in ``LIVE_CHILDREN`` so cleanup also finds
+    the children a nested call left behind. The previous registration is restored afterwards
+    so a short call nested inside a long ``check --wait`` cannot hide the waiter from it.
+
+    The child is reaped here, not by the caller, because the caller's ``finally`` does not run
+    when a probe raises: the blocked waiter would survive the very call that was supposed to
+    end it, and keep the CLI waiter slot that the next install needs.
     """
     global CHILD
     previous = CHILD
     token = uuid.uuid4().hex
     output = directory / (token + suffix + ".stdout.tmp")
     error = directory / (token + suffix + ".stderr.tmp")
+    child = None
     try:
         with output.open("w") as out, error.open("w") as err:
             child = subprocess.Popen(command, stdout=out, stderr=err)
+            # Registration happens before anything else can raise, so every exit path can
+            # reach this child — including the signal that interrupted the spawn.
+            LIVE_CHILDREN.append(child)
             CHILD = child
+            if STOPPING:
+                # The handler ran between the spawn and this line and could not see the
+                # child yet; the exit path takes over here instead.
+                raise SystemExit(0)
             yield child, output, error
     finally:
+        reap(child)
+        if child in LIVE_CHILDREN:
+            LIVE_CHILDREN.remove(child)
         CHILD = previous
         output.unlink(missing_ok=True)
         error.unlink(missing_ok=True)
+
+
+def reap(child):
+    """Terminate and reap one child this process started, if it is still running.
+
+    A wake ends the process, so nothing may hold a CLI waiter slot after it: a child left
+    behind outlives the call that owned it and makes the next install fail while the Run
+    still looks watched. Only a child of ours is ever signalled.
+    """
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+
+
+def reap_all():
+    """Reap every child this process is still responsible for."""
+    for child in list(LIVE_CHILDREN):
+        reap(child)
 
 
 def cli_run(directory, command, label, timeout=CLI_TIMEOUT_SECONDS):
@@ -207,8 +260,8 @@ def supervise(child, timeout, watch):
     held by a process that is about to end.
     """
     deadline = time.monotonic() + timeout
-    interval, watch_probe = watch if watch else (None, None)
-    next_poll = time.monotonic() + (interval or 0.0)
+    interval, watch_probe = watch if watch else (0.0, None)
+    next_poll = time.monotonic() + interval
     while child.poll() is None:
         now = time.monotonic()
         if now >= deadline:
@@ -429,14 +482,14 @@ def locked(directory):
 
 
 def stop(signum, frame):
-    """Reap the CLI child before exiting so no orphan keeps a waiter slot."""
-    if CHILD is not None and CHILD.poll() is None:
-        CHILD.terminate()
-        try:
-            CHILD.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            CHILD.kill()
-            CHILD.wait()
+    """Reap every CLI child this process owns before exiting so none keeps a waiter slot.
+
+    A signal usually arrives while a nested ``worker-list`` holds ``CHILD``; walking the whole
+    list is what also ends the long ``check --wait`` around it.
+    """
+    global STOPPING
+    STOPPING = True
+    reap_all()
     raise SystemExit(0)
 
 

@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -111,6 +112,39 @@ sys.stdout.write(json.dumps(response))
 sys.exit(0)
 '''
 
+# A second stub, for the process-lifecycle tests: every call records the child's own pid, a
+# ``check --wait`` blocks for ``CHECK_SLEEP`` seconds, and ``worker-list`` blocks while a
+# marker file the test creates exists. That marker is what lets a test hold a waiter and a
+# nested poll open at the same moment, which is the only state in which the leak is visible.
+BLOCKING_SHIM_TEMPLATE = '''#!__PYTHON__
+import json, os, sys, time
+
+PIDS = "__PIDS__"
+CALLS = "__CALLS__"
+MARKER = "__MARKER__"
+argv = sys.argv[1:]
+
+with open(PIDS, "a") as out:
+    out.write(str(os.getpid()) + "\\n")
+with open(CALLS, "a") as out:
+    out.write(" ".join(argv) + "\\n")
+
+if argv[:2] == ["orchestration", "worker-list"]:
+    if os.path.exists(MARKER):
+        time.sleep(__WORKER_SLEEP__)
+    sys.stdout.write(json.dumps({"ok": True, "result": {"workers": []}}))
+    sys.exit(0)
+
+if argv[:3] != __CHECK_PREFIX__:
+    sys.stderr.write("unexpected command: " + " ".join(argv))
+    sys.exit(2)
+
+if "--wait" in argv:
+    time.sleep(__CHECK_SLEEP__)
+sys.stdout.write(json.dumps({"ok": True, "result": {"messages": []}}))
+sys.exit(0)
+'''
+
 
 def load_inbox_module(skill_dir):
     """Import a skill's inbox-loop.py by path, without touching sys.path."""
@@ -123,6 +157,23 @@ def load_inbox_module(skill_dir):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_inbox_module_with_cli(skill_dir, command):
+    """Import the script with ``ORCA_CLI_COMMAND`` set, as the loop really resolves its CLI.
+
+    The module reads the variable once, at import time, so pointing it at a stub here is the
+    same configuration path an installed loop uses — no private attribute is patched.
+    """
+    previous = os.environ.get("ORCA_CLI_COMMAND")
+    os.environ["ORCA_CLI_COMMAND"] = str(command)
+    try:
+        return load_inbox_module(skill_dir)
+    finally:
+        if previous is None:
+            os.environ.pop("ORCA_CLI_COMMAND", None)
+        else:
+            os.environ["ORCA_CLI_COMMAND"] = previous
 
 
 class FakeOrca:
@@ -253,6 +304,35 @@ def stop_loop(process):
     with contextlib.suppress(subprocess.TimeoutExpired, ValueError):
         return drain(process, timeout=5)
     return getattr(process, "inbox_stdout", "")
+
+
+def process_alive(pid):
+    """True only while ``pid`` is a live, non-zombie process.
+
+    ``os.kill(pid, 0)`` also succeeds for a zombie, and a child the parent never reaped stays
+    a zombie — which is exactly the leak under test. Asking ``ps`` for the state is what tells
+    "still running" from "killed but never reaped".
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    state = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True,
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def wait_until_gone(pid, timeout=10.0):
+    """Wait for ``pid`` to stop being a live process; return whether it did."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not process_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not process_alive(pid)
 
 
 def wake_of(process, timeout=30):
@@ -695,6 +775,171 @@ class SingleInstanceTests(InboxLoopCase):
             self.assertEqual(json.loads(result.stdout)["reason"], "error")
         finally:
             self.stop(process)
+
+
+class BlockingCli:
+    """A stub CLI whose ``check --wait`` blocks and whose ``worker-list`` can be made to block.
+
+    Every invocation appends its own pid and its argv, so a test can tell which child is
+    still running at the moment it intervenes. ``worker-list`` blocks only while ``marker``
+    exists, which lets the test choose the exact read that is in flight.
+    """
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.path = self.directory / "orca"
+        self.pids_file = self.directory / "pids.txt"
+        self.calls_file = self.directory / "calls.txt"
+        self.marker = self.directory / "slow-worker-list"
+
+    def write(self, check_sleep=30, worker_sleep=10):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        shim = (BLOCKING_SHIM_TEMPLATE
+                .replace("__PYTHON__", sys.executable)
+                .replace("__PIDS__", str(self.pids_file))
+                .replace("__CALLS__", str(self.calls_file))
+                .replace("__MARKER__", str(self.marker))
+                .replace("__WORKER_SLEEP__", str(worker_sleep))
+                .replace("__CHECK_SLEEP__", str(check_sleep))
+                .replace("__CHECK_PREFIX__", CHECK_PREFIX))
+        self.path.write_text(shim)
+        self.path.chmod(self.path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return self
+
+    def pids(self):
+        if not self.pids_file.exists():
+            return []
+        return [int(line) for line in self.pids_file.read_text().split() if line]
+
+    def calls(self):
+        if not self.calls_file.exists():
+            return []
+        return [line for line in self.calls_file.read_text().splitlines() if line]
+
+    def block_worker_list(self):
+        self.marker.write_text("")
+
+
+class ChildProcessCleanupTests(unittest.TestCase):
+    """A CLI child must never outlive the call that owns it.
+
+    The defect these cases pin: ``cli_streams`` restored the ``CHILD`` slot and deleted the
+    stream files but left the child running, so an exception raised by the worker-state probe
+    (or a signal that arrived while a nested ``worker-list`` held the slot) left the blocked
+    ``check --wait`` process behind. That process keeps its CLI waiter slot, so the next
+    install fails and the Run looks watched while nothing is watching it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.cli = BlockingCli(self.tmp / "fake-blocking").write()
+        # Registered after the rmtree cleanup, so it runs first (LIFO): a case that fails its
+        # assertion must still reap the stub children it started, rather than leaving them to
+        # sleep out their 30-second block.
+        self.addCleanup(self.reap_stub_children)
+
+    def reap_stub_children(self):
+        """Terminate and reap every stub child this case started."""
+        for pid in self.cli.pids():
+            if process_alive(pid):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGTERM)
+        for pid in self.cli.pids():
+            wait_until_gone(pid, timeout=5)
+
+    def wait_for(self, predicate, timeout=20.0, what="condition"):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        self.fail(f"timed out waiting for {what}")
+
+    def test_a_failing_probe_reaps_the_blocked_wait(self):
+        """The reproduced defect: the probe raises, and the waiter must not survive the call."""
+        module = load_inbox_module_with_cli(SKILL_DIRS[0], self.cli.path)
+
+        def probe():
+            raise RuntimeError("worker-list failed while the wait was in flight")
+
+        with self.assertRaises(RuntimeError):
+            module.check(self.tmp, "run_test", "term_coordinator",
+                         ["--wait", "--types", "worker_done", "--timeout-ms", "30000"],
+                         timeout=30, watch=(0.5, probe))
+        child_pid = json.loads((self.tmp / "state.json").read_text())["childPid"]
+        self.assertIn(child_pid, self.cli.pids(),
+                      "state.json must name the child that was actually started")
+        self.assertTrue(wait_until_gone(child_pid),
+                        "the blocked check --wait child survived the probe failure")
+        self.assertIsNone(module.CHILD, "the CHILD slot must not keep a dead call")
+
+    def test_a_nested_cli_call_does_not_hide_the_wait_from_cleanup(self):
+        """The probe starts a nested ``worker-list``; both children must be reaped on failure.
+
+        ``cli_streams`` restores the previous registration on the way out, so a nested call
+        leaves the outer waiter in the slot of nothing: cleanup has to walk every child the
+        process started, not only the innermost one.
+        """
+        module = load_inbox_module_with_cli(SKILL_DIRS[0], self.cli.path)
+        nested = {}
+
+        def probe():
+            nested["signature"] = module.worker_signature(self.tmp, "run_test")
+            raise RuntimeError("probe failed after the nested call returned")
+
+        with self.assertRaises(RuntimeError):
+            module.check(self.tmp, "run_test", "term_coordinator",
+                         ["--wait", "--types", "worker_done", "--timeout-ms", "30000"],
+                         timeout=30, watch=(0.5, probe))
+        self.assertEqual(nested["signature"], "")
+        child_pid = json.loads((self.tmp / "state.json").read_text())["childPid"]
+        self.assertIn(child_pid, self.cli.pids(),
+                      "the outer wait was never started by the stub")
+        self.assertEqual(len(self.cli.pids()), 2,
+                         "expected the wait and the nested worker-list")
+        for pid in self.cli.pids():
+            self.assertTrue(wait_until_gone(pid), f"child {pid} survived the failed call")
+        self.assertIsNone(module.CHILD)
+
+    def test_a_signal_during_a_nested_call_reaps_every_child(self):
+        """SIGTERM while a nested poll holds the slot must still end both processes.
+
+        This is the same defect on the exit path, and the one that actually bites: a leaked
+        waiter is invisible while the loop runs and fatal on the next install.
+        """
+        state = self.tmp / "state"
+        state.mkdir()
+        env = dict(os.environ)
+        env["ORCA_CLI_COMMAND"] = str(self.cli.path)
+        env["WAIT_TIMEOUT_MS"] = "30000"
+        env["WORKER_POLL_SECONDS"] = "0.1"
+        env["BACKOFF_SECONDS"] = "0"
+        process = subprocess.Popen(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE),
+             "run_test", str(state), "term_coordinator"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            self.wait_for(lambda: any(" --wait " in call for call in self.cli.calls()),
+                          what="the blocking wait to be installed")
+            before = len(self.cli.pids())
+            self.cli.block_worker_list()
+            self.wait_for(lambda: len(self.cli.pids()) > before,
+                          what="the nested poll to start and block")
+            process.terminate()
+            process.wait(timeout=20)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+        self.assertEqual(process.returncode, 0, "a signalled loop exits 0")
+        for pid in self.cli.pids():
+            self.assertTrue(wait_until_gone(pid), f"child {pid} survived SIGTERM")
 
 
 class BothLanguageVariantsTests(unittest.TestCase):
