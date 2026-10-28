@@ -373,6 +373,15 @@ events. Delivery booleans remain independent; no predecessor success is inferred
 switching, filters, expanded details and graph scroll survive refresh. See the reference for exact
 chart definitions and optional browser checks.
 
+The screenshots below are a local **DEMO** run: a new state directory served on `127.0.0.1`,
+illustrative demo data only — no real repository or personal paths — and the page labels itself
+**DEMO**. Task titles come from that dataset (Chinese); the interface switches between Chinese and
+English. The commands further down reproduce it.
+
+![DEMO progress console in English: header, Run overview, attention items, task counts with a donut chart and the reference flow](docs/demo/progress-console-overview-en.png)
+
+![DEMO progress console in English: dependency graph, and the Tasks & workers panel showing nested workers with verification and self-report badges](docs/demo/progress-console-detail-en.png)
+
 Choose a persistent `AUDIT_ROOT` outside every repository. **DEMO and REAL use separate new directories.**
 From this repository (or adjust script paths to your installed bundle), a reproducible offline demo is:
 
