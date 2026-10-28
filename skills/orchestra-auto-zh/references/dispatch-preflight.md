@@ -36,8 +36,7 @@ sqlite3 -readonly "$STATE_DB" \
 先依据当前 CLI help 与 Orca guide 核对 profile-state schema；仍无法确认时停止并报告，不能回退到
 `orca-data.json`、过期导出、快照、备份、本 skill 文本、eval 夹具或旧日志。
 
-用户点名 agent 时优先使用点名值，否则使用实时默认值；两种情况都核对实时禁用列表，并确认 `worker-start --help` 能识别所选 agent。
-若被禁用、不受支持或设置不可读，停止派活。
+用户点名 agent 时优先使用点名值，否则使用实时默认值；两种情况都核对实时禁用列表，并查当前 `worker-start --help` 的 agent 契约。help 中的「such as」示例不是穷举：未列出不等于不受支持。若有当前版本权威的完整列表，按该列表核对；否则将已选且未禁用的值原样显式传给 `worker-start`，由 Orca 校验。若明确证实被禁用或不受支持，或设置不可读，停止派活。若启动回执报 `agent_unconfigured` 或其他失败，按失败派活恢复流程取证，停止而不替换 agent 或盲目重试。
 
 ### 4.0.1 派活前 tick sheet（逐项打勾，未全绿不 dispatch）
 

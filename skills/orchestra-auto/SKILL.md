@@ -73,8 +73,8 @@ this round needs a worker.
 Read live Orca settings only when about to dispatch; record the default TUI agent and the disabled TUI agent list.
 A user-named agent wins, otherwise use the recorded default. A disabled agent, or a failed, missing or empty read, stops the run.
 Never infer settings from stale exports, this skill, or evals. `worker-start` requires an explicit
-`--agent`; `--agent` must be recognized by `worker-start --help` and be absent from the disabled
-list. Lookup steps: [dispatch preflight](references/dispatch-preflight.md).
+`--agent`; the selection must be absent from the disabled list. Help examples are not an exhaustive
+list of supported agents. Lookup steps: [dispatch preflight](references/dispatch-preflight.md).
 
 ```text
 mode orchestra-auto | channel <A|B|C> | intent <task type> | pre-skill <actual path / none> | worker <actual agent / none> | delivery endpoint <answer / report / merged project change / other endpoint the user named>
@@ -89,8 +89,8 @@ name is a slug you take at dispatch time; it is not part of the delivery endpoin
 missing or unrecognized; pass the selected value explicitly. More rationale and the full dispatch
 narrative: [dispatch loop](references/dispatch-loop.md).
 
-Before dispatch, confirm the selected agent is recognized and enabled; if not, report per §9 and
-stop rather than guessing or substituting. §4.3's table gives start/title criteria only, never
+Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be unsupported,
+report per §9 and stop rather than guessing or substituting. §4.3's table gives start/title criteria only, never
 defaults or disabled state.
 
 ## 1. Channel and delivery endpoint

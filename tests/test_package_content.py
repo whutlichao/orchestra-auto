@@ -289,14 +289,14 @@ class ReferenceIntegrityTests(unittest.TestCase):
                 "--agent",
                 "agent_unconfigured",
                 "`state: ready` is **not** `turnStart`",
-                "`--agent` must be recognized by `worker-start --help`",
+                "Help examples are not an exhaustive",
             ),
             "orchestra-auto-zh": (
                 "--worktree new-top-level",
                 "--agent",
                 "agent_unconfigured",
                 "`state: ready` **不是** `turnStart`",
-                "所选 `--agent` 必须被 `worker-start --help` 识别",
+                "帮助中的示例不是完整支持列表",
             ),
         }
         for name, required_phrases in expectations.items():
@@ -306,6 +306,16 @@ class ReferenceIntegrityTests(unittest.TestCase):
                     phrase, entrypoint,
                     f"{name}: SKILL.md is missing dispatch guardrail {phrase!r}",
                 )
+
+    def test_agent_help_examples_are_not_an_allowlist(self):
+        cases = {
+            "orchestra-auto": ("example list is not exhaustive", "let Orca validate it", "do not substitute"),
+            "orchestra-auto-zh": ("示例不是穷举", "由 Orca 校验", "不替换 agent"),
+        }
+        for name, phrases in cases.items():
+            preflight = (REPO_ROOT / "skills" / name / "references" / "dispatch-preflight.md").read_text()
+            for phrase in phrases:
+                self.assertIn(phrase, preflight, f"{name}: missing {phrase!r}")
 
     def test_behavior_rules_carry_all_five_escalation_triggers(self):
         """The spec template's escalation rule must list all five triggers in both languages.

@@ -43,8 +43,13 @@ guide for the profile-state schema; if it still cannot be confirmed, stop and re
 back to `orca-data.json`, stale exports, snapshots, backups, skill text, eval fixtures, or old logs.
 
 If the user named an agent, use it ahead of the default; otherwise use the live default. In either
-case, check the live disabled list and confirm the selected agent is recognized by
-`worker-start --help`. A disabled, unrecognized, or unreadable selection stops dispatch.
+case, check the live disabled list and the current `worker-start --help` agent contract. A “such as”
+example list is not exhaustive: omission does not establish lack of support. If an authoritative
+complete list exists for the current version, check it; otherwise pass the selected, enabled value
+unchanged as an explicit `--agent` and let Orca validate it. Stop before dispatch if the selection
+is known to be disabled or unsupported, or settings are unreadable. If the receipt reports
+`agent_unconfigured` or another failure, follow failed-dispatch recovery, stop, and do not substitute
+an agent or retry blindly.
 
 ### 4.0.1 Before dispatch — the tick sheet (tick every line; do not dispatch until all are green)
 

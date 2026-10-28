@@ -58,7 +58,7 @@ description: >-
 
 仅在即将派活时读取 Orca 实时设置，并记录默认 TUI agent 与禁用 TUI agent 列表。用户点名的 agent 优先于默认值；
 否则使用记录的默认值。所选 agent 若被禁用，或设置读取失败、缺项或为空，停止并报告。不得从过期导出、本 skill 或 eval 夹具推断设置。
-`worker-start` 必须显式传 `--agent`。所选 `--agent` 必须被 `worker-start --help` 识别且未禁用。查找步骤见[派活前检查](references/dispatch-preflight.md)。
+`worker-start` 必须显式传 `--agent`。所选 `--agent` 必须未禁用；帮助中的示例不是完整支持列表。查找步骤见[派活前检查](references/dispatch-preflight.md)。
 
 ```text
 模式 orchestra-auto | 通道 <A|B|C> | 意图 <任务类型> | 前置 skill <实际路径 / 无> | worker <实际 agent / 无> | 交付终点 <答复 / 报告 / 项目改动合并 / 用户明确指定的其他终点>
@@ -69,7 +69,7 @@ description: >-
 worktree 名派活时再取 slug。
 
 `worker-start` 不会查询本地默认值，缺少或无法识别 `--agent` 时会抛 `agent_unconfigured`，所以必须显式传入已选值。
-更多理由与完整派活叙述见 [派活闭环](references/dispatch-loop.md)。若所选 agent 不受支持或被禁用，按 §9 报告并停止，不猜测或替换。
+更多理由与完整派活叙述见 [派活闭环](references/dispatch-loop.md)。若明确证实所选 agent 不受支持或被禁用，按 §9 报告并停止，不猜测或替换。
 §4.3 的表只记录启动/标题判据，不代表默认值或禁用状态。
 
 ## 1. 通道与交付终点
