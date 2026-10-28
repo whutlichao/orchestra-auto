@@ -366,10 +366,12 @@ It shows dependencies, blocks, pending decisions, parent/child workers, evidence
 with separate last observation and effective progress timestamps, unknown/lost/stale labels and no
 estimated percentage. Recording errors warn and orchestration continues even if the viewer is down.
 
-The redesigned console adds count-based task charts with clickable filters, a reference workflow
-with explicit per-step evidence, and a scrollable actual-dependency graph. Delivery booleans remain
-independent; no predecessor success is inferred. Chinese/English switching and expanded details
-survive refresh. See the reference for exact chart definitions and optional browser checks.
+The console orders a Run overview, attention items (blocked, pending decisions, failed and lost
+records), count-based task charts with clickable filters, a static reference workflow with explicit
+per-step evidence, a scrollable actual-dependency graph, tasks and workers, delivery evidence and
+events. Delivery booleans remain independent; no predecessor success is inferred. Chinese/English
+switching, filters, expanded details and graph scroll survive refresh. See the reference for exact
+chart definitions and optional browser checks.
 
 Choose a persistent `AUDIT_ROOT` outside every repository. **DEMO and REAL use separate new directories.**
 From this repository (or adjust script paths to your installed bundle), a reproducible offline demo is:
