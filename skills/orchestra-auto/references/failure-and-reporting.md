@@ -35,6 +35,7 @@ a circuit breaker trips, or the Orca app restarts mid-run.
 - Follow the repository's language for design terminology; use deep-module vocabulary when
   architectural analysis needs it.
 
-Optional progress: when enabled, follow the checkpoint ownership table in
-[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
-structured task/dispatch/attempt reports; recording errors warn and never block this workflow.
+Progress dashboard: initialize and open it before the first dispatch of every actual Run, then follow
+the checkpoint ownership table in [progress dashboard](progress-dashboard.md) after the normal action.
+Record explicit facts and structured task/dispatch/attempt reports; recording errors warn and never
+block this workflow.

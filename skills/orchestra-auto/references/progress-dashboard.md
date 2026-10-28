@@ -1,40 +1,46 @@
-# Optional progress record and localhost dashboard
+# Progress record and localhost dashboard
 
-**When to read**: when the user wants observable Run/task/worker progress, a local dashboard,
-or a reproducible offline demonstration. Load this only on demand; it is not a dispatch prerequisite.
+**When to read**: before the first dispatch of every actual orchestration Run, and whenever you
+need to view progress or the reproducible offline demonstration.
 
 Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v1](#protocol-v1),
 [Workflow ownership](#workflow-ownership), [Recovery and boundaries](#recovery-and-boundaries).
 
 ## Operation
 
-This is an optional sidecar. The coordinator records observable facts after normal workflow actions.
+This is a non-blocking sidecar. The coordinator records observable facts after normal workflow actions.
 Neither recording nor viewing schedules workers, accepts work, polls Orca, consumes messages, or
 calls `check`, `ack`, or inbox commands. The existing unique inbox receiver remains authoritative.
 There is no dependency on a running web server. On a progress command failure, retain the warning
 and continue orchestration; do not turn a dashboard error into a dispatch failure.
 
-Run from the installed bundle, setting `PROGRESS` to its `scripts/progress.py`. Runtime dependency:
-Python 3 standard library on POSIX. Set `AUDIT_ROOT` to an existing persistent audit location
-**outside every repository**, and use one new child directory per Run. Never use a repository root,
-its descendants, an ancestor of the target repository, or a symlink. JSON may be passed as `--data`
-or `--data -` on stdin. No environment, credentials, raw messages, terminal output or arbitrary
-metadata are accepted as fields. Even allowed summaries must be manually sanitized; this is a
-field allowlist, not a secret detector. Evidence and artifact values are references, never file contents.
+Runtime dependency: Python 3 standard library on POSIX. Set `AUDIT_ROOT` to an existing persistent
+audit location **outside every repository**, and use one new child directory per Run. Never use a
+repository root, its descendants, an ancestor of the target repository, or a symlink. JSON may be
+passed as `--data` or `--data -` on stdin. No environment, credentials, raw messages, terminal
+output or arbitrary metadata are accepted as fields. Even allowed summaries must be manually
+sanitized; this is a field allowlist, not a secret detector. Evidence and artifact values are
+references, never file contents.
 
 ```bash
-PROGRESS=skills/orchestra-auto/scripts/progress.py
+PROGRESS=/path/to/orchestra-auto/scripts/progress.py
 STATE="$AUDIT_ROOT/run-example"
 python3 "$PROGRESS" --state "$STATE" init --event-id init-1 --effective --data \
   "{\"id\":\"run-example\",\"target_repo\":\"$PWD\",\"mode\":\"REAL\",\"phase\":\"implementation\",\"status\":\"active\"}" \
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
-python3 "$PROGRESS" --state "$STATE" serve --port 8765
+python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-Open **http://127.0.0.1:8765/**. The read-only page refreshes every three seconds; recording
-commands run in another terminal and work whether the server is up or down. Stop viewing with
-Ctrl-C; the snapshot remains. `show` prints the current snapshot without starting a server.
-`serve --port 0` selects and prints an available address. `--stale-seconds 300` controls freshness;
+Replace `PROGRESS` with the absolute path inside the currently installed copy of this skill. Before
+the first dispatch, run the init and open commands above with the real Run ID, a new audit directory
+outside the repository and the actual target repository; do not use the example ID or paths. `open`
+selects a free port, starts the read-only server in the background and attempts to open the default
+browser, printing its URL and PID as JSON; give the URL to the user. If the browser cannot open, tell
+the user to visit the printed URL manually. The page refreshes every three seconds; keep recording at
+the checkpoints below, and recording works whether or not the server is running. Leave the dashboard
+available to inspect the final state; stop it with `kill PID` on the printed PID, which leaves the
+snapshot intact. `show` prints the current snapshot without starting a server. `serve --port 0`
+selects and prints an available address. `--stale-seconds 300` controls freshness;
 unknown timestamps are unknown, old observations are stale, and a coordinator-recorded `lost`
 lifecycle is displayed independently. Fresh activity does not mean meaningful progress.
 
@@ -50,6 +56,8 @@ facts. The demo refuses any existing directory and cannot overwrite a real run. 
 calls and needs no credentials. It includes normal work, dependency blocking, waiting for a human,
 review rejection, nested workers, a lost worker and independent delivery facts. Use
 `serve --stale-seconds 0` to demonstrate stale observations. Never present demo references as tests run.
+This demo and any other on-demand viewing start an explicit `serve`, which prints its address but
+does not open a browser; automatic opening (`open`) is only for the first dispatch of a REAL Run.
 
 ## Reading the visual dashboard
 
@@ -183,7 +191,7 @@ or terminal output to infer state. Nested implementers explicitly report structu
 top-level worker, who forwards task ID, dispatch ID, attempt and parent worker ID to the coordinator;
 register parents first. Nested self reports remain self reports until coordinator verification.
 
-| Normal workflow checkpoint | Writer and optional progress record |
+| Normal workflow checkpoint | Writer and progress record |
 | --- | --- |
 | Run start | Coordinator: `init` REAL with target, stage/status; `task` for titles, dependencies and known blocks |
 | Dispatch receipt | Coordinator: register `worker` with task/dispatch/attempt/worktree/parent, `dispatched`, start unknown/unobserved; record dispatch evidence event |

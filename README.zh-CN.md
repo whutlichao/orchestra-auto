@@ -175,7 +175,7 @@ skill。跑 `orca skills install --skill orchestra-auto` 会报 `Unknown skill`�
 | Orca CLI 可执行文件 | 按 Orca 文档的方式解析：`ORCA_CLI_COMMAND` → 平台二进制名 → `orca`。 |
 | Orca 的 `orchestration` 指南 | skill 要求 coordinator 用 `orca skills get orchestration` 取回它，并以**实时**指南为准，而不是以 skill 自己的叙述为准。 |
 | worker agent | 你的 Orca profile 已启用的那些 TUI agent。skill 读取当前默认值与当前禁用列表，而不是写死某一个。 |
-| Python 3 | 仅用于可选的内置收件循环（只用标准库：POSIX 文件锁，故限 macOS/Linux/WSL）。 |
+| Python 3 | 内置收件循环与首次派活前启动的进度记录/看板都会用到（只用标准库：POSIX 文件锁与 `select`，故限 macOS/Linux/WSL）。 |
 
 **能力边界。** 规划链是 Matt Pocock 的，本仓库不重新定义那些 skill 做什么。编排动词是 Orca 的。其中的判断——通道选择、门禁选择、
 决策分类——是可以迁移的，别的编排器也能借鉴；但*命令*不可移植，skill 也不会假装它可以。
@@ -323,13 +323,19 @@ tracker 靠 merge 关键字自动关票、刻意永不合并的探索性工作�
 
 [MIT](LICENSE)，版权 2026 whutlichao。欢迎贡献，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## 可选本地进度看板
+## 本地进度看板
 
-看板是可选只读旁路，仅依赖 Python 3 标准库，无数据库、外部服务或凭证。coordinator 显式记录
+看板是不阻塞编排的只读旁路，仅依赖 Python 3 标准库，无数据库、外部服务或凭证。coordinator 显式记录
 去敏 Run/task/worker 事实，不查询 Orca，不消费或 ack inbox。worker 自报与验证分开，
 implemented、integrated、merged、tracker_closed 四项独立，初始为未确认。
 页面展示依赖、阻塞、待用户决定、worker 父子、证据及时间线，分别显示最后观察与有效进展时间、
 unknown/lost/stale，不估算百分比。记录错误只警告，页面服务关闭也不阻断编排。
+
+**何时启动**：每个实际编排 Run 首次派活前，coordinator 在仓库外的新目录初始化 REAL 进度记录并执行
+`open`。`open` 自动选择空闲端口、后台启动只读服务、尝试打开默认浏览器，并以 JSON 输出 URL 与 PID。
+浏览器无法打开时给出警告，用户按输出的 URL 手动访问。启动或记录失败也只警告，Run 继续：看板从不阻断
+派活、问答、验收或唯一 inbox 接收器。纯问答和编辑本 skill 不启动。下方 DEMO 改用显式 `serve`，只打印
+地址、不打开浏览器。
 
 指挥台依次组织运行概览、关注事项（阻塞、待决、失败与失联）、可点击筛选的实际任务数量环图、
 逐项列明证据的静态参考流程、可滚动的真实依赖图、任务与 Worker、交付证据及事件。四项交付布尔值
@@ -351,18 +357,24 @@ python3 skills/orchestra-auto-zh/scripts/progress-demo.py --state "$AUDIT_ROOT/d
 python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/demo-example" serve --port 8766
 ```
 
-打开 **http://127.0.0.1:8766/**，页面明显标为 **DEMO**，每三秒刷新，demo 拒绝已存在目录。
-**REAL** 记录先初始化独立目录（`set -e` 下也安全继续）：
+打开 **http://127.0.0.1:8766/**，页面明显标为 **DEMO**，每三秒刷新，demo 拒绝已存在目录。该 DEMO
+与其他按需查看都用显式 `serve`：只打印地址，不打开浏览器。**REAL** 记录先初始化独立目录（`set -e`
+下也安全继续），再用 `open`——这是首次派活前的自动路径：
 
 ```bash
 python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-example" init \
   --event-id init-1 --data "{\"id\":\"run-example\",\"target_repo\":\"$PWD\",\"mode\":\"REAL\",\"status\":\"active\"}" \
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
-python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-example" serve --port 8765
+python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-example" open \
+  || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-打开 **http://127.0.0.1:8765/**，另一终端执行更新命令，Ctrl-C 仅停止查看。页面不提供 artifact
-文件正文；HTTP(S) 引用可点击，其他引用仅文本。本地访问可信，不要转发端口。只观察显式提交的事实，
-查询错误保留最后有效快照并显示错误横幅。
+`open` 输出 `{"url": ..., "pid": ..., "browser_opened": ...}`：把 URL 告知用户。`browser_opened`
+为 false 时提示用户手动访问该 URL。稍后停止后台看板用输出的 PID 执行 `kill PID`，快照保留。另一终端
+执行更新命令，服务未运行也可写入。`show` 不启动服务即可输出快照；`serve --port 8765` 仍是按需查看的
+显式前台服务。
+
+页面不提供 artifact 文件正文；HTTP(S) 引用可点击，其他引用仅文本。本地访问可信，不要转发端口。
+只观察显式提交的事实，查询错误保留最后有效快照并显示错误横幅。
 完整 JSON 命令、嵌套 task/dispatch/attempt 上报、警告后继续包装、恢复与派发/问答/验收/合并/
 tracker/收尾各节点责任见[协议与流程责任](skills/orchestra-auto-zh/references/progress-dashboard.md)。

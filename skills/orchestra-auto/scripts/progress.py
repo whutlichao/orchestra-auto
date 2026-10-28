@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional explicit progress recorder and localhost viewer; Python standard library only.
+"""Explicit progress recorder and localhost viewer; Python standard library only.
 
 No Orca commands, inbox access, scheduler actions, or file-content service.
 Protocol v1 is documented in references/progress-dashboard.md.
@@ -13,13 +13,17 @@ import json
 import os
 from pathlib import Path
 import re
+import select
+import subprocess
 import sys
 import tempfile
 import time
+import webbrowser
 from urllib.parse import urlsplit
 
 VERSION = 1
 ASSET = Path(__file__).with_name('progress.html')
+BANNER = 'Read-only progress: '
 FIELDS = {
     'init': {'id', 'target_repo', 'mode', 'phase', 'status', 'title'},
     'task': {'id', 'title', 'dependencies', 'status', 'blocked_reason', 'pending_decision'},
@@ -328,7 +332,7 @@ def serve(directory, port, stale_seconds):
             pass
 
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
-    print('Read-only progress: http://127.0.0.1:' + str(server.server_port) + '/', flush=True)
+    print(BANNER + 'http://127.0.0.1:' + str(server.server_port) + '/', flush=True)
     try:
         server.serve_forever()
     finally:
@@ -346,6 +350,7 @@ def main():
         item.add_argument('--source', choices=('coordinator', 'worker'), default='coordinator')
         item.add_argument('--effective', action='store_true', help='coordinator observed meaningful progress')
     sub.add_parser('show')
+    sub.add_parser('open', help='start a localhost viewer and open it in the browser')
     viewer = sub.add_parser('serve')
     viewer.add_argument('--port', type=int, default=8765)
     viewer.add_argument('--stale-seconds', type=int, default=300)
@@ -354,6 +359,31 @@ def main():
         directory = state_path(args.state)
         if args.command == 'show':
             print(json.dumps(view(directory, 300), ensure_ascii=False))
+        elif args.command == 'open':
+            read_state(directory)
+            child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), '--state', str(directory),
+                 'serve', '--port', '0'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, start_new_session=True)
+            ready, _, _ = select.select([child.stdout], [], [], 5)
+            line = child.stdout.readline().strip() if ready else ''
+            child.stdout.close()
+            if not line.startswith(BANNER):
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+                raise ValueError('dashboard server failed to start')
+            url = line[len(BANNER):]
+            try:
+                opened = webbrowser.open(url)
+            except Exception:
+                opened = False
+            print(json.dumps({'url': url, 'pid': child.pid, 'browser_opened': opened}))
+            if not opened:
+                print('Progress warning: open the printed URL manually', file=sys.stderr)
         elif args.command == 'serve':
             if args.stale_seconds < 0:
                 raise ValueError('stale-seconds must be nonnegative')

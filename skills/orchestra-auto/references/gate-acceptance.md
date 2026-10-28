@@ -148,6 +148,7 @@ When send-backs reach 5 across tickets, or there is no substantive progress for 
 stop dispatching and report the current state; wind down the remaining in-flight work safely
 using the available evidence.
 
-Optional progress: when enabled, follow the checkpoint ownership table in
-[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
-structured task/dispatch/attempt reports; recording errors warn and never block this workflow.
+Progress dashboard: initialize and open it before the first dispatch of every actual Run, then follow
+the checkpoint ownership table in [progress dashboard](progress-dashboard.md) after the normal action.
+Record explicit facts and structured task/dispatch/attempt reports; recording errors warn and never
+block this workflow.

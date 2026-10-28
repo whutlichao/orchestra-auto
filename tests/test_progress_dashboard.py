@@ -1,4 +1,4 @@
-"""Public CLI, snapshot and HTTP contracts for the optional progress sidecar."""
+"""Public CLI, snapshot and HTTP contracts for the progress sidecar."""
 import fcntl
 import time
 import concurrent.futures
@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import re
+import signal
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,65 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(state['run']['started_at'])
         self.assertFalse((self.repo / 'progress.json').exists())
 
+
+    def test_open_starts_viewer_and_reports_browser_failure(self):
+        self.init()
+        (self.root / 'sitecustomize.py').write_text('import webbrowser\nwebbrowser.open = lambda url: False\n')
+        env = {**os.environ, 'PYTHONPATH': str(self.root)}
+        result = subprocess.run([sys.executable, str(SCRIPT), '--state', str(self.state), 'open'],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
+        self.assertFalse(info['browser_opened'])
+        self.assertIn('manually', result.stderr)
+        with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
+            self.assertEqual(json.load(response)['run']['id'], 'run1')
+
+    def background_viewer(self, script=SCRIPT):
+        """Run ``open`` with a stubbed browser so the test never launches a real window."""
+        (self.root / 'sitecustomize.py').write_text(
+            'import webbrowser\nwebbrowser.open = lambda url: True\n')
+        return subprocess.run([sys.executable, str(script), '--state', str(self.state), 'open'],
+                              env={**os.environ, 'PYTHONPATH': str(self.root)},
+                              capture_output=True, text=True, timeout=10)
+
+    def test_open_reports_url_and_a_background_pid_that_outlives_it(self):
+        self.init()
+        result = self.background_viewer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
+        self.assertTrue(info['browser_opened'])
+        self.assertEqual(result.stderr, '')
+        self.assertTrue(info['url'].startswith('http://127.0.0.1:'))
+        # The parent has exited, so reading here proves the viewer was detached.
+        with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
+            self.assertEqual(json.load(response)['run']['id'], 'run1')
+
+    def test_open_gives_each_run_its_own_free_port(self):
+        self.init()
+        opened = [self.background_viewer() for _ in range(2)]
+        for result in opened:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        infos = [json.loads(result.stdout) for result in opened]
+        for info in infos:
+            self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
+        self.assertNotEqual(infos[0]['url'], infos[1]['url'])
+        for info in infos:
+            with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
+                self.assertEqual(json.load(response)['run']['id'], 'run1')
+
+    def test_open_warns_instead_of_hanging_when_the_viewer_cannot_start(self):
+        self.init()
+        incomplete = self.root / 'incomplete-skill' / 'progress.py'
+        incomplete.parent.mkdir()
+        incomplete.write_bytes(SCRIPT.read_bytes())  # the page asset is absent
+        result = self.background_viewer(incomplete)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('dashboard server failed to start', result.stderr)
+        self.assertIn('continue orchestration', result.stderr)
 
     def task(self, identity='t1', **extra):
         self.cli('task', {'id': identity, 'title': identity, **extra}, event='task-' + identity)
@@ -144,6 +204,24 @@ class ProgressTests(unittest.TestCase):
         self.init()
         self.task(status='running')
         self.assertEqual(self.snapshot()['tasks']['t1']['status'], 'running')
+
+    def test_both_languages_document_automatic_open_and_the_demo_serve_difference(self):
+        claims = (
+            ('skills/orchestra-auto/SKILL.md',
+             ('Before the first dispatch', 'open the dashboard automatically')),
+            ('skills/orchestra-auto-zh/SKILL.md', ('首次派活前', '自动打开')),
+            ('skills/orchestra-auto/references/progress-dashboard.md',
+             ('before the first dispatch', 'manually', 'kill PID', 'does not open a browser')),
+            ('skills/orchestra-auto-zh/references/progress-dashboard.md',
+             ('首次派活前', '手动', 'kill PID', '不打开浏览器')),
+            ('README.md', ('before the first dispatch', 'opened manually', '`serve`',
+                           'never opens a browser')),
+            ('README.zh-CN.md', ('首次派活前', '手动访问', '`serve`', '不打开浏览器')),
+        )
+        for relative, tokens in claims:
+            text = (ROOT / relative).read_text()
+            for token in tokens:
+                self.assertIn(token, text, f'{relative}: does not document {token!r}')
 
     def test_stub_workflow_trace_is_identical_disabled_working_failing_and_viewer_down(self):
         # This fixture CLI represents normal coordinator actions, not a new Orca API.
