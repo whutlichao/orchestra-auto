@@ -190,6 +190,7 @@ improvements waits until the round's endpoint; retro never edits the skill mid-r
 | Nested worktrees remain or main was touched | Preserve the scene, send back, do not accept. |
 | The worker stalls or loses contact | Follow the worker-start / inbox recovery references; do not dispatch a duplicate editor. |
 
-Optional progress: when enabled, follow the checkpoint ownership table in
-[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
-structured task/dispatch/attempt reports; recording errors warn and never block this workflow.
+Progress dashboard: initialize and open it before the first dispatch of every actual Run, then follow
+the checkpoint ownership table in [progress dashboard](progress-dashboard.md) after the normal action.
+Record explicit facts and structured task/dispatch/attempt reports; recording errors warn and never
+block this workflow.

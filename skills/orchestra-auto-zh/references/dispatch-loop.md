@@ -104,5 +104,6 @@ Run/coordinator handle、Task/Dispatch/worker handle/worktree、最后进展、�
   明确说明尚在运行、不能自动唤醒和恢复入口，不声称会自动继续，不默认要求用户定期催促。
 - worker 缺 worker_done 或已 idle 的恢复、错误与停止条件，按 reference 执行。
 
-可选进度：启用时，在正常动作完成后按[进度看板](progress-dashboard.md)节点责任表记录显式事实
-及结构化 task/dispatch/attempt 报告；记录错误只警告，不能阻断本流程。
+进度看板：每个实际编排 Run 首次派活前初始化并自动打开；之后在正常动作完成后按
+[进度看板](progress-dashboard.md)节点责任表记录显式事实及结构化 task/dispatch/attempt 报告；
+记录错误只警告，不能阻断本流程。

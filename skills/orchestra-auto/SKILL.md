@@ -165,10 +165,12 @@ Documentation tickets run their own gates. Small size never changes the role bou
 
 ### 4.0 Pre-dispatch preflight
 
-[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a
-dispatch. **§4.0.1 pre-dispatch**: tick every line (mechanical criteria: the `Test tier:` line, the
-`code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**: start
-evidence and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
+Before the first dispatch of every actual Run, initialize the progress record and open the dashboard automatically per [progress dashboard](references/progress-dashboard.md) and keep
+recording at the later checkpoints; failures warn and continue without blocking dispatch or the single inbox, and pure Q&A or skill edits do not start it.
+
+[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a dispatch. **§4.0.1 pre-dispatch**: tick every line
+(mechanical criteria: the `Test tier:` line, the `code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**:
+start evidence and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
 
 ### 4.1 Read-only exploration
 
@@ -293,7 +295,5 @@ worker lands what is needed in an isolated worktree; the coordinator accepts it.
 When the CLI will not start, a `worker-start` receipt is `state: failed`, a breaker trips, or the Orca
 app restarts, follow [failure and reporting](references/failure-and-reporting.md) instead of
 improvising. The recurring shape of every rule there: gather evidence before deciding, report the exact
-error, and never relaunch unconditionally. A process error — not a product bug — also triggers a
-read-only retro; its candidates need human selection before a worker lands them. See
-[long-horizon tickets](references/long-horizon-tickets.md) §6.
-For optional progress recording/viewing, load [progress dashboard](references/progress-dashboard.md) on demand; errors warn and continue, with no extra inbox receiver.
+error, and never relaunch unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
+[long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.

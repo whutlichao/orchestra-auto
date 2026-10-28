@@ -77,6 +77,7 @@ a worker. Asking the human uses this session's question channel — that is the 
 coordinator is allowed and required to ask; the worker-side ban in §4.4 BEHAVIOR RULE 1 is
 unchanged.
 
-Optional progress: when enabled, follow the checkpoint ownership table in
-[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
-structured task/dispatch/attempt reports; recording errors warn and never block this workflow.
+Progress dashboard: initialize and open it before the first dispatch of every actual Run, then follow
+the checkpoint ownership table in [progress dashboard](progress-dashboard.md) after the normal action.
+Record explicit facts and structured task/dispatch/attempt reports; recording errors warn and never
+block this workflow.

@@ -1,34 +1,32 @@
-# 可选进度记录与 localhost 看板
+# 进度记录与 localhost 看板
 
-**何时读取**：用户需要观察 Run、task、worker 的进展、本地看板或可复现离线演示时。
-按需加载，不是派发前置条件。
+**何时读取**：每个实际编排 Run 首次派活前，以及需要查看进度或离线演示时。
 
 目录：[使用](#使用)、[可视化看板](#阅读可视化看板)、[协议 v1](#协议-v1)、[流程写入责任](#流程写入责任)、[恢复与边界](#恢复与边界)。
 
 ## 使用
 
-这是可选旁路。coordinator 在正常流程动作完成后写入可观察事实。记录工具和页面均不调度、
+这是不阻塞编排的旁路。coordinator 在正常流程动作完成后写入可观察事实。记录工具和页面均不调度、
 验收或查询 Orca，不执行 `check`、`ack` 或 inbox 命令；现有唯一 inbox 接收器保持权威。
 写入不依赖网页服务存活。进度命令失败时保留警告并继续编排，不能把看板错误变成派发失败。
 
-在安装包位置运行，将 `PROGRESS` 指向其 `scripts/progress.py`。运行依赖仅 POSIX 上的 Python 3
-标准库。`AUDIT_ROOT` 指向**所有仓库之外**已有持久审计位置，每个 Run 使用新的子目录。
+运行依赖：POSIX 上的 Python 3 标准库。`AUDIT_ROOT` 指向**所有仓库之外**已有持久审计位置，
+每个 Run 使用新的子目录。
 禁止仓库内部、仓库根目录、目标仓库祖先目录或符号链接路径。输入支持 `--data JSON` 或
 `--data -` 从 stdin 读取。仅接受摘要白名单字段，不接受环境、密钥、原始消息、终端正文或任意
 metadata。允许字段中的摘要也必须人工去敏；这是字段白名单，不是秘密检测器。证据和 artifact
 只存引用，不读取文件正文。
 
 ```bash
-PROGRESS=skills/orchestra-auto-zh/scripts/progress.py
+PROGRESS=/path/to/orchestra-auto-zh/scripts/progress.py
 STATE="$AUDIT_ROOT/run-example"
 python3 "$PROGRESS" --state "$STATE" init --event-id init-1 --effective --data \
   "{\"id\":\"run-example\",\"target_repo\":\"$PWD\",\"mode\":\"REAL\",\"phase\":\"implementation\",\"status\":\"active\"}" \
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
-python3 "$PROGRESS" --state "$STATE" serve --port 8765
+python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-打开 **http://127.0.0.1:8765/**，每三秒自动刷新；在另一终端执行记录命令，服务关闭也可写入。
-Ctrl-C 只停止查看，快照保留。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
+将 `PROGRESS` 换为当前安装的本 skill 目录下的绝对路径。首次派活前使用真实 Run ID、新的仓库外审计子目录及实际目标仓库执行上述 init 和 open；不要使用示例 ID 或路径。`open` 自动选择空闲端口、后台启动服务并尝试打开默认浏览器，输出 JSON 中的 URL 和 PID；把 URL 告知用户。浏览器无法打开时告知用户手动访问该 URL。服务每三秒刷新，后续节点按下表记录；服务关闭也可写入。看板保持可用以便查看最终状态；需要停止时对本次输出的 PID 执行 `kill PID`，快照保留。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
 `--stale-seconds 300` 控制观察过期阈值；缺少时间显示 unknown，旧观察显示 stale，coordinator
 明确记录的 lost 生命周期独立显示。新活动不代表有效进展。
 
@@ -43,6 +41,8 @@ python3 "$PROGRESS" --state "$AUDIT_ROOT/demo-example" serve --port 8766
 不能覆盖真实 Run，不调用 Orca，不需要凭证。包含正常工作、依赖阻塞、等用户、验收打回、
 嵌套 worker、失联 worker、独立交付事实；用 `serve --stale-seconds 0` 展示过期。
 不得将演示引用当作真实已执行测试。
+DEMO 与其他按需查看都使用显式 `serve`：只打印地址、不打开浏览器；自动打开（`open`）仅用于实际
+REAL Run 首次派活前。
 
 ## 阅读可视化看板
 
@@ -159,7 +159,7 @@ coordinator 拥有验证状态。每个动作完成后，在处理该动作的�
 由顶层 worker 转交 task ID、dispatch ID、attempt 和 parent worker ID；先登记父级。
 嵌套自报在 coordinator 验证前仍是自报。
 
-| 正常流程节点 | 责任人与可选记录 |
+| 正常流程节点 | 责任人与记录 |
 | --- | --- |
 | Run 开始 | coordinator：init REAL，目标仓库、阶段、状态；task 标题、依赖、已知阻塞 |
 | dispatch 回执 | coordinator：worker 的 task/dispatch/attempt/worktree/父级，dispatched、启动 unknown/unobserved；event 记录派发证据 |
@@ -174,7 +174,7 @@ coordinator 拥有验证状态。每个动作完成后，在处理该动作的�
 | 失败／失联／恢复 | coordinator：失败、阻塞原因与验证 failed/lost lifecycle；重试用新 worker ID/dispatch/attempt；heartbeat 不能抹掉失败 |
 | 暂停／取消／收尾 | coordinator：end 记录真实状态、摘要，artifact 报告/测试/commit/PR；验证后才设 reclaimable/closed，未交付部分保持未交付 |
 
-无看板时原有派发、启动、问答、验收、合并、生命周期流程全部正常。缺少记录或服务故障均不授权
+看板不可用时原有派发、启动、问答、验收、合并、生命周期流程全部正常。缺少记录或服务故障均不授权
 改变这些要求。
 
 ## 恢复与边界
