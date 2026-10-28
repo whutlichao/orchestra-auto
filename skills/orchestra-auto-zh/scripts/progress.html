@@ -1,0 +1,1648 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Orchestra · 进展指挥台</title>
+    <style>
+      :root {
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #202c40;
+        background: #f5f6f8;
+        font-size: 14px;
+        --blue: #3164e9;
+        --line: #e4e7ed;
+        --muted: #69768a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      a,
+      summary {
+        touch-action: manipulation;
+      }
+      button {
+        white-space: nowrap;
+        font: inherit;
+        cursor: pointer;
+        border: 1px solid var(--line);
+        background: white;
+        color: inherit;
+        border-radius: 7px;
+        padding: 8px 12px;
+      }
+      button:hover,
+      button[aria-pressed="true"] {
+        border-color: var(--blue);
+        background: #edf2ff;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid #87a7ff;
+        outline-offset: 3px;
+      }
+      a {
+        color: #285bce;
+      }
+      aside {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: 204px;
+        background: #152035;
+        color: #afbdd1;
+        padding: 32px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+      }
+      aside strong {
+        color: white;
+        font-size: 20px;
+        letter-spacing: -0.6px;
+      }
+      aside nav {
+        display: grid;
+        gap: 10px;
+      }
+      aside a {
+        color: inherit;
+        text-decoration: none;
+        padding: 10px;
+        border-radius: 6px;
+      }
+      aside a:hover {
+        background: #243552;
+        color: white;
+      }
+      .side-note {
+        margin-top: auto;
+        font-size: 12px;
+        line-height: 1.8;
+      }
+      main {
+        margin-left: 204px;
+        padding: 26px 36px 60px;
+        max-width: 1800px;
+        min-width: 0;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 1.7px;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+      }
+      h1 {
+        font-size: 29px;
+        line-height: 1.25;
+        letter-spacing: -0.8px;
+        margin: 10px 0;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0 0 18px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 0;
+      }
+      p {
+        line-height: 1.65;
+        margin: 8px 0;
+        overflow-wrap: anywhere;
+      }
+      .muted,
+      small {
+        color: var(--muted);
+      }
+      .badge {
+        display: inline-block;
+        border-radius: 5px;
+        padding: 4px 8px;
+        font-size: 12px;
+        background: #edf2ff;
+        color: #285bce;
+        overflow-wrap: anywhere;
+      }
+      .warning {
+        background: #fff4db;
+        color: #865b0c;
+      }
+      .danger {
+        background: #fff0ed;
+        color: #ad3c2d;
+      }
+      .hero {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 20px;
+      }
+      .hero-meta {
+        min-width: 200px;
+        font-size: 12px;
+      }
+      .health {
+        border: 1px solid var(--line);
+        padding: 11px 14px;
+        border-radius: 8px;
+        font-size: 12px;
+        margin-bottom: 22px;
+        background: white;
+      }
+      .error {
+        background: #fff0ed;
+        border-color: #efaf9f;
+        color: #9c3526;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin: 18px 0;
+      }
+      .stat,
+      .panel {
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+      }
+      .stat {
+        padding: 17px 20px;
+      }
+      .number {
+        font-size: 30px;
+        font-weight: 650;
+        letter-spacing: -1px;
+        display: block;
+        margin-top: 7px;
+      }
+      .panel {
+        padding: 22px;
+        margin-bottom: 18px;
+        min-width: 0;
+      }
+      .two {
+        align-items: start;
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+        gap: 18px;
+      }
+      .distribution {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+      .donut {
+        position: relative;
+        flex: 0 0 174px;
+        width: 174px;
+        height: 174px;
+      }
+      .donut svg {
+        width: 100%;
+        height: 100%;
+        transform: rotate(-90deg);
+      }
+      .donut-center {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        text-align: center;
+      }
+      .donut-center strong {
+        font-size: 34px;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-content: start;
+      }
+      .legend button {
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        display: inline-block;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .delivery-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .delivery-cell {
+        padding: 12px 8px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+      .delivery-cell strong {
+        display: block;
+        font-size: 23px;
+        margin: 8px 0;
+      }
+      .delivery-cell small {
+        font-size: 11px;
+        display: block;
+        line-height: 1.7;
+      }
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .step {
+        position: relative;
+        background: #f8f9fb;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 10px;
+        min-width: 0;
+      }
+      .step.observed {
+        background: #eff5ff;
+        border-color: #b7cdfc;
+      }
+      .step:not(:last-child):after {
+        content: "→";
+        position: absolute;
+        right: -10px;
+        top: 16px;
+        color: #7b8da7;
+        z-index: 1;
+      }
+      .step b {
+        font-size: 12px;
+        display: block;
+        margin: 7px 0;
+      }
+      .step small {
+        font-size: 11px;
+        display: block;
+      }
+      .step .count {
+        font-size: 21px;
+        font-weight: 650;
+        color: #315bb1;
+      }
+      .branches {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .caption {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 18px;
+      }
+      .scroll {
+        overflow: auto;
+        max-width: 100%;
+        max-height: 520px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .scroll svg {
+        display: block;
+      }
+      .task-row,
+      .worker-row,
+      .artifact-row {
+        padding: 13px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .task-row:last-child,
+      .worker-row:last-child,
+      .artifact-row:last-child {
+        border-bottom: 0;
+      }
+      .row-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .row-head h3 {
+        overflow-wrap: anywhere;
+        min-width: 0;
+      }
+      .task-row p,
+      .worker-row p {
+        font-size: 12px;
+      }
+      .worker-row {
+        border-left: 2px solid #dbe4f3;
+        padding-left: 12px;
+      }
+      .worker-row .badge {
+        margin: 3px;
+      }
+      details {
+        margin-top: 9px;
+        font-size: 12px;
+      }
+      summary {
+        cursor: pointer;
+        color: #52677f;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 130px minmax(0, 1fr);
+        gap: 7px;
+        font-size: 12px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .timeline {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .timeline li {
+        border-left: 2px solid #dae4f8;
+        padding: 0 0 18px 15px;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+      }
+      .timeline time {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 5px;
+      }
+      .filterbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .empty {
+        padding: 24px 0;
+        color: var(--muted);
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+      .artifact-row {
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      footer {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 20px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      @media (min-width: 1600px) {
+        main {
+          padding-left: 48px;
+          padding-right: 48px;
+        }
+        .flow .step {
+          padding: 16px;
+        }
+        .panel {
+          padding: 26px;
+        }
+      }
+      @media (max-width: 1100px) {
+        aside {
+          width: 170px;
+          padding: 26px 15px;
+        }
+        main {
+          margin-left: 170px;
+          padding: 24px;
+        }
+        .two {
+          grid-template-columns: 1fr;
+        }
+        .flow {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .step:nth-child(4):after {
+          display: none;
+        }
+      }
+      @media (max-width: 600px) {
+        aside {
+          position: static;
+          width: auto;
+          padding: 16px 20px;
+          flex-direction: row;
+          align-items: center;
+          justify-content: space-between;
+        }
+        aside nav,
+        .side-note {
+          display: none;
+        }
+        main {
+          margin-left: 0;
+          padding: 20px 14px;
+        }
+        .hero {
+          display: block;
+        }
+        .hero-meta {
+          margin-top: 14px;
+        }
+        .stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .stat {
+          padding: 13px;
+        }
+        .panel {
+          padding: 16px;
+        }
+        .distribution {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .donut {
+          align-self: center;
+        }
+        .delivery-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .flow {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .step:nth-child(even):after {
+          display: none;
+        }
+        h1 {
+          font-size: 25px;
+        }
+        dl {
+          grid-template-columns: 100px minmax(0, 1fr);
+        }
+        header {
+          align-items: flex-start;
+        }
+        .actions button {
+          font-size: 12px;
+          padding: 7px;
+        }
+        .row-head {
+          align-items: flex-start;
+        }
+      }
+      header {
+        margin-bottom: 16px;
+      }
+      .health {
+        margin-bottom: 16px;
+      }
+      .hero {
+        margin-bottom: 12px;
+      }
+      .hero p {
+        margin: 5px 0;
+      }
+      .stats {
+        margin: 14px 0;
+      }
+      .stat {
+        padding: 13px 18px;
+      }
+      .number {
+        font-size: 27px;
+        margin-top: 3px;
+      }
+      .decision-notice {
+        padding: 13px 18px;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px 22px;
+      }
+      .decision-notice h2,
+      .decision-notice p {
+        margin: 0;
+      }
+      .step {
+        padding: 10px 8px;
+      }
+      .step b {
+        min-height: 28px;
+      }
+      .branches {
+        margin-top: 8px;
+      }
+      #workflow .caption {
+        margin-bottom: 12px;
+      }
+      #workflow .caption:last-child {
+        margin: 9px 0 0;
+        font-size: 11px;
+      }
+      .delivery-glance {
+        max-width: 360px;
+        border-top: 1px solid var(--line);
+        padding-top: 8px;
+      }
+      .delivery-glance span {
+        display: inline-block;
+        margin-right: 7px;
+        color: #315bb1;
+      }
+      .step details {
+        font-size: 11px;
+      }
+      @media (max-width: 600px) {
+        .decision-notice {
+          display: block;
+        }
+        .decision-notice h2 {
+          margin-bottom: 8px;
+        }
+        header .eyebrow {
+          letter-spacing: 1px;
+          font-size: 10px;
+        }
+        .actions {
+          flex-shrink: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <strong>◈ Orchestra</strong>
+      <nav aria-label="页面导航">
+        <a href="#overview">◫　运行总览</a><a href="#workflow">◇　流程与依赖</a
+        ><a href="#tasks">☷　任务与 Worker</a
+        ><a href="#artifacts">↗　交付与证据</a>
+      </nav>
+      <div class="side-note">
+        PROGRESS CONSOLE<br />只读观察 · 无调度动作<br />Localhost / explicit
+        records
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div class="eyebrow">Workspace / Progress console</div>
+        <div class="actions">
+          <button id="language" aria-label="Switch language">English</button
+          ><button id="refresh">↻ 刷新</button>
+        </div>
+      </header>
+      <div id="health" class="health" role="status" aria-live="polite">
+        正在加载快照…
+      </div>
+      <div id="content"><p class="empty">尚无有效快照。</p></div>
+      <footer>
+        Orchestra · Read-only observations · 3s refresh · No estimated
+        completion percentage or remaining time
+      </footer>
+    </main>
+    <script>
+      "use strict";
+      const content = document.getElementById("content"),
+        health = document.getElementById("health");
+      let last = null,
+        snapshot = null,
+        filter = null,
+        language = "zh",
+        busy = false;
+      const tr = (zh, en) => (language === "zh" ? zh : en);
+      const labels = {
+        unknown: ["未知", "Unknown"],
+        pending: ["待计划", "Pending"],
+        ready: ["就绪", "Ready"],
+        running: ["实施中", "Running"],
+        blocked: ["阻塞", "Blocked"],
+        waiting_user: ["待用户", "Waiting user"],
+        reported: ["已报告", "Reported"],
+        accepted: ["已验收", "Accepted"],
+        rejected: ["已打回", "Rejected"],
+        failed: ["失败", "Failed"],
+        paused: ["暂停", "Paused"],
+        cancelled: ["取消", "Cancelled"],
+      };
+      Object.assign(labels, {
+        active: ["运行中", "Active"],
+        completed: ["已结束", "Completed"],
+        current: ["观测有效", "Current"],
+        fresh: ["观测有效", "Fresh"],
+        stale: ["观测过期", "Stale"],
+        lost: ["已失联", "Lost"],
+        unobserved: ["未观察启动", "Unobserved"],
+        observed: ["已观察启动", "Observed"],
+        unsupported: ["不支持", "Unsupported"],
+        reported_done: ["自报完成", "Reported done"],
+        dispatched: ["已派活", "Dispatched"],
+        reclaimable: ["可回收", "Reclaimable"],
+        closed: ["已关闭", "Closed"],
+        planning: ["计划中", "Planning"],
+        dispatch: ["派活中", "Dispatch"],
+        implementation: ["实施中", "Implementation"],
+        acceptance: ["验收中", "Acceptance"],
+        integration: ["集成中", "Integration"],
+        merge: ["合并中", "Merge"],
+        reconciliation: ["对账中", "Reconciliation"],
+      });
+      function dateTime(v) {
+        if (!v) return value(v);
+        const date = new Date(v);
+        return Number.isNaN(date.getTime())
+          ? value(v)
+          : date.toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false,
+            });
+      }
+      const colors = {
+        unknown: "#95a0b1",
+        pending: "#c1c9d5",
+        ready: "#8f9de8",
+        running: "#3164e9",
+        blocked: "#e5a339",
+        waiting_user: "#bd7c23",
+        reported: "#53a3bc",
+        accepted: "#289b7b",
+        rejected: "#d76e58",
+        failed: "#b64c55",
+        paused: "#827d9d",
+        cancelled: "#727b87",
+      };
+      function statusColor(state) {
+        return Object.hasOwn(colors, state) ? colors[state] : colors.unknown;
+      }
+      function label(s) {
+        return Object.hasOwn(labels, s)
+          ? labels[s][language === "zh" ? 0 : 1]
+          : value(s);
+      }
+      function node(tag, text, parent) {
+        const n = document.createElement(tag);
+        if (text !== undefined) n.textContent = String(text);
+        if (parent) parent.append(n);
+        return n;
+      }
+      function value(v) {
+        return v === null || v === undefined || v === ""
+          ? tr("未知", "unknown")
+          : Array.isArray(v)
+            ? v.join(", ")
+            : String(v);
+      }
+      function facts(parent, obj) {
+        const dl = node("dl", undefined, parent);
+        for (const [k, v] of Object.entries(obj)) {
+          node("dt", k.replaceAll("_", " "), dl);
+          node("dd", value(v), dl);
+        }
+      }
+      function reference(parent, ref) {
+        let url;
+        try {
+          url = new URL(ref);
+        } catch {}
+        if (
+          url &&
+          ["http:", "https:"].includes(url.protocol) &&
+          !url.username &&
+          !url.password
+        ) {
+          const a = node("a", ref, parent);
+          a.href = url.href;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+        } else node("code", ref, parent);
+      }
+      function section(title, parent, id) {
+        const s = node("section", undefined, parent);
+        s.className = "panel";
+        if (id) s.id = id;
+        node("h2", title, s);
+        return s;
+      }
+      function badge(text, parent, kind = "") {
+        const b = node("span", text, parent);
+        b.className = "badge " + kind;
+        return b;
+      }
+      function empty(parent) {
+        node("p", tr("暂无记录", "None recorded."), parent).className = "empty";
+      }
+      function details(parent, key, obj) {
+        const d = node("details", undefined, parent);
+        d.dataset.key = key;
+        node(
+          "summary",
+          tr("查看核验与完整字段", "Verification & full fields"),
+          d,
+        );
+        facts(d, obj);
+        return d;
+      }
+      function svgNode(tag, attrs, parent, text) {
+        const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [k, v] of Object.entries(attrs))
+          n.setAttribute(k, String(v));
+        if (text !== undefined) n.textContent = String(text);
+        parent.append(n);
+        return n;
+      }
+      function eventRow(parent, e) {
+        const li = node("li", undefined, parent);
+        const source =
+          e.source === "worker"
+            ? tr("worker 自报", "worker self report")
+            : value(e.source);
+        node("time", dateTime(e.at) + " · " + source, li);
+        node(
+          "strong",
+          value(e.type) +
+            " · " +
+            value(e.task_id || e.worker_id || e.entity_id),
+          li,
+        );
+        if (e.summary) node("p", e.summary, li);
+        for (const ref of e.evidence || [])
+          reference(node("p", undefined, li), ref);
+      }
+      function render(s) {
+        const navText =
+          language === "zh"
+            ? [
+                "◫　运行总览",
+                "◇　流程与依赖",
+                "☷　任务与 Worker",
+                "↗　交付与证据",
+              ]
+            : [
+                "◫　Overview",
+                "◇　Workflow & graph",
+                "☷　Tasks & workers",
+                "↗　Evidence",
+              ];
+
+        // Build entirely off-DOM: malformed data cannot replace the last valid view.
+        if (
+          !s.run ||
+          !s.tasks ||
+          !s.workers ||
+          !s.deliveries ||
+          !s.artifacts ||
+          !Array.isArray(s.events)
+        )
+          throw Error("Invalid snapshot shape");
+        const tasks = Object.values(s.tasks),
+          workers = Object.values(s.workers),
+          deliveries = Object.values(s.deliveries),
+          artifacts = Object.values(s.artifacts);
+        for (const t of tasks)
+          if (!Array.isArray(t.dependencies))
+            throw Error("Invalid dependencies");
+        const active = document.activeElement;
+        const focusedDetails = active?.closest("details")?.dataset.key;
+        const focusedLegend = active?.closest(".legend button")?.dataset.status;
+        const graph = content.querySelector(".scroll");
+        const graphPosition = graph
+          ? [graph.scrollLeft, graph.scrollTop]
+          : [0, 0];
+        const opened = new Set(
+          [...content.querySelectorAll("details[open]")].map(
+            (d) => d.dataset.key,
+          ),
+        );
+        const next = document.createDocumentFragment();
+        const hero = node("section", undefined, next);
+        hero.id = "overview";
+        hero.className = "hero";
+        const intro = node("div", undefined, hero);
+        badge(s.run.mode, intro, s.run.mode === "DEMO" ? "warning" : "");
+        node("h1", value(s.run.title), intro);
+        node(
+          "p",
+          value(s.run.id) + " · " + label(s.run.status),
+          intro,
+        ).className = "muted";
+        node(
+          "p",
+          tr("当前阶段", "Current phase") + " / " + label(s.run.phase),
+          intro,
+        );
+        const meta = node("div", undefined, hero);
+        meta.className = "hero-meta";
+        node(
+          "p",
+          tr("最后有效进展", "Last effective progress") +
+            " · " +
+            dateTime(s.run.last_effective_progress),
+          meta,
+        );
+        node(
+          "p",
+          tr("最后观测", "Last observed") +
+            " · " +
+            dateTime(s.run.last_observed),
+          meta,
+        );
+        badge(
+          tr("时效", "Freshness") + " · " + label(s.run.freshness),
+          meta,
+          ["current", "fresh"].includes(s.run.freshness) ? "" : "warning",
+        );
+        const glance = node(
+          "p",
+          tr("交付核验为是：", "Delivery verified yes: "),
+          meta,
+        );
+        glance.className = "delivery-glance";
+        const glanceLabels = [
+          ["implemented", tr("实施", "Implemented")],
+          ["integrated", tr("集成", "Integrated")],
+          ["merged", tr("合并", "Merged")],
+          ["tracker_closed", tr("对账关闭", "Tracker closed")],
+        ];
+        for (const [key, name] of glanceLabels)
+          node(
+            "span",
+            name +
+              " " +
+              deliveries.filter((d) => d[key] === true).length +
+              "  ",
+            glance,
+          );
+        const stats = node("div", undefined, next);
+        stats.className = "stats";
+        for (const [name, num] of [
+          [tr("实际任务", "Actual tasks"), tasks.length],
+          [
+            tr("实施中", "Running"),
+            tasks.filter((t) => t.status === "running").length,
+          ],
+          [
+            tr("受阻任务", "Blocked"),
+            tasks.filter((t) => t.status === "blocked").length,
+          ],
+          [
+            tr("待用户决策", "Pending decisions"),
+            tasks.filter(
+              (t) => t.pending_decision || t.status === "waiting_user",
+            ).length,
+          ],
+        ]) {
+          const c = node("div", name, stats);
+          c.className = "stat";
+          node("strong", num, c).className = "number";
+        }
+        const pending = tasks.filter(
+          (t) => t.pending_decision || t.status === "waiting_user",
+        );
+        if (pending.length || s.run.status === "waiting_user") {
+          const p = section(tr("需要你的决定", "Your decision needed"), next);
+          p.classList.add("warning", "decision-notice");
+          for (const t of pending)
+            node("p", t.title + " · " + value(t.pending_decision), p);
+          if (!pending.length)
+            node(
+              "p",
+              tr(
+                "Run 已标记等待用户；尚无具体决策记录。",
+                "Run is waiting for user; no decision detail recorded.",
+              ),
+              p,
+            );
+        }
+        const top = node("div", undefined, next);
+        top.className = "two";
+        const chart = section(tr("任务状态分布", "Task distribution"), top);
+        node(
+          "p",
+          tr(
+            "实际数量比例 · 点击图例筛选下方任务",
+            "Actual counts · select a legend to filter tasks",
+          ),
+          chart,
+        ).className = "caption";
+        const dist = node("div", undefined, chart);
+        dist.className = "distribution";
+        const donut = node("div", undefined, dist);
+        donut.className = "donut";
+        const svg = svgNode(
+          "svg",
+          {
+            viewBox: "0 0 180 180",
+            role: "img",
+            "aria-label": tr(
+              "任务状态数量分布，详情见图例",
+              "Task counts by status; see legend",
+            ),
+          },
+          donut,
+        );
+        svgNode(
+          "circle",
+          {
+            cx: 90,
+            cy: 90,
+            r: 70,
+            fill: "none",
+            stroke: "#edf0f5",
+            "stroke-width": 17,
+          },
+          svg,
+        );
+        let offset = 0;
+        const counts = {};
+        for (const t of tasks) counts[t.status] = (counts[t.status] || 0) + 1;
+        for (const [state, count] of Object.entries(counts)) {
+          const length = (count / Math.max(1, tasks.length)) * 439.82;
+          svgNode(
+            "circle",
+            {
+              cx: 90,
+              cy: 90,
+              r: 70,
+              fill: "none",
+              stroke: statusColor(state),
+              "stroke-width": 17,
+              "stroke-dasharray": length + " " + (439.82 - length),
+              "stroke-dashoffset": -offset,
+            },
+            svg,
+          );
+          offset += length;
+        }
+        const center = node("div", undefined, donut);
+        center.className = "donut-center";
+        node("strong", tasks.length, center);
+        node("small", tr("实际任务", "actual tasks"), center);
+        const legend = node("div", undefined, dist);
+        legend.className = "legend";
+        for (const [state, count] of Object.entries(counts)) {
+          const b = node("button", undefined, legend);
+          b.dataset.status = state;
+          b.setAttribute("aria-pressed", String(filter === state));
+          const dot = node("span", undefined, b);
+          dot.className = "dot";
+          dot.style.backgroundColor = statusColor(state);
+          node("span", label(state) + " · " + count, b);
+          b.onclick = () => {
+            filter = filter === state ? null : state;
+            render(snapshot);
+          };
+        }
+        if (!tasks.length) empty(legend);
+        const delivery = section(
+          tr("交付核验 · 四项独立事实", "Delivery · four independent facts"),
+          top,
+        );
+        node(
+          "p",
+          tr(
+            "自报完成 ≠ 验收通过 · PR 打开 ≠ 合并 · 合并 ≠ tracker 关闭",
+            "Worker done ≠ accepted · PR opened ≠ merged · merged ≠ tracker closed",
+          ),
+          delivery,
+        ).className = "caption";
+        const dg = node("div", undefined, delivery);
+        dg.className = "delivery-grid";
+        for (const [key, name] of [
+          ["implemented", tr("已实施", "Implemented")],
+          ["integrated", tr("已集成", "Integrated")],
+          ["merged", tr("已合并", "Merged")],
+          ["tracker_closed", tr("已对账关闭", "Tracker closed")],
+        ]) {
+          const c = node("div", name, dg);
+          c.className = "delivery-cell";
+          node("strong", deliveries.filter((d) => d[key] === true).length, c);
+          node("small", tr("核验为是", "Verified yes"), c);
+          node(
+            "small",
+            tr("否", "false") +
+              " " +
+              deliveries.filter((d) => d[key] === false).length +
+              " / " +
+              tr("未核验", "unverified") +
+              " " +
+              deliveries.filter((d) => d[key] !== true && d[key] !== false)
+                .length,
+            c,
+          );
+        }
+        node(
+          "p",
+          tr(
+            "仅统计已记录 delivery；未记录任务仍未核验：",
+            "Only recorded deliveries counted; tasks without delivery remain unverified: ",
+          ) +
+            tasks.filter((t) => !deliveries.some((d) => d.task_id === t.id))
+              .length,
+          delivery,
+        ).className = "caption";
+        const flow = section(
+          tr(
+            "全流程 · 参考路径与已观察事实",
+            "Workflow · reference path & observed facts",
+          ),
+          next,
+          "workflow",
+        );
+        node(
+          "p",
+          tr(
+            "箭头仅为静态流程参考，不表示依赖、调度或前序已完成。蓝色仅表示该项有明确记录；当前阶段只读 Run 的明确记录。",
+            "Arrows are a static reference, not dependencies, scheduling or completed predecessors. Blue means explicit observations only; current phase reads the explicit Run record.",
+          ),
+          flow,
+        ).className = "caption";
+        const stages = [
+          ["计划", "Plan", tasks.length, "tasks: all records"],
+          [
+            "派活 / 启动",
+            "Dispatch / start",
+            workers.filter((w) => w.start_confirmation === "observed").length,
+            "workers.start_confirmation = observed",
+          ],
+          [
+            "实施",
+            "Implement",
+            tasks.filter((t) => t.status === "running").length,
+            "tasks.status = running",
+          ],
+          [
+            "完成报告 · 自报",
+            "Done · self report",
+            workers.filter((w) => w.reported_lifecycle === "reported_done")
+              .length,
+            "workers.reported_lifecycle = reported_done (self report)",
+          ],
+          [
+            "验收",
+            "Accept",
+            tasks.filter((t) => t.status === "accepted").length,
+            "tasks.status = accepted",
+          ],
+          [
+            "集成",
+            "Integrate",
+            deliveries.filter((d) => d.integrated === true).length,
+            "deliveries.integrated === true",
+          ],
+          [
+            "合并",
+            "Merge",
+            deliveries.filter((d) => d.merged === true).length,
+            "deliveries.merged === true",
+          ],
+          [
+            "tracker 对账",
+            "Reconcile",
+            deliveries.filter((d) => d.tracker_closed === true).length,
+            "deliveries.tracker_closed === true",
+          ],
+        ];
+        const fs = node("div", undefined, flow);
+        fs.className = "flow";
+        stages.forEach(([zh, en, count, basis], i) => {
+          const st = node("div", undefined, fs);
+          st.className = "step" + (count ? " observed" : "");
+          node("small", String(i + 1).padStart(2, "0"), st);
+          node("b", tr(zh, en), st);
+          node("div", count, st).className = "count";
+          node(
+            "small",
+            count
+              ? tr("已观察记录", "Observed records")
+              : tr("无匹配记录", "No matching record"),
+            st,
+          );
+          const d = node("details", undefined, st);
+          d.dataset.key = "basis" + i;
+          node("summary", tr("统计依据", "Count basis"), d);
+          node("p", basis, d);
+        });
+        const branches = node("div", undefined, flow);
+        branches.className = "branches";
+        badge(
+          tr("↳ 等待用户", "↳ Waiting user") + " · " + pending.length,
+          branches,
+          "warning",
+        );
+        badge(
+          tr("↳ 打回返工", "↳ Rework") +
+            " · " +
+            tasks.filter((t) => t.status === "rejected").length,
+          branches,
+          "danger",
+        );
+        const branchBasis = node("details", undefined, flow);
+        branchBasis.dataset.key = "branch-basis";
+        node(
+          "summary",
+          tr("等待与返工的统计依据", "Wait & rework count basis"),
+          branchBasis,
+        );
+        node(
+          "p",
+          "Waiting: tasks.status = waiting_user OR pending_decision · Rework: tasks.status = rejected · Current phase: run.phase",
+          branchBasis,
+        );
+        next.insertBefore(flow, top);
+        const dep = section(
+          tr("实际任务依赖", "Actual task dependencies"),
+          next,
+        );
+        node(
+          "p",
+          tr(
+            "连线严格来自 dependencies，箭头由依赖指向任务。未知节点保留；循环不会被推断为完成。图内可横向滚动。",
+            "Edges come directly from dependencies, prerequisite → task. Unknown nodes remain visible; cycles imply no completion. Scroll within the graph.",
+          ),
+          dep,
+        ).className = "caption";
+        dependencyGraph(dep, tasks, s.tasks);
+        const columns = node("div", undefined, next);
+        columns.className = "two";
+        const taskPanel = section(tr("任务清单", "Tasks"), columns, "tasks");
+        const fb = node("div", undefined, taskPanel);
+        fb.className = "filterbar";
+        node(
+          "span",
+          filter
+            ? tr("筛选：", "Filter: ") + label(filter)
+            : tr("全部任务", "All tasks"),
+          fb,
+        );
+        const reset = node("button", tr("重置筛选", "Reset filter"), fb);
+        reset.onclick = () => {
+          filter = null;
+          render(snapshot);
+        };
+        reset.disabled = filter === null;
+        const shown = tasks.filter((t) => !filter || t.status === filter);
+        if (!shown.length) empty(taskPanel);
+        for (const t of shown) {
+          const row = node("article", undefined, taskPanel);
+          row.className = "task-row";
+          const head = node("div", undefined, row);
+          head.className = "row-head";
+          node("h3", t.title, head);
+          badge(label(t.status), head);
+          if (t.blocked_reason)
+            node("p", t.blocked_reason, row).className = "danger";
+          details(row, "task:" + t.id, {
+            id: t.id,
+            dependencies: t.dependencies.length
+              ? t.dependencies
+              : tr("无", "none"),
+            verified_at: t.verified_at,
+          });
+        }
+        const wp = section(
+          tr("Worker · 层级与核验", "Workers · hierarchy & verification"),
+          columns,
+        );
+        if (!workers.length) empty(wp);
+        const byId = new Map(workers.map((w) => [w.id, w]));
+        function depth(w) {
+          const seen = new Set([w.id]);
+          let n = 0,
+            p = w.parent_worker_id;
+          while (p && byId.has(p) && !seen.has(p)) {
+            seen.add(p);
+            n++;
+            p = byId.get(p).parent_worker_id;
+          }
+          return Math.min(n, 5);
+        }
+        const ordered = [],
+          visited = new Set();
+        function visit(w) {
+          if (visited.has(w.id)) return;
+          visited.add(w.id);
+          ordered.push(w);
+          for (const child of workers.filter(
+            (c) => c.parent_worker_id === w.id,
+          ))
+            visit(child);
+        }
+        workers
+          .filter((w) => !w.parent_worker_id || !byId.has(w.parent_worker_id))
+          .forEach(visit);
+        workers.forEach(visit);
+        for (const w of ordered) {
+          const row = node("article", undefined, wp);
+          row.className = "worker-row";
+          row.style.marginLeft = depth(w) * 14 + "px";
+          node("h3", value(w.task_id) + " · " + value(w.id).slice(0, 28), row);
+          badge(
+            tr("核验记录", "Verification") + " · " + label(w.lifecycle),
+            row,
+            ["lost", "failed"].includes(w.lifecycle) ? "danger" : "",
+          );
+          badge(
+            tr("自报", "Self report") + " · " + label(w.reported_lifecycle),
+            row,
+          );
+          node(
+            "p",
+            tr("启动确认：", "Start confirmation: ") +
+              label(w.start_confirmation) +
+              tr(" · 时效：", " · Freshness: ") +
+              label(w.freshness),
+            row,
+          );
+          if (w.reported_summary) {
+            const d = node("details", undefined, row);
+            d.dataset.key = "report:" + w.id;
+            node(
+              "summary",
+              tr("自报摘要（未核验）", "Self-reported summary (unverified)"),
+              d,
+            );
+            node("p", w.reported_summary, d);
+          }
+          details(row, "worker:" + w.id, w);
+        }
+        const bottom = node("div", undefined, next);
+        bottom.className = "two";
+        const ap = section(
+          tr("产物与交付证据", "Artifacts & delivery evidence"),
+          bottom,
+          "artifacts",
+        );
+        if (!artifacts.length && !deliveries.length) empty(ap);
+        for (const a of artifacts) {
+          const row = node("div", undefined, ap);
+          row.className = "artifact-row";
+          badge(a.kind, row);
+          node("p", a.label, row);
+          reference(row, a.reference);
+        }
+        for (const d of deliveries) {
+          const det = details(ap, "delivery:" + d.task_id, {
+            task: d.task_id,
+            ...Object.fromEntries(
+              ["implemented", "integrated", "merged", "tracker_closed"].map(
+                (k) => [
+                  k,
+                  d[k] === true
+                    ? "verified yes"
+                    : d[k] === false
+                      ? "verified no"
+                      : "unverified",
+                ],
+              ),
+            ),
+            verified_at: d.verified_at,
+          });
+          det.querySelector("summary").textContent =
+            value(d.task_id) +
+            " · " +
+            tr("交付核验明细", "Delivery verification");
+          for (const ref of d.evidence || [])
+            reference(node("p", undefined, det), ref);
+        }
+        const timeline = section(tr("近期事件", "Recent events"), bottom);
+        if (!s.events.length) empty(timeline);
+        const list = node("ol", undefined, timeline);
+        list.className = "timeline";
+        for (const e of [...s.events].reverse().slice(0, 6)) eventRow(list, e);
+        if (s.events.length > 6) {
+          const d = node("details", undefined, timeline);
+          d.dataset.key = "older-events";
+          node(
+            "summary",
+            tr("更早事件", "Earlier events") + " · " + (s.events.length - 6),
+            d,
+          );
+          const older = node("ol", undefined, d);
+          older.className = "timeline";
+          for (const e of [...s.events].reverse().slice(6)) eventRow(older, e);
+        }
+        const runDetails = details(next, "run-full", s.run);
+        runDetails.querySelector("summary").textContent = tr(
+          "Run 完整字段",
+          "Full Run fields",
+        );
+        for (const d of next.querySelectorAll("details"))
+          d.open = opened.has(d.dataset.key);
+        content.replaceChildren(next);
+        const newGraph = content.querySelector(".scroll");
+        if (newGraph) {
+          newGraph.scrollLeft = graphPosition[0];
+          newGraph.scrollTop = graphPosition[1];
+        }
+        if (focusedDetails)
+          [...content.querySelectorAll("details")]
+            .find((d) => d.dataset.key === focusedDetails)
+            ?.querySelector("summary")
+            ?.focus({ preventScroll: true });
+        else if (focusedLegend)
+          [...content.querySelectorAll(".legend button")]
+            .find((b) => b.dataset.status === focusedLegend)
+            ?.focus({ preventScroll: true });
+        else if (active === graph) newGraph?.focus({ preventScroll: true });
+        document.querySelectorAll("aside nav a").forEach((a, i) => {
+          a.textContent = navText[i];
+        });
+        document
+          .querySelector("aside nav")
+          .setAttribute("aria-label", tr("页面导航", "Page navigation"));
+        document.querySelector(".side-note").textContent = tr(
+          "PROGRESS CONSOLE · 只读观察 · 无调度动作 · Localhost",
+          "PROGRESS CONSOLE · Read-only observations · No scheduling · Localhost",
+        );
+      }
+      function shortTitle(title) {
+        let result = "",
+          width = 0;
+        for (const char of String(title)) {
+          width += char.codePointAt(0) > 255 ? 2 : 1;
+          if (width > 32) return result + "…";
+          result += char;
+        }
+        return result;
+      }
+      function dependencyGraph(parent, tasks, taskMap) {
+        if (!tasks.length) {
+          empty(parent);
+          return;
+        }
+        const nodes = tasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+        }));
+        const known = new Set(nodes.map((t) => t.id));
+        for (const t of tasks)
+          for (const id of t.dependencies)
+            if (!known.has(id)) {
+              known.add(id);
+              nodes.push({ id, title: id, status: "unknown" });
+            }
+        const wrap = node("div", undefined, parent);
+        wrap.className = "scroll";
+        wrap.tabIndex = 0;
+        wrap.setAttribute(
+          "aria-label",
+          tr("可滚动任务依赖图", "Scrollable dependency graph"),
+        );
+        const incoming = new Map(
+          nodes.map((n) => [
+            n.id,
+            Object.hasOwn(taskMap, n.id)
+              ? taskMap[n.id].dependencies.length
+              : 0,
+          ]),
+        );
+        const outgoing = new Map(nodes.map((n) => [n.id, []]));
+        for (const t of tasks)
+          for (const prerequisite of t.dependencies)
+            outgoing.get(prerequisite).push(t.id);
+        const levels = new Map(nodes.map((n) => [n.id, 0]));
+        const queue = nodes
+          .filter((n) => incoming.get(n.id) === 0)
+          .map((n) => n.id);
+        for (let index = 0; index < queue.length; index++) {
+          const id = queue[index];
+          for (const target of outgoing.get(id)) {
+            levels.set(
+              target,
+              Math.max(levels.get(target), levels.get(id) + 1),
+            );
+            incoming.set(target, incoming.get(target) - 1);
+            if (incoming.get(target) === 0) queue.push(target);
+          }
+        }
+        const unresolved = nodes.filter((n) => incoming.get(n.id) > 0);
+        if (unresolved.length) {
+          const fallback =
+            Math.max(...queue.map((id) => levels.get(id)), 0) + 1;
+          unresolved.forEach((n) => levels.set(n.id, fallback));
+          badge(
+            tr("循环或受循环阻塞节点：", "Cyclic or cycle-dependent nodes: ") +
+              unresolved.length,
+            parent,
+            "warning",
+          );
+        }
+        const rows = new Map();
+        const positions = new Map(
+          nodes.map((n) => {
+            const level = levels.get(n.id),
+              row = rows.get(level) || 0;
+            rows.set(level, row + 1);
+            return [n.id, { x: 24 + level * 300, y: 22 + row * 84 }];
+          }),
+        );
+        const width = Math.max(
+            760,
+            (Math.max(...levels.values()) + 1) * 300 + 35,
+          ),
+          height = Math.max(138, Math.max(...rows.values()) * 84 + 24);
+        const svg = svgNode(
+          "svg",
+          {
+            width,
+            height,
+            viewBox: "0 0 " + width + " " + height,
+            role: "img",
+            "aria-label": tr(
+              "依赖分层：箭头由前置任务指向依赖它的任务；完整文本在图下",
+              "Dependency layers: prerequisite points to dependent; full text below",
+            ),
+          },
+          wrap,
+        );
+        for (const t of tasks)
+          for (const prerequisite of t.dependencies) {
+            const from = positions.get(prerequisite),
+              to = positions.get(t.id),
+              back = to.x <= from.x;
+            const x1 = from.x + 242,
+              y1 = from.y + 28,
+              x2 = back ? to.x + 242 : to.x,
+              y2 = to.y + 28;
+            const bend = back ? Math.max(x1, x2) + 32 : (x1 + x2) / 2;
+            const path = svgNode(
+              "path",
+              {
+                d:
+                  prerequisite === t.id
+                    ? `M ${x1} ${y1} C ${bend} ${y1 - 38} ${bend} ${y2 + 38} ${x2} ${y2}`
+                    : `M ${x1} ${y1} C ${bend} ${y1} ${bend} ${y2} ${x2} ${y2}`,
+                fill: "none",
+                stroke: back ? "#c48458" : "#8a9ebf",
+                "stroke-width": 1.6,
+              },
+              svg,
+            );
+            svgNode("title", {}, path, prerequisite + " → " + t.id);
+            const direction = back ? 1 : -1;
+            svgNode(
+              "path",
+              {
+                d: `M ${x2 + direction * 7} ${y2 - 4} L ${x2} ${y2} L ${x2 + direction * 7} ${y2 + 4}`,
+                fill: "none",
+                stroke: back ? "#c48458" : "#8a9ebf",
+                "stroke-width": 1.6,
+              },
+              svg,
+            );
+          }
+        for (const n of nodes) {
+          const p = positions.get(n.id),
+            g = svgNode("g", {}, svg);
+          svgNode(
+            "title",
+            {},
+            g,
+            n.title + " · " + n.id + " · " + label(n.status),
+          );
+          svgNode(
+            "rect",
+            {
+              x: p.x,
+              y: p.y,
+              width: 242,
+              height: 56,
+              rx: 8,
+              fill: "#f8faff",
+              stroke: statusColor(n.status),
+            },
+            g,
+          );
+          svgNode(
+            "text",
+            { x: p.x + 12, y: p.y + 22, fill: "#24334c", "font-size": 12 },
+            g,
+            shortTitle(n.title),
+          );
+          svgNode(
+            "text",
+            { x: p.x + 12, y: p.y + 43, fill: "#637189", "font-size": 11 },
+            g,
+            (Object.hasOwn(taskMap, n.id)
+              ? label(n.status)
+              : tr("未记录依赖", "Unrecorded dependency")) +
+              " · " +
+              String(n.id).slice(0, 22),
+          );
+        }
+        const d = node("details", undefined, parent);
+        d.dataset.key = "dependency-text";
+        node(
+          "summary",
+          tr(
+            "完整依赖文本（含未知节点）",
+            "Full dependency text (including unknown nodes)",
+          ),
+          d,
+        );
+        for (const n of nodes) {
+          const t = Object.hasOwn(taskMap, n.id) ? taskMap[n.id] : null;
+          node(
+            "p",
+            n.title +
+              " [" +
+              n.id +
+              "] · " +
+              label(n.status) +
+              " ← " +
+              (t
+                ? t.dependencies.length
+                  ? t.dependencies.join(", ")
+                  : tr("无依赖", "No dependencies")
+                : tr("未知依赖节点", "Unknown dependency node")),
+            d,
+          );
+        }
+      }
+      async function refresh() {
+        if (busy) return;
+        busy = true;
+        try {
+          const response = await fetch("/snapshot", { cache: "no-store" });
+          const data = await response.json();
+          if (!response.ok)
+            throw Error(data.error || "Snapshot request failed");
+          if (JSON.stringify(data) !== JSON.stringify(snapshot)) render(data);
+          snapshot = data;
+          last = new Date();
+          health.className = "health";
+          health.textContent =
+            tr("快照已更新 ", "Snapshot loaded ") +
+            last.toLocaleTimeString() +
+            " · " +
+            label(data.run.freshness) +
+            tr(
+              " · 每 3 秒读取 · 仅显式观察记录",
+              " · refresh every 3 seconds · explicit observations only",
+            );
+        } catch (error) {
+          health.className = "health error";
+          health.textContent =
+            tr("观测错误 ", "Observation error ") +
+            new Date().toLocaleTimeString() +
+            " · " +
+            error.message +
+            (last
+              ? tr(
+                  " · 保留最后有效快照 ",
+                  " · showing last valid snapshot from ",
+                ) + last.toLocaleTimeString()
+              : tr(" · 尚无有效快照", " · no valid snapshot available"));
+        } finally {
+          busy = false;
+        }
+      }
+      document.getElementById("refresh").onclick = refresh;
+      document.getElementById("language").onclick = () => {
+        language = language === "zh" ? "en" : "zh";
+        document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+        document.getElementById("language").textContent =
+          language === "zh" ? "English" : "中文";
+        document.getElementById("refresh").textContent = tr(
+          "↻ 刷新",
+          "↻ Refresh",
+        );
+        if (snapshot) render(snapshot);
+      };
+      refresh();
+      setInterval(refresh, 3000);
+    </script>
+  </body>
+</html>

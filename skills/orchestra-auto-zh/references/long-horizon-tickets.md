@@ -160,3 +160,6 @@ worker 用 `pr` skill 写 PR 正文，包含 `Door`、`Blast Radius` 与证据�
 | 集成 PR 是单向门 | 保持开放；由人类手动合并。 |
 | 嵌套 worktree 残留或 main 被改动 | 保留现场、打回、不验收。 |
 | worker 停摆或失联 | 按 worker-start / inbox 恢复参考处理；不重复派编辑者。 |
+
+可选进度：启用时，在正常动作完成后按[进度看板](progress-dashboard.md)节点责任表记录显式事实
+及结构化 task/dispatch/attempt 报告；记录错误只警告，不能阻断本流程。

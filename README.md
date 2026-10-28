@@ -355,3 +355,44 @@ The planning chain is [Matt Pocock's public engineering skills](https://github.c
 
 [MIT](LICENSE), copyright 2026 whutlichao. Contributions are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Optional local progress dashboard
+
+The dashboard is an optional read-only sidecar: Python 3 standard library, no database, external
+service or credentials. The coordinator explicitly records sanitized Run/task/worker facts; it does
+not poll Orca or consume/ack inbox messages. Worker self reports stay separate from verification;
+implemented, integrated, merged and tracker_closed are independent, initially unverified facts.
+It shows dependencies, blocks, pending decisions, parent/child workers, evidence and the timeline,
+with separate last observation and effective progress timestamps, unknown/lost/stale labels and no
+estimated percentage. Recording errors warn and orchestration continues even if the viewer is down.
+
+The redesigned console adds count-based task charts with clickable filters, a reference workflow
+with explicit per-step evidence, and a scrollable actual-dependency graph. Delivery booleans remain
+independent; no predecessor success is inferred. Chinese/English switching and expanded details
+survive refresh. See the reference for exact chart definitions and optional browser checks.
+
+Choose a persistent `AUDIT_ROOT` outside every repository. **DEMO and REAL use separate new directories.**
+From this repository (or adjust script paths to your installed bundle), a reproducible offline demo is:
+
+```bash
+python3 skills/orchestra-auto/scripts/progress-demo.py --state "$AUDIT_ROOT/demo-example" --target-repo "$PWD"
+python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/demo-example" serve --port 8766
+```
+
+Open **http://127.0.0.1:8766/**. The page says **DEMO** and refreshes every three seconds; demo refuses
+an existing directory. For **REAL** recording, initialize a separate directory (safe under `set -e`):
+
+```bash
+python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/run-example" init \
+  --event-id init-1 --data "{\"id\":\"run-example\",\"target_repo\":\"$PWD\",\"mode\":\"REAL\",\"status\":\"active\"}" \
+  || printf '%s\n' 'Progress warning; continue orchestration' >&2
+python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/run-example" serve --port 8765
+```
+
+Open **http://127.0.0.1:8765/**. Record updates in another terminal; Ctrl-C stops only the viewer.
+The page never serves artifact file contents. HTTP(S) references are clickable; other references
+remain text. Local access is trusted; do not forward the port. It can only observe explicitly
+submitted facts, and fetch errors retain the last valid snapshot with an error banner.
+See the [protocol and workflow ownership](skills/orchestra-auto/references/progress-dashboard.md)
+for JSON commands, nested task/dispatch/attempt reports, warning-and-continue wrappers, recovery,
+and the exact dispatch/question/acceptance/merge/tracker/close-out checkpoints.

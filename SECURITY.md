@@ -2,8 +2,9 @@
 
 ## What counts as a security issue here
 
-This repository publishes Markdown instruction bundles and one standard-library Python script. There
-is no server, no service and no credential handling. Security issues therefore fall into three
+This repository publishes Markdown instruction bundles and standard-library Python tools. The optional
+progress recorder has a read-only HTTP viewer bound to IPv4 localhost; it uses no external service,
+database or credentials. Runtime data belongs outside repositories. Security issues fall into four
 groups:
 
 1. **Credential or secret disclosure.** Any committed secret, token, or environment value; and any
@@ -20,6 +21,13 @@ groups:
    evidence, acknowledges a batch a human still has to read, mistakes a CLI failure for an empty
    queue, or allows two consumers on one Run's queue.
 
+4. **The optional progress sidecar.** Repository-boundary bypasses, serving arbitrary file contents,
+   unsafe text or link rendering, or a progress failure that blocks orchestration. The viewer serves
+   only the page and sanitized snapshot, renders values as text, and links only HTTP(S) references.
+   It has no write API or inbox consumer. Local writers and browser access are trusted; it is not
+   an authenticated multi-user service, and its port must not be forwarded. The summary-field
+   allowlist does not detect secrets inside allowed strings: writers must sanitize summaries.
+
 ## Reporting
 
 Open a [private security advisory](https://github.com/whutlichao/orchestra-auto/security/advisories/new)
@@ -29,7 +37,7 @@ value.
 
 Please include:
 
-- which of the three groups above it falls into;
+- which of the four groups above it falls into;
 - the file and, where relevant, the line;
 - what an attacker or an unwitting coordinator could do with it;
 - whether the content is already on a public branch (everything pushed is readable, including

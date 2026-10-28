@@ -296,3 +296,4 @@ improvising. The recurring shape of every rule there: gather evidence before dec
 error, and never relaunch unconditionally. A process error — not a product bug — also triggers a
 read-only retro; its candidates need human selection before a worker lands them. See
 [long-horizon tickets](references/long-horizon-tickets.md) §6.
+For optional progress recording/viewing, load [progress dashboard](references/progress-dashboard.md) on demand; errors warn and continue, with no extra inbox receiver.

@@ -55,3 +55,6 @@ worker 的推荐与依据不冲突时照推荐答，冲突时在应答里说明�
 
 应答走同一 orchestration 通道回（`reply`），不引入其他工具回 worker。
 问人用本会话的提问通道——这是 coordinator 侧唯一被允许且被要求的提问动作；worker 侧的禁令不变（§4.4 BEHAVIOR RULE 1）。
+
+可选进度：启用时，在正常动作完成后按[进度看板](progress-dashboard.md)节点责任表记录显式事实
+及结构化 task/dispatch/attempt 报告；记录错误只警告，不能阻断本流程。

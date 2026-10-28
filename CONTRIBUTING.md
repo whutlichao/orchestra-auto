@@ -21,7 +21,8 @@ language-specific (a quoted idle banner, a CLI flag name). Concretely:
 
 - The same reference files exist in both, with the same trigger conditions.
 - The same eval scenarios exist in both, in the same order, with the same assertion counts.
-- `scripts/inbox-loop.py` and `scripts/inbox-loop.sh` are **byte-identical** between the variants.
+- All shipped scripts and static assets (`inbox-loop.py`, `inbox-loop.sh`, `progress.py`,
+  `progress-demo.py`, `progress.html`) are **byte-identical** between the variants.
   The tests assert this; a divergence is a test failure, not a style preference.
 
 When you edit one variant, edit the other in the same commit. If you cannot translate a phrase
@@ -39,15 +40,17 @@ It covers both the package's shape and the inbox script's behaviour. If you only
 while you work, the individual commands are:
 
 ```bash
-python3 -m py_compile skills/*/scripts/inbox-loop.py     # Python compiles
+python3 -m py_compile skills/*/scripts/*.py     # Python compiles
 bash -n skills/*/scripts/inbox-loop.sh                    # shell wrapper parses
 python3 -m unittest tests.test_package_content -v         # package + disclosure scan
+python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
 python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 ```
 
 ### If you change the inbox script
 
-`scripts/inbox-loop.py` is the only executable thing shipped. Its safety properties are the reason
+`scripts/inbox-loop.py` owns inbox consumption; the optional `progress.py` recorder/viewer and
+`progress-demo.py` fixture generator never consume inbox messages. Its safety properties are the reason
 the tests exist, and a change that weakens one needs a very good argument:
 
 - a delivery batch is written atomically, and a re-read never sees a partial file;

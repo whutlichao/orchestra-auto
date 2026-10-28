@@ -189,3 +189,7 @@ improvements waits until the round's endpoint; retro never edits the skill mid-r
 | The integration PR is one-way | Leave it open; a human merges it. |
 | Nested worktrees remain or main was touched | Preserve the scene, send back, do not accept. |
 | The worker stalls or loses contact | Follow the worker-start / inbox recovery references; do not dispatch a duplicate editor. |
+
+Optional progress: when enabled, follow the checkpoint ownership table in
+[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
+structured task/dispatch/attempt reports; recording errors warn and never block this workflow.

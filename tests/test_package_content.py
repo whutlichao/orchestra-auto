@@ -39,6 +39,7 @@ REFERENCE_FILES = (
     "long-horizon-tickets.md",
     "reformat-noise-recovery.md",
     "reply-protocol.md",
+    "progress-dashboard.md",
     "spec-contract.md",
     "worker-start-and-recovery.md",
 )
@@ -74,7 +75,7 @@ ZH_INVARIANTS = (
 
 # Text files that make up the published surface. Binary-ish and generated paths are
 # excluded by suffix rather than by directory so a stray cache directory cannot hide.
-TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".jsonc", ".txt", ".yml", ".yaml", ""}
+TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".jsonc", ".txt", ".yml", ".yaml", ".html", ""}
 IGNORED_DIRECTORIES = {
     ".git", "__pycache__", ".ruff_cache", ".pytest_cache", ".mypy_cache",
     "node_modules", ".venv", "venv",
@@ -168,7 +169,7 @@ class StructureTests(unittest.TestCase):
             self.assertEqual(present, sorted(REFERENCE_FILES), f"{name} references")
 
     def test_scripts_match_across_variants(self):
-        for filename in ("inbox-loop.py", "inbox-loop.sh"):
+        for filename in ("inbox-loop.py", "inbox-loop.sh", "progress.py", "progress-demo.py", "progress.html"):
             english = (SKILL_DIRS[0] / "scripts" / filename).read_bytes()
             chinese = (SKILL_DIRS[1] / "scripts" / filename).read_bytes()
             self.assertEqual(english, chinese, f"{filename} differs between variants")

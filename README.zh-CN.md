@@ -322,3 +322,39 @@ tracker 靠 merge 关键字自动关票、刻意永不合并的探索性工作�
 ## 许可
 
 [MIT](LICENSE)，版权 2026 whutlichao。欢迎贡献，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 可选本地进度看板
+
+看板是可选只读旁路，仅依赖 Python 3 标准库，无数据库、外部服务或凭证。coordinator 显式记录
+去敏 Run/task/worker 事实，不查询 Orca，不消费或 ack inbox。worker 自报与验证分开，
+implemented、integrated、merged、tracker_closed 四项独立，初始为未确认。
+页面展示依赖、阻塞、待用户决定、worker 父子、证据及时间线，分别显示最后观察与有效进展时间、
+unknown/lost/stale，不估算百分比。记录错误只警告，页面服务关闭也不阻断编排。
+
+新版指挥台提供可点击筛选的实际任务数量环图、逐项列明证据的参考流程，以及可滚动的真实依赖图。
+四项交付布尔值保持独立，不从后续步骤推断前序成功。中文/English、筛选和展开明细在刷新后保留。
+准确图表定义及可选浏览器验证命令见参考说明。
+
+选择所有仓库之外的持久 `AUDIT_ROOT`，**DEMO 与 REAL 使用不同的新目录**。
+在本仓库运行（或改为安装包脚本路径），可复现离线演示：
+
+```bash
+python3 skills/orchestra-auto-zh/scripts/progress-demo.py --state "$AUDIT_ROOT/demo-example" --target-repo "$PWD"
+python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/demo-example" serve --port 8766
+```
+
+打开 **http://127.0.0.1:8766/**，页面明显标为 **DEMO**，每三秒刷新，demo 拒绝已存在目录。
+**REAL** 记录先初始化独立目录（`set -e` 下也安全继续）：
+
+```bash
+python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-example" init \
+  --event-id init-1 --data "{\"id\":\"run-example\",\"target_repo\":\"$PWD\",\"mode\":\"REAL\",\"status\":\"active\"}" \
+  || printf '%s\n' 'Progress warning; continue orchestration' >&2
+python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-example" serve --port 8765
+```
+
+打开 **http://127.0.0.1:8765/**，另一终端执行更新命令，Ctrl-C 仅停止查看。页面不提供 artifact
+文件正文；HTTP(S) 引用可点击，其他引用仅文本。本地访问可信，不要转发端口。只观察显式提交的事实，
+查询错误保留最后有效快照并显示错误横幅。
+完整 JSON 命令、嵌套 task/dispatch/attempt 上报、警告后继续包装、恢复与派发/问答/验收/合并/
+tracker/收尾各节点责任见[协议与流程责任](skills/orchestra-auto-zh/references/progress-dashboard.md)。

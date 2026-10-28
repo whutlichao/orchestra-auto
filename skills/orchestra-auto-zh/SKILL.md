@@ -216,3 +216,4 @@ CLI 起不来、`worker-start` 回执 `state: failed`、熔断触发、或 Orca 
 先取证再决定、报告精确错误、绝不无条件 relaunch。流程错误（不是产品 bug）还要触发只读 retro；
 候选单经人类选定后才由 worker 落地，见
 [长程票图](references/long-horizon-tickets.md) §6。
+需要可选进度记录/查看时按需读取[进度看板](references/progress-dashboard.md)；错误警告后继续，不增加 inbox 接收器。

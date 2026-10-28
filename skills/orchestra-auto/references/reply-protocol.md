@@ -76,3 +76,7 @@ Replies go back over the same orchestration channel (`reply`); introduce no othe
 a worker. Asking the human uses this session's question channel — that is the only place the
 coordinator is allowed and required to ask; the worker-side ban in §4.4 BEHAVIOR RULE 1 is
 unchanged.
+
+Optional progress: when enabled, follow the checkpoint ownership table in
+[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
+structured task/dispatch/attempt reports; recording errors warn and never block this workflow.

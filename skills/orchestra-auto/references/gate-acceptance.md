@@ -147,3 +147,7 @@ fails twice in a row on one ticket, pause that ticket and bring the user a diffe
 When send-backs reach 5 across tickets, or there is no substantive progress for a long stretch,
 stop dispatching and report the current state; wind down the remaining in-flight work safely
 using the available evidence.
+
+Optional progress: when enabled, follow the checkpoint ownership table in
+[progress dashboard](progress-dashboard.md) after the normal action. Record explicit facts and
+structured task/dispatch/attempt reports; recording errors warn and never block this workflow.

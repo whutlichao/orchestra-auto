@@ -1,0 +1,340 @@
+"""Public CLI, snapshot and HTTP contracts for the optional progress sidecar."""
+import fcntl
+import time
+import concurrent.futures
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import re
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / 'skills/orchestra-auto/scripts/progress.py'
+
+
+class ProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        # macOS TMPDIR lives under /var, a symlink to /private/var; progress.py
+        # rejects any state path with a symlink component, so fixtures must use
+        # the resolved root. The symlink-boundary test below creates its own link.
+        self.root = Path(self.temp.name).resolve()
+        self.state = self.root / 'audit' / 'real'
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        (self.repo / '.git').mkdir()
+
+    def cli(self, command, data=None, event='e1', source='coordinator', ok=True):
+        args = [sys.executable, str(SCRIPT), '--state', str(self.state), command]
+        if command != 'show':
+            args += ['--event-id', event, '--data', json.dumps(data or {}), '--source', source]
+        result = subprocess.run(args, text=True, capture_output=True)
+        self.assertEqual(result.returncode == 0, ok, result.stderr)
+        return result
+
+    def init(self):
+        self.cli('init', {'id': 'run1', 'target_repo': str(self.repo), 'mode': 'REAL',
+                          'phase': 'implementation', 'status': 'active'})
+
+    def snapshot(self):
+        return json.loads(self.cli('show').stdout)
+
+    def test_init_and_restart_read_versioned_external_snapshot(self):
+        self.init()
+        state = self.snapshot()
+        self.assertEqual(state['schema_version'], 1)
+        self.assertEqual(state['run']['id'], 'run1')
+        self.assertEqual(state['run']['mode'], 'REAL')
+        self.assertEqual(state['run']['observation_mode'], 'explicit-coordinator')
+        self.assertTrue(state['run']['started_at'])
+        self.assertFalse((self.repo / 'progress.json').exists())
+
+
+    def task(self, identity='t1', **extra):
+        self.cli('task', {'id': identity, 'title': identity, **extra}, event='task-' + identity)
+
+    def worker(self):
+        self.cli('worker', {'id': 'w1', 'task_id': 't1', 'dispatch_id': 'd1', 'attempt': 1,
+                            'start_confirmation': 'observed', 'lifecycle': 'running'}, event='start')
+
+    def test_reports_do_not_accept_or_merge_and_delivery_fields_are_independent(self):
+        self.init()
+        self.task(status='running')
+        self.worker()
+        before = self.snapshot()['run']['last_effective_progress']
+        self.cli('worker', {'id': 'w1', 'task_id': 't1', 'dispatch_id': 'd1', 'attempt': 1, 'reported_lifecycle': 'reported_done',
+                            'reported_summary': 'Tests pass'}, event='done', source='worker')
+        state = self.snapshot()
+        self.assertEqual(state['workers']['w1']['lifecycle'], 'running')
+        self.assertEqual(state['tasks']['t1']['status'], 'running')
+        self.assertEqual({key: state['deliveries']['t1'][key] for key in
+                          ('implemented', 'integrated', 'merged', 'tracker_closed')},
+                         {'implemented': None, 'integrated': None, 'merged': None, 'tracker_closed': None})
+        self.assertEqual(state['run']['last_effective_progress'], before)
+        self.assertIsNotNone(state['workers']['w1']['last_observed'])
+        self.cli('delivery', {'task_id': 't1', 'implemented': True}, event='accepted')
+        self.cli('artifact', {'id': 'pr1', 'task_id': 't1', 'kind': 'pr', 'label': 'PR',
+                              'reference': 'https://example.com/pull/1'}, event='pr')
+        self.assertIsNone(self.snapshot()['deliveries']['t1']['merged'])
+        self.cli('delivery', {'task_id': 't1', 'merged': True}, event='merge')
+        self.assertIsNone(self.snapshot()['deliveries']['t1']['tracker_closed'])
+        self.cli('delivery', {'task_id': 't1', 'implemented': True}, event='forged',
+                 source='worker', ok=False)
+        self.cli('worker', {'id': 'w1', 'lifecycle': 'closed'}, event='forged2',
+                 source='worker', ok=False)
+
+    def test_dependency_wait_failure_rejection_pause_and_nested_identity(self):
+        self.init()
+        self.task(status='rejected', blocked_reason='Review needs corrections')
+        self.task('t2', dependencies=['t1'], status='blocked', blocked_reason='Dependency rejected')
+        self.task('decision', status='waiting_user', pending_decision='Choose release date')
+        self.worker()
+        self.cli('worker', {'id': 'child', 'task_id': 't2', 'dispatch_id': 'child-d', 'attempt': 2,
+                            'parent_worker_id': 'w1', 'lifecycle': 'lost'}, event='child')
+        self.cli('worker', {'id': 'w1', 'dispatch_id': 'changed'}, event='identity', ok=False)
+        self.cli('end', {'status': 'paused', 'summary': 'Awaiting decision'}, event='pause')
+        state = self.snapshot()
+        self.assertEqual(state['tasks']['t2']['dependencies'], ['t1'])
+        self.assertEqual(state['tasks']['decision']['pending_decision'], 'Choose release date')
+        self.assertEqual(state['workers']['child']['parent_worker_id'], 'w1')
+        self.assertEqual(state['run']['status'], 'paused')
+        self.assertTrue(state['run']['ended_at'])
+
+    def test_stale_attempt_reports_are_rejected_and_effective_progress_is_explicit(self):
+        self.init()
+        self.task()
+        self.worker()
+        before = (self.state / 'progress.json').read_bytes()
+        self.cli('worker', {'id': 'w1', 'task_id': 't1', 'dispatch_id': 'old', 'attempt': 1,
+                            'reported_lifecycle': 'reported_done'}, event='stale', source='worker', ok=False)
+        self.cli('event', {'type': 'worker_done', 'task_id': 't1', 'worker_id': 'w1',
+                           'dispatch_id': 'd1', 'attempt': 2, 'summary': 'Stale attempt'},
+                 event='stale-event', source='worker', ok=False)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        args = [sys.executable, str(SCRIPT), '--state', str(self.state), 'worker',
+                '--event-id', 'effective', '--effective', '--data',
+                json.dumps({'id': 'w1', 'lifecycle': 'running'})]
+        result = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.snapshot()
+        self.assertIsNotNone(state['run']['last_effective_progress'])
+        self.assertEqual(state['workers']['w1']['last_effective_progress'],
+                         state['run']['last_effective_progress'])
+
+    def test_optional_recording_wrapper_continues_under_set_e_and_documents_all_checkpoints(self):
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            doc = (ROOT / 'skills' / language / 'references/progress-dashboard.md').read_text()
+            wrapper = re.search(r'progress_record\(\) \{.*?\n\}', doc, re.S).group()
+            result = subprocess.run(['bash', '-c', 'set -e\nPROGRESS=/nonexistent\nSTATE="$1"\n' +
+                                     wrapper + '\nprogress_record show\nprintf continued', '_', str(self.state)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, 'continued')
+            for token in ('task_id', 'dispatch_id', 'attempt', 'parent_worker_id', 'G-impl',
+                          'G-merge', 'tracker_closed', 'implemented', 'integrated', 'merged',
+                          'last_observed', 'last_effective_progress', 'pending_decision'):
+                self.assertIn(token, doc)
+        # No Orca/inbox dependency is needed even when the progress service is absent.
+        self.init()
+        self.task(status='running')
+        self.assertEqual(self.snapshot()['tasks']['t1']['status'], 'running')
+
+    def test_stub_workflow_trace_is_identical_disabled_working_failing_and_viewer_down(self):
+        # This fixture CLI represents normal coordinator actions, not a new Orca API.
+        # A separate forbidden-orca executable catches any unexpected real CLI call.
+        stub = self.root / 'action.py'
+        stub.write_text("import sys\nwith open(sys.argv[1], 'a') as f: f.write(sys.argv[2] + '\\n')\n")
+        forbidden = self.root / 'orca'
+        forbidden.write_text('#!/bin/sh\nprintf unexpected-orca >> "$ORCA_TRACE"\nexit 91\n')
+        forbidden.chmod(0o700)
+        wrapper = re.search(r'progress_record\(\) \{.*?\n\}',
+                            (ROOT / 'skills/orchestra-auto/references/progress-dashboard.md').read_text(),
+                            re.S).group()
+        actions = ['dispatch', 'start-confirmed', 'question', 'wait-user', 'answer', 'worker-done',
+                   'reject', 'retry', 'accept', 'integrate', 'merge', 'tracker-close', 'end']
+        traces = {}
+        for mode in ('disabled', 'working', 'failing', 'viewer-down'):
+            state = self.root / mode
+            trace = self.root / (mode + '.trace')
+            unexpected = self.root / (mode + '.orca')
+            if mode == 'viewer-down':
+                address, viewer = self.serve(state, with_process=True)
+                # Starting and stopping the viewer does not create the state or own the recorder.
+                with urllib.request.urlopen(address) as response:
+                    self.assertEqual(response.status, 200)
+                viewer.terminate()
+                viewer.communicate(timeout=5)
+            progress = str(SCRIPT) if mode != 'failing' else '/nonexistent-progress.py'
+            shell = 'set -e\n' + wrapper + '\n'
+            if mode == 'disabled':
+                shell += 'progress_record() { :; }\n'
+            shell += 'progress_record init --event-id init --data "$INIT"\n'
+            for index, action in enumerate(actions):
+                shell += '"$PYTHON" "$STUB" "$TRACE" ' + action + '\n'
+                shell += ('progress_record event --event-id step-' + str(index) +
+                          ' --data \'{"type":"' + action + '","summary":"stub action complete"}\'\n')
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True,
+                                    env={**os.environ, 'PROGRESS': progress, 'STATE': str(state),
+                                         'PYTHON': sys.executable, 'STUB': str(stub), 'TRACE': str(trace),
+                                         'INIT': json.dumps({'id': mode, 'target_repo': str(self.repo),
+                                                             'mode': 'REAL'}),
+                                         'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
+                                         'ORCA_TRACE': str(unexpected)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            traces[mode] = trace.read_text().splitlines()
+            self.assertEqual(traces[mode], actions)
+            self.assertFalse(unexpected.exists(), 'progress must never call Orca/check/ack')
+            if mode == 'failing':
+                self.assertIn('Progress warning; continue orchestration', result.stderr)
+            if mode in ('working', 'viewer-down'):
+                recorded = json.loads((state / 'progress.json').read_text())
+                self.assertEqual([e['type'] for e in recorded['events'][1:]], actions)
+        self.assertEqual(traces['disabled'], traces['working'])
+        self.assertEqual(traces['working'], traces['failing'])
+        self.assertEqual(traces['working'], traces['viewer-down'])
+
+    def test_top_level_parent_identity_cannot_change_or_form_a_cycle(self):
+        self.init()
+        self.task()
+        self.worker()
+        self.cli('worker', {'id': 'child', 'task_id': 't1', 'dispatch_id': 'child-d', 'attempt': 1,
+                            'parent_worker_id': 'w1'}, event='child')
+        before = (self.state / 'progress.json').read_bytes()
+        self.cli('worker', {'id': 'w1', 'parent_worker_id': 'child'}, event='cycle', ok=False)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        self.assertIsNone(self.snapshot()['workers']['w1']['parent_worker_id'])
+        self.cli('worker', {'id': 'missing-parent', 'task_id': 't1', 'dispatch_id': 'missing-d',
+                            'attempt': 1, 'parent_worker_id': 'absent'}, event='missing', ok=False)
+
+    def test_duplicate_events_are_idempotent_and_payload_collisions_fail(self):
+        self.init()
+        data = {'type': 'observed', 'summary': 'No state transition'}
+        self.cli('event', data, event='repeat')
+        before = (self.state / 'progress.json').read_bytes()
+        self.cli('event', data, event='repeat')
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        self.cli('event', {**data, 'summary': 'Different'}, event='repeat', ok=False)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+
+    def test_contended_lock_times_out_and_wrapper_can_continue_without_mutation(self):
+        self.init()
+        before = (self.state / 'progress.json').read_bytes()
+        with (self.state / '.progress.lock').open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            started = time.monotonic()
+            result = subprocess.run([sys.executable, str(SCRIPT), '--state', str(self.state),
+                                     'run', '--event-id', 'locked', '--data', '{"phase":"blocked"}'],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('lock busy', result.stderr)
+            self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        self.cli('run', {'phase': 'recovered'}, event='unlocked')
+        self.assertEqual(self.snapshot()['run']['phase'], 'recovered')
+
+    def test_process_concurrency_and_abandoned_temporary_file_recovery(self):
+        self.init()
+        (self.state / '.progress-abandoned').write_text('{partial')
+        def write(index):
+            return self.cli('event', {'type': 'heartbeat', 'summary': str(index)},
+                            event='concurrent-' + str(index))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(write, range(24)))
+        state = self.snapshot()
+        self.assertEqual(len(state['events']), 25)
+        self.assertEqual(len({e['id'] for e in state['events']}), 25)
+        self.cli('run', {'phase': 'verification'}, event='restart')
+        self.assertEqual(self.snapshot()['run']['phase'], 'verification')
+
+    def test_unknown_fields_invalid_types_and_repository_boundaries_do_not_write(self):
+        self.init()
+        before = (self.state / 'progress.json').read_bytes()
+        for data in ({'id': 't', 'raw_message': 'forbidden'}, {'id': 't', 'dependencies': 'bad'},
+                     {'id': 't', 'status': 'invented'}):
+            self.cli('task', data, event='bad', ok=False)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        original = self.state
+        for path in (self.repo / 'audit', self.repo, self.repo.parent):
+            self.state = path
+            self.cli('init', {'id': 'bad', 'target_repo': str(self.repo), 'mode': 'REAL'}, ok=False)
+            self.assertFalse((path / 'progress.json').exists())
+        self.state = original
+        link = self.root / 'link'
+        link.symlink_to(self.repo, target_is_directory=True)
+        self.state = link / 'audit'
+        self.cli('init', {'id': 'bad', 'target_repo': str(self.repo), 'mode': 'REAL'}, ok=False)
+        self.assertFalse((self.repo / 'audit').exists())
+
+    def serve(self, state=None, stale=300, with_process=False):
+        process = subprocess.Popen([sys.executable, str(SCRIPT), '--state', str(state or self.state),
+                                    'serve', '--port', '0', '--stale-seconds', str(stale)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def cleanup():
+            process.terminate()
+            process.communicate(timeout=5)
+        self.addCleanup(cleanup)
+        address = process.stdout.readline().strip().split()[-1]
+        return (address, process) if with_process else address
+
+    def test_http_is_read_only_localhost_stale_and_never_serves_file_paths(self):
+        self.init()
+        self.task()
+        self.worker()
+        url = self.serve(stale=0)
+        self.assertTrue(url.startswith('http://127.0.0.1:'))
+        state = json.load(urllib.request.urlopen(url + 'snapshot'))
+        self.assertEqual(state['workers']['w1']['freshness'], 'stale')
+        self.assertNotIn('receipts', state)
+        before = (self.state / 'progress.json').read_bytes()
+        for path in ('progress.json', '../progress.json', '%2e%2e/progress.json', 'files?path=/etc/passwd'):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(url + path)
+            self.assertEqual(caught.exception.code, 404)
+        request = urllib.request.Request(url + 'snapshot', data=b'{}', method='POST')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request)
+        self.assertEqual(caught.exception.code, 501)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        (self.state / 'progress.json').write_text('{broken')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(url + 'snapshot')
+        self.assertEqual(caught.exception.code, 503)
+        self.assertIn('Snapshot unavailable', caught.exception.read().decode())
+
+    def test_empty_missing_snapshot_and_corruption_are_explicit_errors(self):
+        self.cli('show', ok=False)
+        url = self.serve()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(url + 'snapshot')
+        self.assertEqual(caught.exception.code, 503)
+        self.init()
+        self.assertEqual(self.snapshot()['tasks'], {})
+        (self.state / 'progress.json').write_text('{broken')
+        self.cli('run', {'status': 'active'}, event='repair', ok=False)
+        self.assertEqual((self.state / 'progress.json').read_text(), '{broken')
+
+    def test_demo_cannot_overwrite_real_or_existing_demo_and_has_no_orca_dependency(self):
+        demo = SCRIPT.with_name('progress-demo.py')
+        self.init()
+        before = (self.state / 'progress.json').read_bytes()
+        result = subprocess.run([sys.executable, str(demo), '--state', str(self.state)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.state / 'progress.json').read_bytes(), before)
+        self.state = self.root / 'demo'
+        result = subprocess.run([sys.executable, str(demo), '--state', str(self.state),
+                                 '--target-repo', str(self.repo)], capture_output=True, text=True,
+                                env={**os.environ, 'PATH': '/nonexistent'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.snapshot()['run']['mode'], 'DEMO')
+        self.assertEqual(self.snapshot()['tasks']['retry']['status'], 'rejected')
+
+
+if __name__ == '__main__':
+    unittest.main()
