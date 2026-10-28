@@ -20,6 +20,7 @@ const fixture = () => ({
     title: "可验证的运行目标 / verified objective",
     mode: "DEMO",
     status: "active",
+    target_repo: "/fixtures/target-repo",
     phase: "acceptance",
     freshness: "fresh",
     last_observed: "2026-01-01T12:00:00Z",
@@ -165,6 +166,10 @@ let browser;
     "section order",
   );
   assert.equal(await page.locator("#nav a").count(), 8);
+  assert.match(
+    await page.locator(".run-meta").innerText(),
+    /目标仓库\s*\/fixtures\/target-repo/,
+  );
   assert.equal(
     await page.locator(".attention-count").innerText(),
     "共 2 项",
@@ -203,6 +208,10 @@ let browser;
   await refresh();
   assert.equal(await page.locator("html").getAttribute("lang"), "en");
   assert.match(await page.locator("#tasks h2").innerText(), /Tasks/);
+  assert.match(
+    await page.locator(".run-meta").innerText(),
+    /Target repository\s*\/fixtures\/target-repo/,
+  );
   assert.equal(
     await page.locator("#nav .nav-label").first().innerText(),
     "Overview",
@@ -243,12 +252,14 @@ let browser;
   snapshot.workers = {};
   snapshot.deliveries = {};
   snapshot.run.phase = "merged";
+  delete snapshot.run.target_repo;
   await refresh();
   assert.equal(await page.locator(".donut-center strong").innerText(), "0");
   assert.deepEqual(
     await page.locator(".step .count").allTextContents(),
     Array(8).fill("0"),
   );
+  assert.match(await page.locator(".run-meta").innerText(), /目标仓库\s*未知/);
   assert.deepEqual(
     await page.locator(".attention-num").allTextContents(),
     ["0", "0", "0", "0"],

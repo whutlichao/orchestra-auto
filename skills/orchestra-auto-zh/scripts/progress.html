@@ -1585,7 +1585,11 @@
         node("span", tr("Run ", "Run ") + value(snap.run.id), meta).classList.add(
           "mono",
         );
-
+        node(
+          "span",
+          tr("目标仓库 ", "Target repository ") + value(snap.run.target_repo),
+          meta,
+        );
         node(
           "span",
           tr("记录方式 ", "Observation ") + value(snap.run.observation_mode),
