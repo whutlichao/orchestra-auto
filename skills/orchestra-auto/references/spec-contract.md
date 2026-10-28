@@ -35,8 +35,10 @@ documentation tickets against their own documentation gates:
    Heartbeat at the preamble's cadence; on ask timeout resume the same message ID — do not ask
    twice and do not decide on a human's behalf.
    Closing order: check follow-ups → write the Answer and evidence → commit, push and create or
-   update the PR for project changes → send worker_done from your own terminal using the live
-   preamble's exact command → verify the success receipt → end the turn.
+   update the PR for project changes → record the PR number and the CI reading once, in a single
+   post-PR commit; no additional commit per reading, and documentation-only commits are not
+   CI-chased — the final CI is the coordinator's to accept → send worker_done from your own
+   terminal using the live preamble's exact command → verify the success receipt → end the turn.
    worker_done must carry the real Task ID, Dispatch ID, an explicit succeeded/failed, and a
    three-sentence summary of changes, findings and what is left; files-modified/report-path only
    with real values. Failure must be reported too; a plain final is not a substitute.
@@ -64,7 +66,7 @@ Target: <files/modules>
 Change: <the concrete result to produce>
 Constraints: <boundaries not to cross; use deep-module vocabulary for terms>
 Ownership: <what this ticket may edit; the canonical ticket lives in the worktree and you own its status transitions and Answer appends>
-Observable acceptance: <the applicable test commands and observable results; red→green evidence for fixes; the two-axis code-review section when needed. When project files change: parse and use the local pr skill to write the PR body, push the branch, create or update the PR with --body-file, and write the PR number and body path back into the Answer. Finally send and verify the worker_done receipt>
+Observable acceptance: <the applicable test commands and observable results; red→green evidence for fixes; the two-axis code-review section when needed. When project files change: parse and use the local pr skill to write the PR body, push the branch, create or update the PR with --body-file, and write the PR number and body path into the Answer (one post-PR backfill commit, never a commit per reading). Finally send and verify the worker_done receipt>
 Question channel: orchestration ask (AskUserQuestion is banned).
 ```
 

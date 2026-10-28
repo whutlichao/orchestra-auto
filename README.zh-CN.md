@@ -265,7 +265,7 @@ python3 -c "import json,glob;[json.load(open(p)) for p in glob.glob('skills/*/ev
 
 ## 评估集
 
-每个语言变体都带一份 `evals/evals.json`，30 个提示词层面的场景，覆盖通道判定、worker 栏取值、
+每个语言变体都带一份 `evals/evals.json`，31 个提示词层面的场景，覆盖通道判定、worker 栏取值、
 启动确认（含 `turnStart: observed`、unsupported 回执、以及没有终端的 worker）、门禁选择、
 review 安排、打回判断、决策分类、升级、合并例外，以及「先唤醒、再重装」的契约。
 需要文件系统路径的场景自带 `SKILLS_ROOT` / `PRE_SKILL` 夹具，不要求模型凭空编一个真实的本机路径。

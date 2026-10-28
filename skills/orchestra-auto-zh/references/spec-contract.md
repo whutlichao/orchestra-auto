@@ -27,7 +27,9 @@ tdd / diagnosing-bugs / code-review，于是「不用其他 skills」的故障�
    的可执行文件执行 check --terminal <自己的真实句柄> --json，读取并处理 coordinator follow-up。
    heartbeat 按 preamble 节奏；ask 超时续等同一 message ID，不重复提问、不自行替人决策。
    收尾顺序：检查 follow-up → 写 Answer/证据 → 项目改动提交、推送并创建或更新 PR
-   → 从自己的终端按 live preamble 原命令发送 worker_done → 核对成功回执 → 结束回合。
+   → PR 号与 CI 读数一次写全（PR 创建后一笔提交），不追加提交；文档-only 提交不追 CI，
+   最终 CI 由 coordinator 验收 → 从自己的终端按 live preamble 原命令发送 worker_done
+   → 核对成功回执 → 结束回合。
    worker_done 必须带真实 Task ID、Dispatch ID、显式 succeeded/failed，三句摘要说明改动、
    发现、遗留；files-modified/report-path 仅填真实值。失败也必须报告，普通 final 不能替代。
    保存发送回执；结果不明时先查当前 Dispatch，已结算不重发，只有确认未结算且未入队才重试一次。
@@ -46,7 +48,7 @@ Target：<文件/模块>
 Change：<要产出的具体结果>
 Constraints：<不许碰的边界；术语用 codebase-design 词汇>
 Ownership：<本票可编辑范围；票据正本在 worktree 内，你负责 Status 流转与 Answer 追加>
-Observable acceptance：<适用的测试命令与可观察结果；修复类红→绿证据；需要时含 code-review 双轴。项目文件有改动时：解析并使用本机 pr skill 编写 PR body，推分支，以 --body-file 创建或更新 PR，PR 号及 body 路径回填 Answer。最后发送并核实 worker_done 回执>
+Observable acceptance：<适用的测试命令与可观察结果；修复类红→绿证据；需要时含 code-review 双轴。项目文件有改动时：解析并使用本机 pr skill 编写 PR body，推分支，以 --body-file 创建或更新 PR，PR 号及 body 路径写入 Answer（PR 创建后随唯一一笔回填提交完成，不为回填追加提交）。最后发送并核实 worker_done 回执>
 提问通道：orchestration ask（禁 AskUserQuestion）。
 ```
 

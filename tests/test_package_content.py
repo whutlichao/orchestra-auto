@@ -507,6 +507,36 @@ class ContractRegressionTests(unittest.TestCase):
             self.assertNotIn("`state: ready` ≠ `turnStart`", entrypoint,
                              f"{name}: the duplicated ready rule came back")
 
+    def test_spec_contract_keeps_the_backfill_to_one_post_pr_commit(self):
+        """The PR number cannot ride the code commit, so bookkeeping gets exactly one commit.
+
+        A template that asks the worker to "write the PR number back into the Answer" without
+        bounding it invites one push per reading: the number exists only after the PR, and each
+        CI observation then becomes another documentation-only commit and another full CI run.
+        The rule is one post-PR commit carrying the number and the reading, no CI chase for
+        documentation-only commits, and a final CI owned by the coordinator.
+        """
+        expectations = {
+            "orchestra-auto": {
+                "required": ("single post-PR commit", "documentation-only commits are not CI-chased",
+                             "coordinator's to accept", "one post-PR backfill commit",
+                             "never a commit per reading"),
+                "forbidden": "write the PR number and body path back into the Answer",
+            },
+            "orchestra-auto-zh": {
+                "required": ("PR 创建后一笔提交", "文档-only 提交不追 CI", "coordinator 验收",
+                             "唯一一笔回填提交", "不为回填追加提交"),
+                "forbidden": "PR 号及 body 路径回填 Answer",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["spec-contract.md"])
+            for phrase in expected["required"]:
+                self.assertIn(phrase, text, f"{name}: the backfill rule lost {phrase!r}")
+            self.assertNotIn(expected["forbidden"], text,
+                             f"{name}: the unbounded 'write it back' instruction came back")
+
     def test_dispatch_preflight_separates_the_three_checkpoints(self):
         """A pre-dispatch fact and a post-dispatch fact must not share one gate.
 

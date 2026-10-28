@@ -289,7 +289,7 @@ Two manual checks belong beside it, and neither can be automated from inside the
 
 ## Evals
 
-Each language variant ships an `evals/evals.json` with 30 prompt-level scenarios covering channel
+Each language variant ships an `evals/evals.json` with 31 prompt-level scenarios covering channel
 routing, worker-slot resolution, start verification (including `turnStart: observed`, an
 unsupported receipt, and a worker with no terminal), gate choice, review arrangement, send-back
 judgement, decision classification, escalation, the merge exceptions and the wake-then-reinstall
