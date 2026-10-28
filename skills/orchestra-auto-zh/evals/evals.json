@@ -811,6 +811,31 @@
           "name": "why_cites_rule"
         }
       ]
+    },
+    {
+      "id": 30,
+      "name": "single-post-pr-backfill",
+      "prompt": "你正在跑 orchestra-auto。一个 worker 已经推送代码并创建了 PR，现在准备把 PR 号与一次 CI 读数记进票据 Answer。\n\n只输出：\n1. COMMIT: 这笔记账如何提交与推送\n2. CI: 这次文档改动与最终 CI 分别由谁跟进\n3. WHY: 一到两句\n不要执行命令。",
+      "expected_output": "PR 号与 CI 读数一次写全：PR 创建后只做一笔回填提交，不为每条读数各提交、各推送一次。该文档-only 提交不追 CI；最终 CI 由 coordinator 在验收与合并时确认。WHY 说明 PR 号只在 PR 创建后才存在，逐条读数提交只会制造 doc-only 推送与又一轮整跑 CI。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "single_post_pr_commit",
+          "text": "PR 号与 CI 读数写在同一笔 PR 创建后的回填提交里"
+        },
+        {
+          "name": "no_commit_per_reading",
+          "text": "不为每条 CI 读数追加提交或推送"
+        },
+        {
+          "name": "docs_only_not_ci_chased",
+          "text": "文档-only 回填提交不追 CI"
+        },
+        {
+          "name": "coordinator_owns_final_ci",
+          "text": "最终 CI 由 coordinator 验收，而不是 worker 为它反复推送"
+        }
+      ]
     }
   ]
 }

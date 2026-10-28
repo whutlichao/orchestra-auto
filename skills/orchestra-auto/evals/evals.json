@@ -811,6 +811,31 @@
           "name": "why_cites_rule"
         }
       ]
+    },
+    {
+      "id": 30,
+      "name": "single-post-pr-backfill",
+      "prompt": "You are running orchestra-auto. A worker has pushed its code and opened the PR, and is about to record the PR number plus one CI reading in the ticket Answer.\n\nOutput only:\n1. COMMIT: how that bookkeeping is committed and pushed\n2. CI: who follows up this documentation change and the final CI\n3. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "The PR number and the CI reading are written once: a single post-PR backfill commit, never one commit and push per reading. That documentation-only commit is not CI-chased; the coordinator owns the final CI check at acceptance and merge. WHY: the PR number only exists after the PR is created, so a commit per reading only produces doc-only pushes and another full CI run.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "single_post_pr_commit",
+          "text": "Writes the PR number and the CI reading in one post-PR backfill commit"
+        },
+        {
+          "name": "no_commit_per_reading",
+          "text": "Adds no commit or push for each individual CI reading"
+        },
+        {
+          "name": "docs_only_not_ci_chased",
+          "text": "Does not chase CI for the documentation-only backfill commit"
+        },
+        {
+          "name": "coordinator_owns_final_ci",
+          "text": "Leaves the final CI check to the coordinator instead of pushing again for it"
+        }
+      ]
     }
   ]
 }
