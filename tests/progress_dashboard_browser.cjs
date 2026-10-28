@@ -20,6 +20,7 @@ const fixture = () => ({
     title: "可验证的运行目标 / verified objective",
     mode: "DEMO",
     status: "active",
+    target_repo: "/fixtures/target-repo",
     phase: "acceptance",
     freshness: "fresh",
     last_observed: "2026-01-01T12:00:00Z",
@@ -78,6 +79,8 @@ let browser;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const errors = [];
+  const requests = [];
+  page.on("request", (request) => requests.push(request.url()));
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(url);
   await page.waitForSelector(".donut");
@@ -146,6 +149,45 @@ let browser;
       .evaluate((n) => n.style.marginLeft),
     "28px",
   );
+  assert.deepEqual(
+    await page
+      .locator("#content section[id]")
+      .evaluateAll((nodes) => nodes.map((node) => node.id)),
+    [
+      "overview",
+      "attention",
+      "stats",
+      "workflow",
+      "graph",
+      "tasks",
+      "delivery",
+      "events",
+    ],
+    "section order",
+  );
+  assert.equal(await page.locator("#nav a").count(), 8);
+  assert.match(
+    await page.locator(".run-meta").innerText(),
+    /目标仓库\s*\/fixtures\/target-repo/,
+  );
+  assert.equal(
+    await page.locator(".attention-count").innerText(),
+    "共 2 项",
+  );
+  assert.equal(await page.locator("#attention .attention-card").count(), 4);
+  assert.match(
+    await page.locator('[data-group="decision"]').innerText(),
+    /Choose release date/,
+  );
+  assert.match(await page.locator('[data-group="lost"]').innerText(), /child/);
+  assert.match(
+    await page.locator(".time-tile.primary-time").innerText(),
+    /最近有效进展[\s\S]*未知/,
+  );
+  assert.doesNotMatch(
+    await page.locator("#content").innerText(),
+    /%|剩余时间|remaining time/,
+  );
   await page.locator(".legend button").filter({ hasText: "实施中" }).click();
   await page.locator('[data-key="task:b"] summary').click();
   snapshot.run.freshness = "stale";
@@ -157,10 +199,27 @@ let browser;
   );
   assert.match(await page.locator(".filterbar").innerText(), /筛选/);
   await page.locator(".filterbar button").click();
+  assert.equal(await page.locator(".task-row").count(), 4);
+  assert.match(await page.locator(".filterbar").innerText(), /全部任务/);
+  await page.locator(".legend button").filter({ hasText: "实施中" }).click();
+  await page.locator("#stats .panel-head button").click();
+  assert.equal(await page.locator(".task-row").count(), 4);
   await page.locator("#language").click();
   await refresh();
   assert.equal(await page.locator("html").getAttribute("lang"), "en");
   assert.match(await page.locator("#tasks h2").innerText(), /Tasks/);
+  assert.match(
+    await page.locator(".run-meta").innerText(),
+    /Target repository\s*\/fixtures\/target-repo/,
+  );
+  assert.equal(
+    await page.locator("#nav .nav-label").first().innerText(),
+    "Overview",
+  );
+  assert.match(
+    await page.locator("#attention h2").innerText(),
+    /Needs attention/,
+  );
   await page.locator("#language").click();
   results.push(
     "mixed states, explicit counts, nested lost/stale workers, filter/details/language survive refresh",
@@ -173,6 +232,7 @@ let browser;
     await page.locator("#health").innerText(),
     /test observation failure/,
   );
+  assert.match(await page.locator("#health").innerText(), /最后有效快照/);
   response = "valid";
   snapshot = {
     ...fixture(),
@@ -192,18 +252,75 @@ let browser;
   snapshot.workers = {};
   snapshot.deliveries = {};
   snapshot.run.phase = "merged";
+  delete snapshot.run.target_repo;
   await refresh();
   assert.equal(await page.locator(".donut-center strong").innerText(), "0");
   assert.deepEqual(
     await page.locator(".step .count").allTextContents(),
     Array(8).fill("0"),
   );
+  assert.match(await page.locator(".run-meta").innerText(), /目标仓库\s*未知/);
+  assert.deepEqual(
+    await page.locator(".attention-num").allTextContents(),
+    ["0", "0", "0", "0"],
+    "empty attention counts",
+  );
+  snapshot.run.status = "waiting_user";
+  await refresh();
+  assert.equal(
+    await page.locator(".attention-count").innerText(),
+    "共 1 项",
+  );
+  assert.match(
+    await page.locator('[data-group="decision"]').innerText(),
+    /Run 已标记等待用户/,
+  );
+  snapshot.run.status = "active";
   snapshot.tasks = { unknown: task("unknown", "unknown", ["missing"]) };
   await refresh();
   assert.match(await page.locator(".scroll svg").textContent(), /missing/);
   assert.equal(await page.locator(".donut-center strong").innerText(), "1");
   results.push(
     "empty and unknown honest; run.phase never backfills workflow facts; unknown dependency stays visible",
+  );
+  snapshot = fixture();
+  snapshot.tasks = {
+    bad: task("bad", "failed"),
+    held: task("held", "blocked", [], {
+      blocked_reason: "Waiting on review",
+      pending_decision: "Approve the review scope",
+    }),
+    warned: task("warned", "running", [], {
+      blocked_reason: "Recorded block was not cleared",
+    }),
+  };
+  snapshot.workers = {
+    gone: {
+      id: "gone",
+      task_id: "bad",
+      lifecycle: "failed",
+      reported_lifecycle: "unknown",
+      start_confirmation: "unknown",
+      freshness: "stale",
+    },
+  };
+  snapshot.deliveries = {};
+  await refresh();
+  assert.deepEqual(
+    await page.locator(".attention-num").allTextContents(),
+    ["1", "2", "2", "0"],
+  );
+  assert.match(
+    await page.locator('[data-group="decision"]').innerText(),
+    /Approve the review scope/,
+  );
+  assert.match(
+    await page.locator('[data-group="blocked"]').innerText(),
+    /Waiting on review/,
+  );
+  assert.match(await page.locator('[data-group="failed"]').innerText(), /gone/);
+  results.push(
+    "attention covers blocked, failed and lost records without inventing others",
   );
   snapshot = fixture();
   snapshot.tasks = { a: task("a", "accepted"), b: task("b", "accepted") };
@@ -311,6 +428,17 @@ let browser;
     );
   await refresh();
   assert.equal(await page.locator(".scroll svg rect").count(), 90);
+  const graph = page.locator(".scroll");
+  await graph.evaluate((element) => {
+    element.scrollLeft = 420;
+  });
+  snapshot.tasks.n0.title = "Changed after scroll";
+  await refresh();
+  assert.equal(
+    await graph.evaluate((element) => element.scrollLeft),
+    420,
+    "graph scroll survives refresh",
+  );
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -318,7 +446,12 @@ let browser;
     true,
   );
   results.push(
-    "cycles, missing nodes, long titles and 90 tasks remain scrollable; malicious HTML/URLs stay text",
+    "cycles, missing nodes, long titles and 90 tasks stay scrollable; graph scroll survives refresh; malicious HTML/URLs stay text",
+  );
+  assert.deepEqual(
+    requests.filter((requestUrl) => !requestUrl.startsWith(url)),
+    [],
+    "no remote requests",
   );
   assert.deepEqual(errors, []);
   if (output)

@@ -54,10 +54,17 @@ review rejection, nested workers, a lost worker and independent delivery facts. 
 ## Reading the visual dashboard
 
 The single bundled page defaults to Chinese and has an English switch. Both bundles ship the
-same page bytes. The light canvas and narrow navigation separate the Run objective, observation
-health, decisions, counts, charts and evidence. No external fonts, assets or frontend packages load.
-A snapshot refreshes every three seconds. Task filters, expanded details, graph scroll and language
+same page bytes. A light canvas, fixed left section navigation and a top bar order the Run
+overview, attention items, task statistics, static reference flow, dependency graph, tasks and
+workers, delivery evidence and events. No external fonts, assets or frontend packages load. A
+snapshot refreshes every three seconds. Task filters, expanded details, graph scroll and language
 survive updates; errors show their time and preserve the complete last valid page.
+
+Attention lists only recorded block reasons, pending decisions (including a Run waiting for a user
+without any task-level decision), failed records and lost workers; each matching record counts
+separately in its group; unreported problems never appear. The overview keeps last observation and
+effective progress in separate tiles, and worker rows keep verified lifecycle, self report,
+start confirmation and freshness separate.
 
 The donut partitions **actual recorded task counts**, including unknown states; its center is the
 actual task total. Each textual legend button filters the task list, with a visible filter and reset.

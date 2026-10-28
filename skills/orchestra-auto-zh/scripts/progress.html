@@ -3,213 +3,650 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
     <title>Orchestra · 进展指挥台</title>
     <style>
       :root {
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        color: #202c40;
-        background: #f5f6f8;
-        font-size: 14px;
-        --blue: #3164e9;
-        --line: #e4e7ed;
-        --muted: #69768a;
+        --bg: #f5f7fb;
+        --surface: #ffffff;
+        --surface-2: #f8fafc;
+        --surface-3: #eef3fb;
+        --line: #e3e8f0;
+        --line-strong: #cbd5e4;
+        --text: #152238;
+        --text-2: #35435c;
+        --muted: #66738b;
+        --faint: #8b96aa;
+        --accent: #2f5bea;
+        --accent-2: #4b74f0;
+        --accent-soft: #edf2ff;
+        --accent-line: #c7d6ff;
+        --success: #0c7d62;
+        --success-soft: #e6f6f0;
+        --warning: #9a5b09;
+        --warning-soft: #fdf3e1;
+        --danger: #b3362f;
+        --danger-soft: #fdecea;
+        --danger-line: #f2c9c5;
+        --info: #26618f;
+        --info-soft: #eaf2fa;
+        --radius: 14px;
+        --radius-sm: 10px;
+        --shadow:
+          0 1px 2px rgba(21, 34, 56, 0.05),
+          0 12px 32px -24px rgba(21, 34, 56, 0.35);
+        --font:
+          ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       * {
         box-sizing: border-box;
       }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
       body {
         margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 14px;
+        line-height: 1.55;
       }
-      button,
-      a,
-      summary {
-        touch-action: manipulation;
+      h1,
+      h2,
+      h3,
+      h4 {
+        margin: 0;
+        letter-spacing: -0.01em;
       }
-      button {
-        white-space: nowrap;
-        font: inherit;
-        cursor: pointer;
-        border: 1px solid var(--line);
-        background: white;
-        color: inherit;
-        border-radius: 7px;
-        padding: 8px 12px;
-      }
-      button:hover,
-      button[aria-pressed="true"] {
-        border-color: var(--blue);
-        background: #edf2ff;
-      }
-      button:focus-visible,
-      a:focus-visible,
-      summary:focus-visible {
-        outline: 3px solid #87a7ff;
-        outline-offset: 3px;
+      p {
+        margin: 0;
+        overflow-wrap: anywhere;
       }
       a {
-        color: #285bce;
+        color: var(--accent);
+        text-decoration: none;
       }
-      aside {
+      a:hover {
+        text-decoration: underline;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        border: 1px solid var(--line-strong);
+        background: var(--surface);
+        border-radius: 10px;
+        padding: 8px 13px;
+        white-space: nowrap;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ffffff;
+      }
+      button.primary:hover {
+        background: var(--accent-2);
+        color: #ffffff;
+      }
+      :focus-visible {
+        outline: 3px solid #9db4ff;
+        outline-offset: 2px;
+      }
+      code,
+      .mono {
+        font-family: var(--mono);
+        font-size: 0.94em;
+      }
+      .skip-link {
+        position: absolute;
+        left: -9999px;
+        top: 8px;
+        z-index: 100;
+        background: var(--surface);
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        padding: 8px 12px;
+      }
+      .skip-link:focus {
+        left: 12px;
+      }
+
+      /* Shell */
+      .layout {
+        display: flex;
+        min-height: 100vh;
+      }
+      .sidebar {
         position: fixed;
         inset: 0 auto 0 0;
-        width: 204px;
-        background: #152035;
-        color: #afbdd1;
-        padding: 32px 22px;
+        z-index: 30;
+        width: 238px;
         display: flex;
         flex-direction: column;
-        gap: 30px;
+        gap: 26px;
+        padding: 26px 18px 22px;
+        overflow-y: auto;
+        background: var(--surface);
+        border-right: 1px solid var(--line);
       }
-      aside strong {
-        color: white;
-        font-size: 20px;
-        letter-spacing: -0.6px;
-      }
-      aside nav {
-        display: grid;
+      .brand {
+        display: flex;
+        align-items: center;
         gap: 10px;
+        min-width: 0;
       }
-      aside a {
-        color: inherit;
+      .brand-mark {
+        display: grid;
+        place-content: center;
+        width: 34px;
+        height: 34px;
+        flex: 0 0 34px;
+        border-radius: 10px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 17px;
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .brand-text strong {
+        font-size: 16px;
+        letter-spacing: -0.02em;
+      }
+      .brand-text small {
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .nav a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border-radius: 9px;
+        color: var(--text-2);
+        font-size: 13px;
+        min-width: 0;
+      }
+      .nav a:hover {
+        background: var(--surface-2);
         text-decoration: none;
-        padding: 10px;
-        border-radius: 6px;
       }
-      aside a:hover {
-        background: #243552;
-        color: white;
+      .nav a[aria-current="true"] {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 650;
+      }
+      .nav-index {
+        flex: 0 0 20px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.05em;
+      }
+      .nav a[aria-current="true"] .nav-index {
+        color: var(--accent);
+      }
+      .nav-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .side-note {
         margin-top: auto;
-        font-size: 12px;
-        line-height: 1.8;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+        display: grid;
+        justify-items: start;
+        gap: 7px;
+        font-size: 11.5px;
+        color: var(--muted);
       }
-      main {
-        margin-left: 204px;
-        padding: 26px 36px 60px;
-        max-width: 1800px;
+      .side-note p {
+        margin: 0;
+      }
+      .side-note .mono {
+        color: var(--faint);
+        font-size: 10.5px;
+        overflow-wrap: anywhere;
+      }
+
+      .shell {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-width: 0;
+        margin-left: 238px;
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 18px 32px;
+        background: rgba(255, 255, 255, 0.94);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(10px);
+      }
+      .identity {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
         min-width: 0;
       }
-      header {
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .topbar h1 {
+        font-size: 19px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .identity-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+
+      .health {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 32px;
+        font-size: 12.5px;
+        color: var(--muted);
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--line);
+        overflow-wrap: anywhere;
+      }
+      .health::before {
+        content: "";
+        flex: 0 0 7px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--faint);
+      }
+      .health.ok::before {
+        background: #17a27e;
+      }
+      .health.error {
+        background: var(--danger-soft);
+        color: #8f2b26;
+        border-bottom-color: var(--danger-line);
+      }
+      .health.error::before {
+        background: var(--danger);
+      }
+      .health.loading::before {
+        background: var(--accent);
+      }
+
+      main {
+        width: 100%;
+        max-width: 1560px;
+        margin: 0 auto;
+        padding: 24px 32px 56px;
+        min-width: 0;
+      }
+      .page-footer {
+        width: 100%;
+        max-width: 1560px;
+        margin: 0 auto;
+        padding: 0 32px 32px;
+        color: var(--faint);
+        font-size: 11.5px;
+        line-height: 1.8;
+        overflow-wrap: anywhere;
+      }
+
+      /* Panels */
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 22px;
+        margin-bottom: 18px;
+        min-width: 0;
+        scroll-margin-top: 96px;
+      }
+      .panel-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        margin-bottom: 24px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
       }
-      .eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 1.7px;
-        font-size: 11px;
-        font-weight: 700;
-        color: var(--muted);
-      }
-      h1 {
-        font-size: 29px;
-        line-height: 1.25;
-        letter-spacing: -0.8px;
-        margin: 10px 0;
-      }
-      h2 {
+      .panel-head h2 {
         font-size: 16px;
-        margin: 0 0 18px;
-      }
-      h3 {
-        font-size: 14px;
-        margin: 0;
-      }
-      p {
-        line-height: 1.65;
-        margin: 8px 0;
-        overflow-wrap: anywhere;
-      }
-      .muted,
-      small {
-        color: var(--muted);
-      }
-      .badge {
-        display: inline-block;
-        border-radius: 5px;
-        padding: 4px 8px;
-        font-size: 12px;
-        background: #edf2ff;
-        color: #285bce;
-        overflow-wrap: anywhere;
-      }
-      .warning {
-        background: #fff4db;
-        color: #865b0c;
-      }
-      .danger {
-        background: #fff0ed;
-        color: #ad3c2d;
-      }
-      .hero {
-        display: flex;
-        justify-content: space-between;
-        gap: 24px;
-        margin-bottom: 20px;
-      }
-      .hero-meta {
-        min-width: 200px;
-        font-size: 12px;
-      }
-      .health {
-        border: 1px solid var(--line);
-        padding: 11px 14px;
-        border-radius: 8px;
-        font-size: 12px;
-        margin-bottom: 22px;
-        background: white;
-      }
-      .error {
-        background: #fff0ed;
-        border-color: #efaf9f;
-        color: #9c3526;
-      }
-      .stats {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 14px;
-        margin: 18px 0;
-      }
-      .stat,
-      .panel {
-        background: white;
-        border: 1px solid var(--line);
-        border-radius: 11px;
-      }
-      .stat {
-        padding: 17px 20px;
-      }
-      .number {
-        font-size: 30px;
-        font-weight: 650;
-        letter-spacing: -1px;
-        display: block;
-        margin-top: 7px;
-      }
-      .panel {
-        padding: 22px;
-        margin-bottom: 18px;
-        min-width: 0;
-      }
-      .two {
-        align-items: start;
-        display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-        gap: 18px;
-      }
-      .distribution {
         display: flex;
         align-items: center;
+        gap: 8px;
+      }
+      .panel-note {
+        font-size: 12px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .caption {
+        font-size: 12px;
+        line-height: 1.65;
+        color: var(--muted);
+        margin: 0 0 14px;
+      }
+      .caption:last-child {
+        margin: 12px 0 0;
+      }
+      .empty {
+        padding: 18px 0;
+        color: var(--faint);
+        font-size: 13px;
+      }
+      .note {
+        margin-top: 6px;
+        font-size: 12.5px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .note.warning {
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+      .note.danger {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      /* Badges */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        max-width: 100%;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-size: 11.5px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+      .badge.tone-accent {
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
+        color: #24479f;
+      }
+      .badge.tone-success {
+        background: var(--success-soft);
+        border-color: #bfe8d9;
+        color: var(--success);
+      }
+      .badge.tone-warning {
+        background: var(--warning-soft);
+        border-color: #f0d9b0;
+        color: var(--warning);
+      }
+      .badge.tone-danger {
+        background: var(--danger-soft);
+        border-color: var(--danger-line);
+        color: var(--danger);
+      }
+      .badge.tone-info {
+        background: var(--info-soft);
+        border-color: #c9dff1;
+        color: var(--info);
+      }
+      .badge.tone-neutral {
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+
+      /* Overview */
+      .run-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 14px;
+        margin-bottom: 14px;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .run-meta span {
+        overflow-wrap: anywhere;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 16px;
+      }
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        align-content: start;
+      }
+      .fact {
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 11px 13px;
+        min-width: 0;
+      }
+      .fact span {
+        display: block;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        color: var(--faint);
+      }
+      .fact strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 14.5px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .time-tiles {
+        display: grid;
+        gap: 10px;
+        align-content: start;
+      }
+      .time-tile {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 11px 13px;
+        background: var(--surface-2);
+        min-width: 0;
+      }
+      .time-tile.primary-time {
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
+      }
+      .time-tile span {
+        display: block;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        color: var(--faint);
+      }
+      .time-tile.primary-time span {
+        color: #3c5ba8;
+      }
+      .time-tile strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 14.5px;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .time-tile small {
+        display: block;
+        margin-top: 4px;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .time-tile.primary-time small {
+        color: #43598f;
+      }
+
+      /* Attention */
+      .attention-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .attention-card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        padding: 13px 14px;
+        min-width: 0;
+      }
+      .attention-card.tone-warning {
+        background: #fffaf1;
+        border-color: #f0d9b0;
+      }
+      .attention-card.tone-danger {
+        background: #fff7f6;
+        border-color: var(--danger-line);
+      }
+      .attention-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 9px;
+      }
+      .attention-dot {
+        flex: 0 0 8px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--faint);
+      }
+      .attention-card.tone-warning .attention-dot {
+        background: #d98b18;
+      }
+      .attention-card.tone-danger .attention-dot {
+        background: #d0453c;
+      }
+      .attention-title {
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .attention-num {
+        margin-left: auto;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-2);
+      }
+      .attention-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 7px;
+      }
+      .attention-list li {
+        padding-top: 7px;
+        border-top: 1px dashed var(--line-strong);
+        font-size: 12.5px;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+      .attention-list li:first-child {
+        padding-top: 0;
+        border-top: 0;
+      }
+      .attention-item-title {
+        display: block;
+        font-weight: 600;
+      }
+      .attention-item-detail,
+      .attention-item-meta {
+        display: block;
+        color: var(--muted);
+      }
+      .attention-none {
+        font-size: 12.5px;
+        color: var(--faint);
+      }
+
+      /* Stats */
+      .stat-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .stat span {
+        display: block;
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--faint);
+      }
+      .stat strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+      }
+      .distribution {
+        display: grid;
+        grid-template-columns: 210px minmax(0, 1fr);
         gap: 24px;
+        align-items: center;
       }
       .donut {
         position: relative;
-        flex: 0 0 174px;
-        width: 174px;
-        height: 174px;
+        width: 200px;
+        height: 200px;
+        margin: 0 auto;
+        flex-shrink: 0;
       }
       .donut svg {
         width: 100%;
@@ -224,462 +661,658 @@
         text-align: center;
       }
       .donut-center strong {
-        font-size: 34px;
+        font-size: 32px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+      }
+      .donut-center small {
+        font-size: 11.5px;
+        color: var(--muted);
       }
       .legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 7px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+        gap: 8px;
         align-content: start;
       }
       .legend button {
-        font-size: 12px;
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 8px;
+        justify-content: flex-start;
+        padding: 7px 10px;
+        font-size: 12.5px;
+        border-radius: 9px;
+        text-align: left;
+      }
+      .legend button[aria-pressed="true"] {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 650;
       }
       .dot {
-        width: 8px;
-        height: 8px;
-        display: inline-block;
+        flex: 0 0 9px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
-        flex-shrink: 0;
+        display: inline-block;
       }
-      .delivery-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
+      .legend .legend-count {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
       }
-      .delivery-cell {
-        padding: 12px 8px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
+      .legend button[aria-pressed="true"] .legend-count {
+        color: var(--accent);
       }
-      .delivery-cell strong {
-        display: block;
-        font-size: 23px;
-        margin: 8px 0;
-      }
-      .delivery-cell small {
-        font-size: 11px;
-        display: block;
-        line-height: 1.7;
-      }
+
+      /* Flow */
       .flow {
         display: grid;
         grid-template-columns: repeat(8, minmax(0, 1fr));
-        gap: 9px;
+        gap: 10px;
+        align-items: stretch;
       }
       .step {
         position: relative;
-        background: #f8f9fb;
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
         padding: 12px 10px;
         min-width: 0;
       }
       .step.observed {
-        background: #eff5ff;
-        border-color: #b7cdfc;
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
       }
-      .step:not(:last-child):after {
+      .step:not(:last-child)::after {
         content: "→";
         position: absolute;
         right: -10px;
-        top: 16px;
-        color: #7b8da7;
+        top: 18px;
+        color: var(--faint);
+        font-size: 12px;
         z-index: 1;
       }
-      .step b {
-        font-size: 12px;
+      .step-index {
         display: block;
-        margin: 7px 0;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--faint);
       }
-      .step small {
-        font-size: 11px;
+      .step b {
         display: block;
+        min-height: 34px;
+        margin: 4px 0 2px;
+        font-size: 12px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
       }
       .step .count {
-        font-size: 21px;
+        font-size: 22px;
         font-weight: 650;
-        color: #315bb1;
+        line-height: 1.25;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+      }
+      .step small {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.5;
       }
       .branches {
         display: flex;
-        gap: 10px;
-        margin-top: 12px;
         flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+        align-items: center;
       }
-      .caption {
-        font-size: 12px;
-        color: var(--muted);
-        margin-bottom: 18px;
-      }
+
+      /* Graph */
       .scroll {
         overflow: auto;
         max-width: 100%;
         max-height: 520px;
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
       }
       .scroll svg {
         display: block;
       }
+
+      /* Rows & details */
+      .split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 26px;
+      }
+      .column {
+        min-width: 0;
+      }
+      .column-title {
+        font-size: 12.5px;
+        font-weight: 650;
+        letter-spacing: 0.03em;
+        color: var(--faint);
+        margin-bottom: 6px;
+      }
+      .filterbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface-2);
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .filterbar button {
+        padding: 5px 10px;
+        font-size: 12px;
+      }
       .task-row,
       .worker-row,
       .artifact-row {
-        padding: 13px 0;
+        padding: 12px 0;
         border-bottom: 1px solid var(--line);
+        min-width: 0;
       }
       .task-row:last-child,
       .worker-row:last-child,
       .artifact-row:last-child {
         border-bottom: 0;
       }
-      .row-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-      }
-      .row-head h3 {
-        overflow-wrap: anywhere;
-        min-width: 0;
-      }
-      .task-row p,
-      .worker-row p {
-        font-size: 12px;
-      }
       .worker-row {
-        border-left: 2px solid #dbe4f3;
+        border-left: 2px solid var(--accent-line);
         padding-left: 12px;
       }
-      .worker-row .badge {
-        margin: 3px;
+      .row-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
       }
+      .row-head h4 {
+        font-size: 13.5px;
+        font-weight: 600;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+        min-width: 0;
+        flex: 1 1 180px;
+      }
+      .row-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        justify-content: flex-end;
+      }
+      .row-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .worker-row .badge {
+        margin: 2px 0;
+      }
+
       details {
-        margin-top: 9px;
+        margin-top: 8px;
         font-size: 12px;
       }
       summary {
         cursor: pointer;
-        color: #52677f;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      summary:hover {
+        color: var(--text-2);
       }
       dl {
         display: grid;
-        grid-template-columns: 130px minmax(0, 1fr);
-        gap: 7px;
+        grid-template-columns: 128px minmax(0, 1fr);
+        gap: 6px 10px;
+        margin: 9px 0 0;
         font-size: 12px;
       }
       dt {
-        color: var(--muted);
+        color: var(--faint);
+        overflow-wrap: anywhere;
       }
       dd {
         margin: 0;
         overflow-wrap: anywhere;
       }
+
+      /* Delivery */
+      .delivery-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .delivery-cell {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        padding: 12px;
+        min-width: 0;
+      }
+      .delivery-cell span {
+        display: block;
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--faint);
+      }
+      .delivery-cell strong {
+        display: block;
+        margin: 4px 0;
+        font-size: 24px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+      }
+      .delivery-cell small {
+        display: block;
+        font-size: 11.5px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .artifact-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 10px;
+        font-size: 12.5px;
+      }
+      .artifact-task {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--faint);
+      }
+
+      /* Events */
       .timeline {
         list-style: none;
         margin: 0;
         padding: 0;
       }
       .timeline li {
-        border-left: 2px solid #dae4f8;
-        padding: 0 0 18px 15px;
+        border-left: 2px solid var(--accent-line);
+        padding: 0 0 16px 14px;
+        font-size: 12.5px;
         overflow-wrap: anywhere;
-        font-size: 12px;
+      }
+      .timeline li:last-child {
+        padding-bottom: 0;
       }
       .timeline time {
         display: block;
-        color: var(--muted);
-        font-size: 11px;
-        margin-bottom: 5px;
+        color: var(--faint);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        margin-bottom: 3px;
       }
-      .filterbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .empty {
-        padding: 24px 0;
-        color: var(--muted);
-      }
-      code {
+      .timeline strong {
+        display: block;
+        font-size: 12.5px;
         overflow-wrap: anywhere;
       }
-      .artifact-row {
-        font-size: 12px;
-        overflow-wrap: anywhere;
+      .timeline p {
+        margin-top: 4px;
+        color: var(--text-2);
       }
-      footer {
-        font-size: 11px;
-        color: var(--muted);
-        margin-top: 20px;
-      }
-      .actions {
-        display: flex;
-        gap: 8px;
-      }
-      @media (min-width: 1600px) {
-        main {
-          padding-left: 48px;
-          padding-right: 48px;
-        }
-        .flow .step {
-          padding: 16px;
-        }
+
+      /* Responsive */
+      @media (min-width: 1680px) {
         .panel {
           padding: 26px;
         }
+        main,
+        .page-footer,
+        .topbar,
+        .health {
+          padding-left: 44px;
+          padding-right: 44px;
+        }
       }
-      @media (max-width: 1100px) {
-        aside {
-          width: 170px;
-          padding: 26px 15px;
+      @media (max-width: 1180px) {
+        .sidebar {
+          width: 204px;
+          padding: 22px 14px 18px;
+        }
+        .shell {
+          margin-left: 204px;
         }
         main {
-          margin-left: 170px;
-          padding: 24px;
+          padding: 22px 24px 48px;
         }
-        .two {
-          grid-template-columns: 1fr;
+        .topbar {
+          padding: 16px 24px;
+        }
+        .health {
+          padding: 9px 24px;
+        }
+        .page-footer {
+          padding: 0 24px 28px;
         }
         .flow {
           grid-template-columns: repeat(4, minmax(0, 1fr));
         }
-        .step:nth-child(4):after {
+        .step:nth-child(4n)::after {
           display: none;
         }
+        .distribution {
+          grid-template-columns: 180px minmax(0, 1fr);
+          gap: 18px;
+        }
+        .donut {
+          width: 176px;
+          height: 176px;
+        }
+        .attention-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
-      @media (max-width: 600px) {
-        aside {
+      @media (max-width: 900px) {
+        .layout {
+          flex-direction: column;
+        }
+        .sidebar {
           position: static;
           width: auto;
-          padding: 16px 20px;
-          flex-direction: row;
-          align-items: center;
-          justify-content: space-between;
+          inset: auto;
+          gap: 12px;
+          padding: 14px 18px;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          overflow: visible;
         }
-        aside nav,
+        .shell {
+          margin-left: 0;
+        }
+        .nav {
+          flex-direction: row;
+          flex-wrap: wrap;
+          overflow: visible;
+          gap: 4px;
+          padding-bottom: 2px;
+        }
+        .nav a {
+          flex: 0 0 auto;
+          padding: 6px 10px;
+        }
+        .nav-index {
+          display: none;
+        }
         .side-note {
           display: none;
         }
-        main {
-          margin-left: 0;
-          padding: 20px 14px;
+        .topbar {
+          position: static;
+          padding: 14px 18px;
         }
-        .hero {
-          display: block;
+        .health {
+          padding: 8px 18px;
         }
-        .hero-meta {
-          margin-top: 14px;
+        main,
+        .page-footer {
+          padding-left: 18px;
+          padding-right: 18px;
         }
-        .stats {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
+        .overview-grid {
+          grid-template-columns: minmax(0, 1fr);
         }
-        .stat {
-          padding: 13px;
+        .split {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 18px;
         }
         .panel {
-          padding: 16px;
+          scroll-margin-top: 12px;
         }
-        .distribution {
-          flex-direction: column;
+      }
+      @media (max-width: 620px) {
+        body {
+          font-size: 13.5px;
+        }
+        .topbar {
+          flex-wrap: wrap;
           align-items: flex-start;
+          gap: 12px;
         }
-        .donut {
-          align-self: center;
+        .identity {
+          flex: 1 1 220px;
         }
-        .delivery-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .flow {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .step:nth-child(even):after {
-          display: none;
-        }
-        h1 {
-          font-size: 25px;
-        }
-        dl {
-          grid-template-columns: 100px minmax(0, 1fr);
-        }
-        header {
-          align-items: flex-start;
+        .topbar h1 {
+          font-size: 17px;
         }
         .actions button {
           font-size: 12px;
-          padding: 7px;
+          padding: 7px 10px;
+        }
+        main {
+          padding: 16px 12px 40px;
+        }
+        .topbar,
+        .health {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+        .page-footer {
+          padding: 0 12px 24px;
+        }
+        .panel {
+          padding: 16px;
+          border-radius: 12px;
+        }
+        .stat-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .stat strong {
+          font-size: 22px;
+        }
+        .distribution {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 14px;
+        }
+        .donut {
+          width: 168px;
+          height: 168px;
+        }
+        .legend {
+          grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+        }
+        .flow {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .step:nth-child(2n)::after {
+          display: none;
+        }
+        .delivery-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .attention-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        dl {
+          grid-template-columns: 96px minmax(0, 1fr);
         }
         .row-head {
-          align-items: flex-start;
+          flex-direction: column;
         }
-      }
-      header {
-        margin-bottom: 16px;
-      }
-      .health {
-        margin-bottom: 16px;
-      }
-      .hero {
-        margin-bottom: 12px;
-      }
-      .hero p {
-        margin: 5px 0;
-      }
-      .stats {
-        margin: 14px 0;
-      }
-      .stat {
-        padding: 13px 18px;
-      }
-      .number {
-        font-size: 27px;
-        margin-top: 3px;
-      }
-      .decision-notice {
-        padding: 13px 18px;
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px 22px;
-      }
-      .decision-notice h2,
-      .decision-notice p {
-        margin: 0;
-      }
-      .step {
-        padding: 10px 8px;
-      }
-      .step b {
-        min-height: 28px;
-      }
-      .branches {
-        margin-top: 8px;
-      }
-      #workflow .caption {
-        margin-bottom: 12px;
-      }
-      #workflow .caption:last-child {
-        margin: 9px 0 0;
-        font-size: 11px;
-      }
-      .delivery-glance {
-        max-width: 360px;
-        border-top: 1px solid var(--line);
-        padding-top: 8px;
-      }
-      .delivery-glance span {
-        display: inline-block;
-        margin-right: 7px;
-        color: #315bb1;
-      }
-      .step details {
-        font-size: 11px;
-      }
-      @media (max-width: 600px) {
-        .decision-notice {
-          display: block;
-        }
-        .decision-notice h2 {
-          margin-bottom: 8px;
-        }
-        header .eyebrow {
-          letter-spacing: 1px;
-          font-size: 10px;
-        }
-        .actions {
-          flex-shrink: 0;
+        .row-badges {
+          justify-content: flex-start;
         }
       }
     </style>
   </head>
   <body>
-    <aside>
-      <strong>◈ Orchestra</strong>
-      <nav aria-label="页面导航">
-        <a href="#overview">◫　运行总览</a><a href="#workflow">◇　流程与依赖</a
-        ><a href="#tasks">☷　任务与 Worker</a
-        ><a href="#artifacts">↗　交付与证据</a>
-      </nav>
-      <div class="side-note">
-        PROGRESS CONSOLE<br />只读观察 · 无调度动作<br />Localhost / explicit
-        records
-      </div>
-    </aside>
-    <main>
-      <header>
-        <div class="eyebrow">Workspace / Progress console</div>
-        <div class="actions">
-          <button id="language" aria-label="Switch language">English</button
-          ><button id="refresh">↻ 刷新</button>
+    <a class="skip-link" id="skip-link" href="#overview">跳到主要内容</a>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">◈</span>
+          <span class="brand-text">
+            <strong>Orchestra</strong>
+            <small id="brand-sub">进展指挥台</small>
+          </span>
         </div>
-      </header>
-      <div id="health" class="health" role="status" aria-live="polite">
-        正在加载快照…
+        <nav id="nav" class="nav" aria-label="页面导航"></nav>
+        <div class="side-note">
+          <span class="badge tone-neutral" id="readonly-badge">只读</span>
+          <p id="side-note-text">本地快照 · 无调度动作</p>
+          <p class="mono">127.0.0.1 · localhost</p>
+        </div>
+      </aside>
+      <div class="shell">
+        <header class="topbar">
+          <div class="identity">
+            <span class="eyebrow" id="crumb">工作区 / 进展指挥台</span>
+            <h1 id="run-heading">等待快照</h1>
+            <div class="identity-meta" id="identity-meta"></div>
+          </div>
+          <div class="actions">
+            <button id="language" type="button" aria-label="切换语言">
+              English
+            </button>
+            <button id="refresh" class="primary" type="button">↻ 刷新</button>
+          </div>
+        </header>
+        <div id="health" class="health loading" role="status" aria-live="polite">
+          正在加载快照…
+        </div>
+        <main id="content"><p class="empty">尚无有效快照。</p></main>
+        <footer class="page-footer" id="footer">
+          只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照 · 不估算完成百分比或剩余时间
+        </footer>
       </div>
-      <div id="content"><p class="empty">尚无有效快照。</p></div>
-      <footer>
-        Orchestra · Read-only observations · 3s refresh · No estimated
-        completion percentage or remaining time
-      </footer>
-    </main>
+    </div>
     <script>
       "use strict";
-      const content = document.getElementById("content"),
-        health = document.getElementById("health");
-      let last = null,
-        snapshot = null,
-        filter = null,
-        language = "zh",
-        busy = false;
-      const tr = (zh, en) => (language === "zh" ? zh : en);
-      const labels = {
-        unknown: ["未知", "Unknown"],
-        pending: ["待计划", "Pending"],
-        ready: ["就绪", "Ready"],
-        running: ["实施中", "Running"],
-        blocked: ["阻塞", "Blocked"],
-        waiting_user: ["待用户", "Waiting user"],
-        reported: ["已报告", "Reported"],
-        accepted: ["已验收", "Accepted"],
-        rejected: ["已打回", "Rejected"],
-        failed: ["失败", "Failed"],
-        paused: ["暂停", "Paused"],
-        cancelled: ["取消", "Cancelled"],
+      const content = document.getElementById("content");
+      const health = document.getElementById("health");
+      const nav = document.getElementById("nav");
+      const runHeading = document.getElementById("run-heading");
+      const identityMeta = document.getElementById("identity-meta");
+      const crumb = document.getElementById("crumb");
+      const brandSub = document.getElementById("brand-sub");
+      const readonlyBadge = document.getElementById("readonly-badge");
+      const sideNoteText = document.getElementById("side-note-text");
+      const footer = document.getElementById("footer");
+      const skipLink = document.getElementById("skip-link");
+      const languageButton = document.getElementById("language");
+      const refreshButton = document.getElementById("refresh");
+
+      const NAV = [
+        ["overview", "运行概览", "Overview"],
+        ["attention", "关注事项", "Attention"],
+        ["stats", "任务统计", "Task stats"],
+        ["workflow", "参考流程", "Reference flow"],
+        ["graph", "依赖图", "Dependencies"],
+        ["tasks", "任务与 Worker", "Tasks & workers"],
+        ["delivery", "交付证据", "Delivery evidence"],
+        ["events", "事件", "Events"],
+      ];
+      const TASK_ORDER = [
+        "unknown",
+        "pending",
+        "ready",
+        "running",
+        "blocked",
+        "waiting_user",
+        "reported",
+        "accepted",
+        "rejected",
+        "failed",
+        "paused",
+        "cancelled",
+      ];
+      const TERMS = {
+        unknown: { zh: "未知", en: "Unknown", tone: "neutral", color: "#98a2b3" },
+        pending: { zh: "待计划", en: "Pending", tone: "neutral", color: "#cbd5e1" },
+        ready: { zh: "就绪", en: "Ready", tone: "info", color: "#7c9bef" },
+        running: { zh: "实施中", en: "Running", tone: "accent", color: "#2f5bea" },
+        blocked: { zh: "阻塞", en: "Blocked", tone: "warning", color: "#d97917" },
+        waiting_user: { zh: "待用户", en: "Waiting user", tone: "warning", color: "#b26a00" },
+        reported: { zh: "已报告", en: "Reported", tone: "info", color: "#3b9ac4" },
+        accepted: { zh: "已验收", en: "Accepted", tone: "success", color: "#0c7d62" },
+        rejected: { zh: "已打回", en: "Rejected", tone: "danger", color: "#d4564a" },
+        failed: { zh: "失败", en: "Failed", tone: "danger", color: "#b3362f" },
+        paused: { zh: "暂停", en: "Paused", tone: "neutral", color: "#7c6fa8" },
+        cancelled: { zh: "取消", en: "Cancelled", tone: "neutral", color: "#6b7686" },
+        active: { zh: "运行中", en: "Active", tone: "success" },
+        completed: { zh: "已结束", en: "Completed", tone: "success" },
+        current: { zh: "观测有效", en: "Current", tone: "success" },
+
+        stale: { zh: "观测过期", en: "Stale", tone: "warning" },
+        lost: { zh: "已失联", en: "Lost", tone: "danger" },
+        unobserved: { zh: "未观察启动", en: "Unobserved", tone: "warning" },
+        observed: { zh: "已观察启动", en: "Observed", tone: "success" },
+        unsupported: { zh: "不支持", en: "Unsupported", tone: "neutral" },
+        reported_done: { zh: "完成报告", en: "Reported done", tone: "info" },
+        dispatched: { zh: "已派活", en: "Dispatched", tone: "info" },
+        reclaimable: { zh: "可回收", en: "Reclaimable", tone: "warning" },
+        closed: { zh: "已关闭", en: "Closed", tone: "neutral" },
+        planning: { zh: "计划中", en: "Planning", tone: "neutral" },
+        dispatch: { zh: "派活", en: "Dispatch", tone: "neutral" },
+        implementation: { zh: "实施", en: "Implementation", tone: "neutral" },
+        acceptance: { zh: "验收", en: "Acceptance", tone: "neutral" },
+        integration: { zh: "集成", en: "Integration", tone: "neutral" },
+        merge: { zh: "合并", en: "Merge", tone: "neutral" },
+        reconciliation: { zh: "对账", en: "Reconciliation", tone: "neutral" },
       };
-      Object.assign(labels, {
-        active: ["运行中", "Active"],
-        completed: ["已结束", "Completed"],
-        current: ["观测有效", "Current"],
-        fresh: ["观测有效", "Fresh"],
-        stale: ["观测过期", "Stale"],
-        lost: ["已失联", "Lost"],
-        unobserved: ["未观察启动", "Unobserved"],
-        observed: ["已观察启动", "Observed"],
-        unsupported: ["不支持", "Unsupported"],
-        reported_done: ["自报完成", "Reported done"],
-        dispatched: ["已派活", "Dispatched"],
-        reclaimable: ["可回收", "Reclaimable"],
-        closed: ["已关闭", "Closed"],
-        planning: ["计划中", "Planning"],
-        dispatch: ["派活中", "Dispatch"],
-        implementation: ["实施中", "Implementation"],
-        acceptance: ["验收中", "Acceptance"],
-        integration: ["集成中", "Integration"],
-        merge: ["合并中", "Merge"],
-        reconciliation: ["对账中", "Reconciliation"],
-      });
+
+      let snapshot = null;
+      let lastLoaded = null;
+      let filter = null;
+      let language = "zh";
+      let busy = false;
+      let renderedLanguage = null;
+      let navLanguage = null;
+      let healthState = { kind: "loading", at: null, message: "" };
+
+      const tr = (zh, en) => (language === "zh" ? zh : en);
+      const locale = () => (language === "zh" ? "zh-CN" : "en-US");
+      const isRecord = (v) =>
+        v !== null && typeof v === "object" && !Array.isArray(v);
+      const clock = (date) =>
+        date.toLocaleTimeString(locale(), {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        });
+
+      function label(state) {
+        return Object.hasOwn(TERMS, state)
+          ? TERMS[state][language === "zh" ? "zh" : "en"]
+          : value(state);
+      }
+      function value(v) {
+        if (v === null || v === undefined || v === "")
+          return tr("未知", "unknown");
+        if (Array.isArray(v)) return v.length ? v.join(", ") : tr("无", "none");
+        return String(v);
+      }
       function dateTime(v) {
-        if (!v) return value(v);
+        if (!v) return tr("未知", "unknown");
         const date = new Date(v);
         return Number.isNaN(date.getTime())
-          ? value(v)
-          : date.toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
+          ? String(v)
+          : date.toLocaleString(locale(), {
               month: "short",
               day: "numeric",
               hour: "2-digit",
@@ -688,47 +1321,70 @@
               hour12: false,
             });
       }
-      const colors = {
-        unknown: "#95a0b1",
-        pending: "#c1c9d5",
-        ready: "#8f9de8",
-        running: "#3164e9",
-        blocked: "#e5a339",
-        waiting_user: "#bd7c23",
-        reported: "#53a3bc",
-        accepted: "#289b7b",
-        rejected: "#d76e58",
-        failed: "#b64c55",
-        paused: "#827d9d",
-        cancelled: "#727b87",
-      };
-      function statusColor(state) {
-        return Object.hasOwn(colors, state) ? colors[state] : colors.unknown;
+      function tone(state) {
+        return Object.hasOwn(TERMS, state) ? TERMS[state].tone : "neutral";
       }
-      function label(s) {
-        return Object.hasOwn(labels, s)
-          ? labels[s][language === "zh" ? 0 : 1]
-          : value(s);
+      function statusColor(state) {
+        return Object.hasOwn(TERMS, state) && TERMS[state].color
+          ? TERMS[state].color
+          : TERMS.unknown.color;
       }
       function node(tag, text, parent) {
-        const n = document.createElement(tag);
-        if (text !== undefined) n.textContent = String(text);
-        if (parent) parent.append(n);
-        return n;
+        const element = document.createElement(tag);
+        if (text !== undefined) element.textContent = String(text);
+        if (parent) parent.append(element);
+        return element;
       }
-      function value(v) {
-        return v === null || v === undefined || v === ""
-          ? tr("未知", "unknown")
-          : Array.isArray(v)
-            ? v.join(", ")
-            : String(v);
+      function svgNode(tag, attrs, parent, text) {
+        const element = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          tag,
+        );
+        for (const [key, val] of Object.entries(attrs))
+          element.setAttribute(key, String(val));
+        if (text !== undefined) element.textContent = String(text);
+        parent.append(element);
+        return element;
       }
-      function facts(parent, obj) {
-        const dl = node("dl", undefined, parent);
-        for (const [k, v] of Object.entries(obj)) {
-          node("dt", k.replaceAll("_", " "), dl);
-          node("dd", value(v), dl);
-        }
+      function badge(text, parent, kindName = "neutral") {
+        const element = node("span", text, parent);
+        element.className = "badge tone-" + kindName;
+        return element;
+      }
+      function fact(labelText, text, parent) {
+        const cell = node("div", undefined, parent);
+        cell.className = "fact";
+        node("span", labelText, cell);
+        node("strong", text, cell);
+        return cell;
+      }
+      function timeTile(labelText, text, hint, parent, primary = false) {
+        const tile = node("div", undefined, parent);
+        tile.className = "time-tile" + (primary ? " primary-time" : "");
+        node("span", labelText, tile);
+        node("strong", text, tile);
+        if (hint) node("small", hint, tile);
+        return tile;
+      }
+      function panel(title, parent, id) {
+        const section = node("section", undefined, parent);
+        section.className = "panel";
+        if (id) section.id = id;
+        const head = node("div", undefined, section);
+        head.className = "panel-head";
+        node("h2", title, head);
+        return section;
+      }
+      function panelHead(section) {
+        return section.querySelector(".panel-head");
+      }
+      function caption(text, parent) {
+        const paragraph = node("p", text, parent);
+        paragraph.className = "caption";
+        return paragraph;
+      }
+      function emptyState(parent, text) {
+        node("p", text, parent).className = "empty";
       }
       function reference(parent, ref) {
         let url;
@@ -741,223 +1397,414 @@
           !url.username &&
           !url.password
         ) {
-          const a = node("a", ref, parent);
-          a.href = url.href;
-          a.target = "_blank";
-          a.rel = "noopener noreferrer";
-        } else node("code", ref, parent);
+          const anchor = node("a", String(ref), parent);
+          anchor.href = url.href;
+          anchor.target = "_blank";
+          anchor.rel = "noopener noreferrer";
+        } else node("code", String(ref), parent);
       }
-      function section(title, parent, id) {
-        const s = node("section", undefined, parent);
-        s.className = "panel";
-        if (id) s.id = id;
-        node("h2", title, s);
-        return s;
+      function facts(parent, object) {
+        const dl = node("dl", undefined, parent);
+        for (const [key, val] of Object.entries(object)) {
+          node("dt", key.replaceAll("_", " "), dl);
+          node("dd", value(val), dl);
+        }
       }
-      function badge(text, parent, kind = "") {
-        const b = node("span", text, parent);
-        b.className = "badge " + kind;
-        return b;
-      }
-      function empty(parent) {
-        node("p", tr("暂无记录", "None recorded."), parent).className = "empty";
-      }
-      function details(parent, key, obj) {
-        const d = node("details", undefined, parent);
-        d.dataset.key = key;
+      function details(parent, key, object, summaryText) {
+        const item = node("details", undefined, parent);
+        item.dataset.key = key;
         node(
           "summary",
-          tr("查看核验与完整字段", "Verification & full fields"),
-          d,
+          summaryText || tr("核验与完整字段", "Verification & full fields"),
+          item,
         );
-        facts(d, obj);
-        return d;
+        facts(item, object);
+        return item;
       }
-      function svgNode(tag, attrs, parent, text) {
-        const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
-        for (const [k, v] of Object.entries(attrs))
-          n.setAttribute(k, String(v));
-        if (text !== undefined) n.textContent = String(text);
-        parent.append(n);
-        return n;
-      }
-      function eventRow(parent, e) {
-        const li = node("li", undefined, parent);
-        const source =
-          e.source === "worker"
-            ? tr("worker 自报", "worker self report")
-            : value(e.source);
-        node("time", dateTime(e.at) + " · " + source, li);
-        node(
-          "strong",
-          value(e.type) +
-            " · " +
-            value(e.task_id || e.worker_id || e.entity_id),
-          li,
-        );
-        if (e.summary) node("p", e.summary, li);
-        for (const ref of e.evidence || [])
-          reference(node("p", undefined, li), ref);
-      }
-      function render(s) {
-        const navText =
-          language === "zh"
-            ? [
-                "◫　运行总览",
-                "◇　流程与依赖",
-                "☷　任务与 Worker",
-                "↗　交付与证据",
-              ]
-            : [
-                "◫　Overview",
-                "◇　Workflow & graph",
-                "☷　Tasks & workers",
-                "↗　Evidence",
-              ];
 
-        // Build entirely off-DOM: malformed data cannot replace the last valid view.
-        if (
-          !s.run ||
-          !s.tasks ||
-          !s.workers ||
-          !s.deliveries ||
-          !s.artifacts ||
-          !Array.isArray(s.events)
-        )
-          throw Error("Invalid snapshot shape");
-        const tasks = Object.values(s.tasks),
-          workers = Object.values(s.workers),
-          deliveries = Object.values(s.deliveries),
-          artifacts = Object.values(s.artifacts);
-        for (const t of tasks)
-          if (!Array.isArray(t.dependencies))
-            throw Error("Invalid dependencies");
-        const active = document.activeElement;
-        const focusedDetails = active?.closest("details")?.dataset.key;
-        const focusedLegend = active?.closest(".legend button")?.dataset.status;
-        const graph = content.querySelector(".scroll");
-        const graphPosition = graph
-          ? [graph.scrollLeft, graph.scrollTop]
-          : [0, 0];
-        const opened = new Set(
-          [...content.querySelectorAll("details[open]")].map(
-            (d) => d.dataset.key,
-          ),
+      function buildNav() {
+        nav.replaceChildren();
+        NAV.forEach(([id, zh, en], index) => {
+          const anchor = node("a", undefined, nav);
+          anchor.href = "#" + id;
+          anchor.dataset.section = id;
+          node("span", String(index + 1).padStart(2, "0"), anchor).className =
+            "nav-index";
+          node("span", tr(zh, en), anchor).className = "nav-label";
+        });
+        nav.setAttribute("aria-label", tr("页面导航", "Page navigation"));
+        navLanguage = language;
+      }
+
+      function renderChrome(snap) {
+        if (navLanguage !== language) buildNav();
+        crumb.textContent = tr(
+          "工作区 / 进展指挥台",
+          "Workspace / progress console",
         );
-        const next = document.createDocumentFragment();
-        const hero = node("section", undefined, next);
-        hero.id = "overview";
-        hero.className = "hero";
-        const intro = node("div", undefined, hero);
-        badge(s.run.mode, intro, s.run.mode === "DEMO" ? "warning" : "");
-        node("h1", value(s.run.title), intro);
-        node(
-          "p",
-          value(s.run.id) + " · " + label(s.run.status),
-          intro,
-        ).className = "muted";
-        node(
-          "p",
-          tr("当前阶段", "Current phase") + " / " + label(s.run.phase),
-          intro,
+        brandSub.textContent = tr("进展指挥台", "Progress console");
+        readonlyBadge.textContent = tr("只读", "Read-only");
+        sideNoteText.textContent = tr(
+          "本地快照 · 无调度动作",
+          "Local snapshot · no scheduling",
         );
-        const meta = node("div", undefined, hero);
-        meta.className = "hero-meta";
-        node(
-          "p",
-          tr("最后有效进展", "Last effective progress") +
-            " · " +
-            dateTime(s.run.last_effective_progress),
-          meta,
+        footer.textContent = tr(
+          "只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照 · 不估算完成百分比或剩余时间",
+          "Read-only observations · no scheduling, acceptance or queries · local snapshot every 3s · no estimated completion percentage or remaining time",
         );
-        node(
-          "p",
-          tr("最后观测", "Last observed") +
-            " · " +
-            dateTime(s.run.last_observed),
-          meta,
+        skipLink.textContent = tr("跳到主要内容", "Skip to main content");
+        languageButton.textContent = language === "zh" ? "English" : "中文";
+        languageButton.setAttribute(
+          "aria-label",
+          tr("切换语言", "Switch language"),
         );
-        badge(
-          tr("时效", "Freshness") + " · " + label(s.run.freshness),
-          meta,
-          ["current", "fresh"].includes(s.run.freshness) ? "" : "warning",
+        refreshButton.textContent = tr("↻ 刷新", "↻ Refresh");
+        document.title = tr(
+          "Orchestra · 进展指挥台",
+          "Orchestra · Progress console",
         );
-        const glance = node(
-          "p",
-          tr("交付核验为是：", "Delivery verified yes: "),
-          meta,
-        );
-        glance.className = "delivery-glance";
-        const glanceLabels = [
-          ["implemented", tr("实施", "Implemented")],
-          ["integrated", tr("集成", "Integrated")],
-          ["merged", tr("合并", "Merged")],
-          ["tracker_closed", tr("对账关闭", "Tracker closed")],
-        ];
-        for (const [key, name] of glanceLabels)
-          node(
-            "span",
-            name +
-              " " +
-              deliveries.filter((d) => d[key] === true).length +
-              "  ",
-            glance,
+        document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+        runHeading.textContent = snap
+          ? value(snap.run.title || snap.run.id)
+          : tr("等待快照", "Waiting for snapshot");
+        identityMeta.replaceChildren();
+        if (snap) {
+          badge(
+            snap.run.mode || "unknown",
+            identityMeta,
+            snap.run.mode === "DEMO" ? "warning" : "neutral",
           );
-        const stats = node("div", undefined, next);
-        stats.className = "stats";
+          badge(
+            tr("状态", "Status") + " · " + label(snap.run.status),
+            identityMeta,
+            tone(snap.run.status),
+          );
+          badge(
+            tr("阶段", "Phase") + " · " + label(snap.run.phase),
+            identityMeta,
+            tone(snap.run.phase),
+          );
+        }
+      }
+
+      function renderHealth() {
+        health.className = "health " + healthState.kind;
+        if (healthState.kind === "loading") {
+          health.textContent = tr("正在加载快照…", "Loading snapshot…");
+          return;
+        }
+        if (healthState.kind === "error") {
+          const failedAt = healthState.at ? clock(healthState.at) : "";
+          let text =
+            tr("读取失败 ", "Fetch failed ") +
+            failedAt +
+            " · " +
+            healthState.message;
+          text += lastLoaded
+            ? tr(" · 显示 ", " · showing ") +
+              clock(lastLoaded) +
+              tr(" 的最后有效快照", " as the last valid snapshot")
+            : tr(" · 尚无有效快照", " · no valid snapshot yet");
+          health.textContent = text;
+          return;
+        }
+        const loadedAt = lastLoaded ? clock(lastLoaded) : tr("未知", "unknown");
+        health.textContent =
+          tr("快照已读取 ", "Snapshot read ") +
+          loadedAt +
+          " · " +
+          label(snapshot && snapshot.run ? snapshot.run.freshness : "unknown") +
+          tr(
+            " · 每 3 秒自动刷新 · 仅显式观察记录",
+            " · auto-refresh every 3s · explicit observations only",
+          );
+      }
+
+      function renderPlaceholder() {
+        const paragraph = node(
+          "p",
+          tr("尚无有效快照。", "No valid snapshot yet."),
+          content,
+        );
+        paragraph.className = "empty";
+      }
+
+      function rerender() {
+        if (!snapshot) {
+          content.replaceChildren();
+          renderPlaceholder();
+          return;
+        }
+        try {
+          render(snapshot);
+        } catch {}
+      }
+      function clearFilter() {
+        filter = null;
+        rerender();
+      }
+      function needsDecision(task) {
+        return Boolean(task.pending_decision) || task.status === "waiting_user";
+      }
+
+      function updateActiveNav() {
+        const sections = [...content.querySelectorAll("section[id]")];
+        if (!sections.length) return;
+        const offset =
+          (document.querySelector(".topbar")?.getBoundingClientRect().height ||
+            0) +
+          (health.getBoundingClientRect().height || 0) +
+          24;
+        let current = sections[0].id;
+        for (const section of sections) {
+          if (section.getBoundingClientRect().top <= offset)
+            current = section.id;
+        }
+        if (
+          window.innerHeight + window.scrollY >=
+          document.documentElement.scrollHeight - 2
+        )
+          current = sections[sections.length - 1].id;
+        for (const anchor of nav.querySelectorAll("a")) {
+          if (anchor.dataset.section === current)
+            anchor.setAttribute("aria-current", "true");
+          else anchor.removeAttribute("aria-current");
+        }
+      }
+
+      function renderOverview(snap) {
+        const section = panel(tr("运行概览", "Overview"), null, "overview");
+        const head = panelHead(section);
+        badge(
+          tr("时效", "Freshness") + " · " + label(snap.run.freshness),
+          head,
+          tone(snap.run.freshness),
+        );
+        const meta = node("div", undefined, section);
+        meta.className = "run-meta";
+        node("span", tr("Run ", "Run ") + value(snap.run.id), meta).classList.add(
+          "mono",
+        );
+        node(
+          "span",
+          tr("目标仓库 ", "Target repository ") + value(snap.run.target_repo),
+          meta,
+        );
+        node(
+          "span",
+          tr("记录方式 ", "Observation ") + value(snap.run.observation_mode),
+          meta,
+        );
+        const grid = node("div", undefined, section);
+        grid.className = "overview-grid";
+        const metaGrid = node("div", undefined, grid);
+        metaGrid.className = "meta-grid";
+        fact(tr("状态", "Status"), label(snap.run.status), metaGrid);
+        fact(tr("阶段", "Phase"), label(snap.run.phase), metaGrid);
+        fact(tr("开始时间", "Started"), dateTime(snap.run.started_at), metaGrid);
+        fact(tr("结束时间", "Ended"), dateTime(snap.run.ended_at), metaGrid);
+        const tiles = node("div", undefined, grid);
+        tiles.className = "time-tiles";
+        timeTile(
+          tr("最近观测", "Last observed"),
+          dateTime(snap.run.last_observed),
+          tr(
+            "收到任一记录的时间；新活动不等于有效进展。",
+            "When any record arrived; activity is not meaningful progress.",
+          ),
+          tiles,
+        );
+        timeTile(
+          tr("最近有效进展", "Last effective progress"),
+          dateTime(snap.run.last_effective_progress),
+          tr(
+            "仅 coordinator 明确核验后更新。",
+            "Updated only on explicit coordinator verification.",
+          ),
+          tiles,
+          true,
+        );
+        details(
+          section,
+          "run-full",
+          snap.run,
+          tr("Run 完整字段", "Full Run fields"),
+        );
+        return section;
+      }
+
+      function renderAttention(snap, tasks, workers) {
+        const decisions = tasks.filter(needsDecision);
+        const decisionItems = decisions.map((task) => ({
+          title: value(task.title || task.id),
+          detail:
+            task.pending_decision ||
+            tr("等待用户回复。", "Waiting for a user reply."),
+          meta: tr("任务 ", "Task ") + task.id,
+        }));
+        if (!decisionItems.length && snap.run.status === "waiting_user")
+          decisionItems.push({
+            title: tr("Run 已标记等待用户", "Run is waiting for user"),
+            detail: tr("尚无具体决策记录。", "No decision detail recorded."),
+            meta: tr("Run ", "Run ") + value(snap.run.id),
+          });
+        const blocked = tasks.filter(
+          (task) => task.blocked_reason || task.status === "blocked",
+        );
+        const failed = tasks
+          .filter((task) => task.status === "failed")
+          .map((task) => ({
+            title: value(task.title || task.id),
+            detail: tr("任务状态为失败。", "Task status is failed."),
+            meta: tr("任务 ", "Task ") + task.id,
+          }));
+        if (snap.run.status === "failed")
+          failed.unshift({
+            title: tr("Run 状态为失败", "Run status is failed"),
+            detail: tr(
+              "Run 自身记录了失败状态。",
+              "The Run itself records a failed status.",
+            ),
+            meta: tr("Run ", "Run ") + value(snap.run.id),
+          });
+        for (const worker of workers.filter(
+          (item) => item.lifecycle === "failed",
+        ))
+          failed.push({
+            title: tr("Worker 失败 ", "Worker failed ") + value(worker.id),
+            detail: tr("核验生命周期为失败。", "Verified lifecycle is failed."),
+            meta: tr("任务 ", "Task ") + value(worker.task_id),
+          });
+        const lost = workers
+          .filter((worker) => worker.lifecycle === "lost")
+          .map((worker) => ({
+            title: tr("Worker 失联 ", "Worker lost ") + value(worker.id),
+            detail: tr(
+              "核验生命周期为失联；重试需要新的 worker ID。",
+              "Verified lifecycle is lost; a retry needs a new worker ID.",
+            ),
+            meta: tr("任务 ", "Task ") + value(worker.task_id),
+          }));
+        const groups = [
+          {
+            key: "decision",
+            title: tr("待决", "Decisions"),
+            toneName: "warning",
+            items: decisionItems,
+          },
+          {
+            key: "blocked",
+            title: tr("阻塞", "Blocked"),
+            toneName: "warning",
+            items: blocked.map((task) => ({
+              title: value(task.title || task.id),
+              detail:
+                task.blocked_reason ||
+                tr("未记录阻塞原因。", "No blocked reason recorded."),
+              meta: tr("任务 ", "Task ") + task.id,
+            })),
+          },
+          {
+            key: "failed",
+            title: tr("失败", "Failed"),
+            toneName: "danger",
+            items: failed,
+          },
+          {
+            key: "lost",
+            title: tr("失联", "Lost"),
+            toneName: "danger",
+            items: lost,
+          },
+        ];
+        const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+        const section = panel(tr("关注事项", "Needs attention"), null, "attention");
+        const head = panelHead(section);
+        node(
+          "span",
+          tr("共 ", "Total ") + total + tr(" 项", " items"),
+          head,
+        ).className = "panel-note attention-count";
+        caption(
+          tr(
+            "仅来自已记录的阻塞原因、待决字段与核验生命周期；未报告的问题不会出现在这里。每个实体单独计数。",
+            "Derived only from recorded block reasons, decision fields and verified lifecycles; unreported problems never appear here. Each entity counts separately.",
+          ),
+          section,
+        );
+        const grid = node("div", undefined, section);
+        grid.className = "attention-grid";
+        for (const group of groups) {
+          const card = node("div", undefined, grid);
+          card.className = "attention-card tone-" + group.toneName;
+          card.dataset.group = group.key;
+          const cardHead = node("div", undefined, card);
+          cardHead.className = "attention-head";
+          node("span", undefined, cardHead).className = "attention-dot";
+          node("span", group.title, cardHead).className = "attention-title";
+          node("span", group.items.length, cardHead).className = "attention-num";
+          if (!group.items.length) {
+            node("p", tr("无", "None"), card).className = "attention-none";
+            continue;
+          }
+          const list = node("ul", undefined, card);
+          list.className = "attention-list";
+          for (const item of group.items) {
+            const row = node("li", undefined, list);
+            node("span", item.title, row).className = "attention-item-title";
+            if (item.detail)
+              node("span", item.detail, row).className = "attention-item-detail";
+            if (item.meta)
+              node("span", item.meta, row).className = "attention-item-meta";
+          }
+        }
+        return section;
+      }
+
+      function renderStats(tasks) {
+        const counts = new Map();
+        for (const task of tasks)
+          counts.set(task.status, (counts.get(task.status) || 0) + 1);
+        const states = [
+          ...TASK_ORDER.filter((state) => counts.has(state)),
+          ...[...counts.keys()].filter((state) => !TASK_ORDER.includes(state)),
+        ];
+        const decided = tasks.filter(needsDecision).length;
+        const section = panel(tr("任务统计", "Task stats"), null, "stats");
+        const head = panelHead(section);
+        const reset = node("button", tr("重置筛选", "Reset filter"), head);
+        reset.type = "button";
+        reset.disabled = filter === null;
+        reset.onclick = clearFilter;
+        const tiles = node("div", undefined, section);
+        tiles.className = "stat-row";
         for (const [name, num] of [
-          [tr("实际任务", "Actual tasks"), tasks.length],
+          [tr("已记录任务", "Recorded tasks"), tasks.length],
           [
             tr("实施中", "Running"),
-            tasks.filter((t) => t.status === "running").length,
+            tasks.filter((task) => task.status === "running").length,
           ],
           [
-            tr("受阻任务", "Blocked"),
-            tasks.filter((t) => t.status === "blocked").length,
+            tr("阻塞", "Blocked"),
+            tasks.filter((task) => task.status === "blocked").length,
           ],
-          [
-            tr("待用户决策", "Pending decisions"),
-            tasks.filter(
-              (t) => t.pending_decision || t.status === "waiting_user",
-            ).length,
-          ],
+          [tr("待决", "Decisions"), decided],
         ]) {
-          const c = node("div", name, stats);
-          c.className = "stat";
-          node("strong", num, c).className = "number";
+          const tile = node("div", undefined, tiles);
+          tile.className = "stat";
+          node("span", name, tile);
+          node("strong", num, tile);
         }
-        const pending = tasks.filter(
-          (t) => t.pending_decision || t.status === "waiting_user",
-        );
-        if (pending.length || s.run.status === "waiting_user") {
-          const p = section(tr("需要你的决定", "Your decision needed"), next);
-          p.classList.add("warning", "decision-notice");
-          for (const t of pending)
-            node("p", t.title + " · " + value(t.pending_decision), p);
-          if (!pending.length)
-            node(
-              "p",
-              tr(
-                "Run 已标记等待用户；尚无具体决策记录。",
-                "Run is waiting for user; no decision detail recorded.",
-              ),
-              p,
-            );
-        }
-        const top = node("div", undefined, next);
-        top.className = "two";
-        const chart = section(tr("任务状态分布", "Task distribution"), top);
-        node(
-          "p",
+        caption(
           tr(
-            "实际数量比例 · 点击图例筛选下方任务",
-            "Actual counts · select a legend to filter tasks",
+            "实际记录数量；点击图例筛选下方任务清单，再次点击可取消。",
+            "Actual recorded counts; select a legend button to filter the task list, select again to clear.",
           ),
-          chart,
-        ).className = "caption";
-        const dist = node("div", undefined, chart);
-        dist.className = "distribution";
-        const donut = node("div", undefined, dist);
+          section,
+        );
+        const distribution = node("div", undefined, section);
+        distribution.className = "distribution";
+        const donut = node("div", undefined, distribution);
         donut.className = "donut";
         const svg = svgNode(
           "svg",
@@ -965,8 +1812,8 @@
             viewBox: "0 0 180 180",
             role: "img",
             "aria-label": tr(
-              "任务状态数量分布，详情见图例",
-              "Task counts by status; see legend",
+              "任务状态数量分布，详情见文字图例",
+              "Task counts by status; text legend follows",
             ),
           },
           donut,
@@ -978,15 +1825,14 @@
             cy: 90,
             r: 70,
             fill: "none",
-            stroke: "#edf0f5",
+            stroke: "#e8edf5",
             "stroke-width": 17,
           },
           svg,
         );
         let offset = 0;
-        const counts = {};
-        for (const t of tasks) counts[t.status] = (counts[t.status] || 0) + 1;
-        for (const [state, count] of Object.entries(counts)) {
+        for (const state of states) {
+          const count = counts.get(state);
           const length = (count / Math.max(1, tasks.length)) * 439.82;
           svgNode(
             "circle",
@@ -1008,166 +1854,129 @@
         center.className = "donut-center";
         node("strong", tasks.length, center);
         node("small", tr("实际任务", "actual tasks"), center);
-        const legend = node("div", undefined, dist);
+        const legend = node("div", undefined, distribution);
         legend.className = "legend";
-        for (const [state, count] of Object.entries(counts)) {
-          const b = node("button", undefined, legend);
-          b.dataset.status = state;
-          b.setAttribute("aria-pressed", String(filter === state));
-          const dot = node("span", undefined, b);
+        for (const state of states) {
+          const button = node("button", undefined, legend);
+          button.type = "button";
+          button.dataset.status = state;
+          button.setAttribute("aria-pressed", String(filter === state));
+          const dot = node("span", undefined, button);
           dot.className = "dot";
           dot.style.backgroundColor = statusColor(state);
-          node("span", label(state) + " · " + count, b);
-          b.onclick = () => {
+          node("span", label(state), button);
+          node("span", String(counts.get(state)), button).className =
+            "legend-count";
+          button.onclick = () => {
             filter = filter === state ? null : state;
-            render(snapshot);
+            rerender();
           };
         }
-        if (!tasks.length) empty(legend);
-        const delivery = section(
-          tr("交付核验 · 四项独立事实", "Delivery · four independent facts"),
-          top,
+        if (!states.length)
+          node("p", tr("暂无记录", "None recorded"), legend).className = "empty";
+        return section;
+      }
+
+      function renderWorkflow(tasks, workers, deliveries) {
+        const decisions = tasks.filter(needsDecision).length;
+        const section = panel(tr("参考流程", "Reference flow"), null, "workflow");
+        caption(
+          tr(
+            "箭头仅为静态流程参考，不表示依赖、调度或前序已完成。蓝色只表示该项有明确记录；当前阶段只读 Run 的明确记录。",
+            "Arrows are a static reference, not dependencies, scheduling or completed predecessors. Blue marks explicit records only; the current phase reads the explicit Run record.",
+          ),
+          section,
         );
-        node(
-          "p",
-          tr(
-            "自报完成 ≠ 验收通过 · PR 打开 ≠ 合并 · 合并 ≠ tracker 关闭",
-            "Worker done ≠ accepted · PR opened ≠ merged · merged ≠ tracker closed",
-          ),
-          delivery,
-        ).className = "caption";
-        const dg = node("div", undefined, delivery);
-        dg.className = "delivery-grid";
-        for (const [key, name] of [
-          ["implemented", tr("已实施", "Implemented")],
-          ["integrated", tr("已集成", "Integrated")],
-          ["merged", tr("已合并", "Merged")],
-          ["tracker_closed", tr("已对账关闭", "Tracker closed")],
-        ]) {
-          const c = node("div", name, dg);
-          c.className = "delivery-cell";
-          node("strong", deliveries.filter((d) => d[key] === true).length, c);
-          node("small", tr("核验为是", "Verified yes"), c);
-          node(
-            "small",
-            tr("否", "false") +
-              " " +
-              deliveries.filter((d) => d[key] === false).length +
-              " / " +
-              tr("未核验", "unverified") +
-              " " +
-              deliveries.filter((d) => d[key] !== true && d[key] !== false)
-                .length,
-            c,
-          );
-        }
-        node(
-          "p",
-          tr(
-            "仅统计已记录 delivery；未记录任务仍未核验：",
-            "Only recorded deliveries counted; tasks without delivery remain unverified: ",
-          ) +
-            tasks.filter((t) => !deliveries.some((d) => d.task_id === t.id))
-              .length,
-          delivery,
-        ).className = "caption";
-        const flow = section(
-          tr(
-            "全流程 · 参考路径与已观察事实",
-            "Workflow · reference path & observed facts",
-          ),
-          next,
-          "workflow",
-        );
-        node(
-          "p",
-          tr(
-            "箭头仅为静态流程参考，不表示依赖、调度或前序已完成。蓝色仅表示该项有明确记录；当前阶段只读 Run 的明确记录。",
-            "Arrows are a static reference, not dependencies, scheduling or completed predecessors. Blue means explicit observations only; current phase reads the explicit Run record.",
-          ),
-          flow,
-        ).className = "caption";
         const stages = [
-          ["计划", "Plan", tasks.length, "tasks: all records"],
+          [
+            "计划",
+            "Plan",
+            tasks.length,
+            "count(tasks)",
+          ],
           [
             "派活 / 启动",
             "Dispatch / start",
-            workers.filter((w) => w.start_confirmation === "observed").length,
+            workers.filter((worker) => worker.start_confirmation === "observed")
+              .length,
             "workers.start_confirmation = observed",
           ],
           [
             "实施",
             "Implement",
-            tasks.filter((t) => t.status === "running").length,
+            tasks.filter((task) => task.status === "running").length,
             "tasks.status = running",
           ],
           [
             "完成报告 · 自报",
-            "Done · self report",
-            workers.filter((w) => w.reported_lifecycle === "reported_done")
-              .length,
+            "Report done · self",
+            workers.filter(
+              (worker) => worker.reported_lifecycle === "reported_done",
+            ).length,
             "workers.reported_lifecycle = reported_done (self report)",
           ],
           [
             "验收",
             "Accept",
-            tasks.filter((t) => t.status === "accepted").length,
+            tasks.filter((task) => task.status === "accepted").length,
             "tasks.status = accepted",
           ],
           [
             "集成",
             "Integrate",
-            deliveries.filter((d) => d.integrated === true).length,
+            deliveries.filter((delivery) => delivery.integrated === true).length,
             "deliveries.integrated === true",
           ],
           [
             "合并",
             "Merge",
-            deliveries.filter((d) => d.merged === true).length,
+            deliveries.filter((delivery) => delivery.merged === true).length,
             "deliveries.merged === true",
           ],
           [
             "tracker 对账",
-            "Reconcile",
-            deliveries.filter((d) => d.tracker_closed === true).length,
+            "Tracker reconcile",
+            deliveries.filter((delivery) => delivery.tracker_closed === true)
+              .length,
             "deliveries.tracker_closed === true",
           ],
         ];
-        const fs = node("div", undefined, flow);
-        fs.className = "flow";
-        stages.forEach(([zh, en, count, basis], i) => {
-          const st = node("div", undefined, fs);
-          st.className = "step" + (count ? " observed" : "");
-          node("small", String(i + 1).padStart(2, "0"), st);
-          node("b", tr(zh, en), st);
-          node("div", count, st).className = "count";
+        const flow = node("div", undefined, section);
+        flow.className = "flow";
+        stages.forEach(([zh, en, count, basis], index) => {
+          const step = node("div", undefined, flow);
+          step.className = "step" + (count ? " observed" : "");
+          node("span", String(index + 1).padStart(2, "0"), step).className =
+            "step-index";
+          node("b", tr(zh, en), step);
+          node("div", count, step).className = "count";
           node(
             "small",
             count
               ? tr("已观察记录", "Observed records")
               : tr("无匹配记录", "No matching record"),
-            st,
+            step,
           );
-          const d = node("details", undefined, st);
-          d.dataset.key = "basis" + i;
-          node("summary", tr("统计依据", "Count basis"), d);
-          node("p", basis, d);
+          const basisDetails = node("details", undefined, step);
+          basisDetails.dataset.key = "basis" + index;
+          node("summary", tr("统计依据", "Count basis"), basisDetails);
+          node("p", basis, basisDetails);
         });
-        const branches = node("div", undefined, flow);
+        const branches = node("div", undefined, section);
         branches.className = "branches";
         badge(
-          tr("↳ 等待用户", "↳ Waiting user") + " · " + pending.length,
+          tr("↳ 等待用户", "↳ Waiting user") + " · " + decisions,
           branches,
           "warning",
         );
         badge(
           tr("↳ 打回返工", "↳ Rework") +
             " · " +
-            tasks.filter((t) => t.status === "rejected").length,
+            tasks.filter((task) => task.status === "rejected").length,
           branches,
           "danger",
         );
-        const branchBasis = node("details", undefined, flow);
+        const branchBasis = node("details", undefined, section);
         branchBasis.dataset.key = "branch-basis";
         node(
           "summary",
@@ -1179,186 +1988,374 @@
           "Waiting: tasks.status = waiting_user OR pending_decision · Rework: tasks.status = rejected · Current phase: run.phase",
           branchBasis,
         );
-        next.insertBefore(flow, top);
-        const dep = section(
-          tr("实际任务依赖", "Actual task dependencies"),
-          next,
-        );
-        node(
-          "p",
+        return section;
+      }
+
+      function shortTitle(title) {
+        let result = "";
+        let width = 0;
+        for (const char of String(title)) {
+          width += char.codePointAt(0) > 255 ? 2 : 1;
+          if (width > 32) return result + "…";
+          result += char;
+        }
+        return result;
+      }
+
+      function renderGraph(tasks) {
+        const section = panel(tr("依赖图", "Dependencies"), null, "graph");
+        caption(
           tr(
-            "连线严格来自 dependencies，箭头由依赖指向任务。未知节点保留；循环不会被推断为完成。图内可横向滚动。",
-            "Edges come directly from dependencies, prerequisite → task. Unknown nodes remain visible; cycles imply no completion. Scroll within the graph.",
+            "连线严格来自 tasks.dependencies，箭头由前置指向任务。未知节点保留；循环不会被推断为完成；长标题保留完整文本。图内可横向滚动。",
+            "Edges come directly from tasks.dependencies, prerequisite to task. Unknown nodes remain; cycles imply no completion; long titles keep their full text. Scroll inside the graph.",
           ),
-          dep,
-        ).className = "caption";
-        dependencyGraph(dep, tasks, s.tasks);
-        const columns = node("div", undefined, next);
-        columns.className = "two";
-        const taskPanel = section(tr("任务清单", "Tasks"), columns, "tasks");
-        const fb = node("div", undefined, taskPanel);
-        fb.className = "filterbar";
+          section,
+        );
+        dependencyGraph(section, tasks);
+        return section;
+      }
+
+      function renderTasks(tasks, workers) {
+        const section = panel(tr("任务与 Worker", "Tasks & workers"), null, "tasks");
+        const head = panelHead(section);
+        node(
+          "span",
+          tr("任务 ", "Tasks ") +
+            tasks.length +
+            tr(" · Worker ", " · Workers ") +
+            workers.length,
+          head,
+        ).className = "panel-note";
+        const split = node("div", undefined, section);
+        split.className = "split";
+        const taskColumn = node("div", undefined, split);
+        taskColumn.className = "column";
+        node("h3", tr("任务清单", "Task list"), taskColumn).className =
+          "column-title";
+        const filterbar = node("div", undefined, taskColumn);
+        filterbar.className = "filterbar";
         node(
           "span",
           filter
             ? tr("筛选：", "Filter: ") + label(filter)
             : tr("全部任务", "All tasks"),
-          fb,
+          filterbar,
         );
-        const reset = node("button", tr("重置筛选", "Reset filter"), fb);
-        reset.onclick = () => {
-          filter = null;
-          render(snapshot);
-        };
+        const reset = node("button", tr("重置筛选", "Reset filter"), filterbar);
+        reset.type = "button";
         reset.disabled = filter === null;
-        const shown = tasks.filter((t) => !filter || t.status === filter);
-        if (!shown.length) empty(taskPanel);
-        for (const t of shown) {
-          const row = node("article", undefined, taskPanel);
+        reset.onclick = clearFilter;
+        const shown = tasks.filter((task) => !filter || task.status === filter);
+        if (!shown.length)
+          emptyState(
+            taskColumn,
+            filter
+              ? tr("没有匹配当前筛选的任务。", "No tasks match this filter.")
+              : tr("暂无任务记录。", "No task records yet."),
+          );
+        for (const task of shown) {
+          const row = node("article", undefined, taskColumn);
           row.className = "task-row";
-          const head = node("div", undefined, row);
-          head.className = "row-head";
-          node("h3", t.title, head);
-          badge(label(t.status), head);
-          if (t.blocked_reason)
-            node("p", t.blocked_reason, row).className = "danger";
-          details(row, "task:" + t.id, {
-            id: t.id,
-            dependencies: t.dependencies.length
-              ? t.dependencies
-              : tr("无", "none"),
-            verified_at: t.verified_at,
+          const rowHead = node("div", undefined, row);
+          rowHead.className = "row-head";
+          node("h4", value(task.title || task.id), rowHead);
+          const badges = node("div", undefined, rowHead);
+          badges.className = "row-badges";
+          badge(label(task.status), badges, tone(task.status));
+          const meta = node("p", undefined, row);
+          meta.className = "row-meta";
+          node("span", tr("依赖 ", "Dependencies ") + task.dependencies.length, meta);
+          meta.append(document.createTextNode(" · "));
+          node("code", task.id, meta);
+          if (task.pending_decision)
+            node(
+              "p",
+              tr("待决：", "Decision: ") + task.pending_decision,
+              row,
+            ).className = "note warning";
+          if (task.blocked_reason)
+            node(
+              "p",
+              tr("阻塞：", "Blocked: ") + task.blocked_reason,
+              row,
+            ).className = "note danger";
+          details(row, "task:" + task.id, {
+            id: task.id,
+            dependencies: task.dependencies,
+            blocked_reason: task.blocked_reason,
+            pending_decision: task.pending_decision,
+            verified_at: task.verified_at,
           });
         }
-        const wp = section(
-          tr("Worker · 层级与核验", "Workers · hierarchy & verification"),
-          columns,
-        );
-        if (!workers.length) empty(wp);
-        const byId = new Map(workers.map((w) => [w.id, w]));
-        function depth(w) {
-          const seen = new Set([w.id]);
-          let n = 0,
-            p = w.parent_worker_id;
-          while (p && byId.has(p) && !seen.has(p)) {
-            seen.add(p);
-            n++;
-            p = byId.get(p).parent_worker_id;
+
+        const workerColumn = node("div", undefined, split);
+        workerColumn.className = "column";
+        node(
+          "h3",
+          tr("Worker 层级", "Worker hierarchy"),
+          workerColumn,
+        ).className = "column-title";
+        if (!workers.length)
+          emptyState(
+            workerColumn,
+            tr("暂无 Worker 记录。", "No worker records yet."),
+          );
+        const byId = new Map(workers.map((worker) => [worker.id, worker]));
+        function depth(worker) {
+          const seen = new Set([worker.id]);
+          let levels = 0;
+          let parent = worker.parent_worker_id;
+          while (parent && byId.has(parent) && !seen.has(parent)) {
+            seen.add(parent);
+            levels++;
+            parent = byId.get(parent).parent_worker_id;
           }
-          return Math.min(n, 5);
+          return Math.min(levels, 5);
         }
-        const ordered = [],
-          visited = new Set();
-        function visit(w) {
-          if (visited.has(w.id)) return;
-          visited.add(w.id);
-          ordered.push(w);
+        const ordered = [];
+        const visited = new Set();
+        function visit(worker) {
+          if (visited.has(worker.id)) return;
+          visited.add(worker.id);
+          ordered.push(worker);
           for (const child of workers.filter(
-            (c) => c.parent_worker_id === w.id,
+            (candidate) => candidate.parent_worker_id === worker.id,
           ))
             visit(child);
         }
         workers
-          .filter((w) => !w.parent_worker_id || !byId.has(w.parent_worker_id))
+          .filter(
+            (worker) =>
+              !worker.parent_worker_id || !byId.has(worker.parent_worker_id),
+          )
           .forEach(visit);
         workers.forEach(visit);
-        for (const w of ordered) {
-          const row = node("article", undefined, wp);
+        for (const worker of ordered) {
+          const row = node("article", undefined, workerColumn);
           row.className = "worker-row";
-          row.style.marginLeft = depth(w) * 14 + "px";
-          node("h3", value(w.task_id) + " · " + value(w.id).slice(0, 28), row);
+          row.style.marginLeft = depth(worker) * 14 + "px";
+          const rowHead = node("div", undefined, row);
+          rowHead.className = "row-head";
+          node("h4", value(worker.task_id) + " · " + value(worker.id), rowHead);
+          const badges = node("div", undefined, rowHead);
+          badges.className = "row-badges";
           badge(
-            tr("核验记录", "Verification") + " · " + label(w.lifecycle),
-            row,
-            ["lost", "failed"].includes(w.lifecycle) ? "danger" : "",
+            tr("核验 · ", "Verified · ") + label(worker.lifecycle),
+            badges,
+            tone(worker.lifecycle),
           );
           badge(
-            tr("自报", "Self report") + " · " + label(w.reported_lifecycle),
-            row,
+            tr("自报 · ", "Self report · ") + label(worker.reported_lifecycle),
+            badges,
+            "info",
           );
-          node(
-            "p",
+          const meta = node("p", undefined, row);
+          meta.className = "row-meta";
+          meta.textContent =
             tr("启动确认：", "Start confirmation: ") +
-              label(w.start_confirmation) +
-              tr(" · 时效：", " · Freshness: ") +
-              label(w.freshness),
-            row,
-          );
-          if (w.reported_summary) {
-            const d = node("details", undefined, row);
-            d.dataset.key = "report:" + w.id;
+            label(worker.start_confirmation) +
+            tr(" · 时效：", " · Freshness: ") +
+            label(worker.freshness) +
+            tr(" · 尝试：", " · Attempt: ") +
+            value(worker.attempt);
+          if (worker.reported_summary) {
+            const report = node("details", undefined, row);
+            report.dataset.key = "report:" + worker.id;
             node(
               "summary",
               tr("自报摘要（未核验）", "Self-reported summary (unverified)"),
-              d,
+              report,
             );
-            node("p", w.reported_summary, d);
+            node("p", worker.reported_summary, report);
           }
-          details(row, "worker:" + w.id, w);
+          details(row, "worker:" + worker.id, worker);
         }
-        const bottom = node("div", undefined, next);
-        bottom.className = "two";
-        const ap = section(
-          tr("产物与交付证据", "Artifacts & delivery evidence"),
-          bottom,
-          "artifacts",
+        return section;
+      }
+
+      function renderDelivery(tasks, deliveries, artifacts, deliveryIds) {
+        const section = panel(
+          tr("交付证据", "Delivery evidence"),
+          null,
+          "delivery",
         );
-        if (!artifacts.length && !deliveries.length) empty(ap);
-        for (const a of artifacts) {
-          const row = node("div", undefined, ap);
+        caption(
+          tr(
+            "四项独立事实：自报完成 ≠ 验收通过 · PR 打开 ≠ 合并 · 合并 ≠ tracker 关闭。",
+            "Four independent facts: worker done ≠ accepted · PR opened ≠ merged · merged ≠ tracker closed.",
+          ),
+          section,
+        );
+        const grid = node("div", undefined, section);
+        grid.className = "delivery-grid";
+        for (const [key, name] of [
+          ["implemented", tr("已实施", "Implemented")],
+          ["integrated", tr("已集成", "Integrated")],
+          ["merged", tr("已合并", "Merged")],
+          ["tracker_closed", tr("已对账关闭", "Tracker closed")],
+        ]) {
+          const cell = node("div", undefined, grid);
+          cell.className = "delivery-cell";
+          node("span", name, cell);
+          node(
+            "strong",
+            deliveries.filter((delivery) => delivery[key] === true).length,
+            cell,
+          );
+          node("small", tr("核验为是", "Verified yes"), cell);
+          node(
+            "small",
+            tr("否 ", "false ") +
+              deliveries.filter((delivery) => delivery[key] === false).length +
+              " · " +
+              tr("未核验 ", "unverified ") +
+              deliveries.filter(
+                (delivery) => delivery[key] !== true && delivery[key] !== false,
+              ).length,
+            cell,
+          );
+        }
+        node(
+          "p",
+          tr(
+            "未核验指字段为 null 或缺失；缺少 delivery 记录的任务：",
+            "Unverified means null or missing; tasks without a delivery record: ",
+          ) +
+            tasks.filter((task) => !deliveryIds.has(task.id)).length,
+          section,
+        ).className = "caption";
+        node("h3", tr("产物", "Artifacts"), section).className = "column-title";
+        if (!artifacts.length)
+          emptyState(section, tr("暂无产物记录。", "No artifacts recorded."));
+        for (const artifact of artifacts) {
+          const row = node("div", undefined, section);
           row.className = "artifact-row";
-          badge(a.kind, row);
-          node("p", a.label, row);
-          reference(row, a.reference);
+          badge(artifact.kind, row, "info");
+          node("span", artifact.label, row);
+          reference(row, artifact.reference);
+          if (artifact.task_id)
+            node("span", tr("任务 ", "Task ") + artifact.task_id, row).className =
+              "artifact-task";
         }
-        for (const d of deliveries) {
-          const det = details(ap, "delivery:" + d.task_id, {
-            task: d.task_id,
-            ...Object.fromEntries(
-              ["implemented", "integrated", "merged", "tracker_closed"].map(
-                (k) => [
-                  k,
-                  d[k] === true
-                    ? "verified yes"
-                    : d[k] === false
-                      ? "verified no"
-                      : "unverified",
-                ],
-              ),
-            ),
-            verified_at: d.verified_at,
-          });
-          det.querySelector("summary").textContent =
-            value(d.task_id) +
-            " · " +
-            tr("交付核验明细", "Delivery verification");
-          for (const ref of d.evidence || [])
-            reference(node("p", undefined, det), ref);
+        if (deliveries.length) {
+          const list = node("div", undefined, section);
+          for (const delivery of deliveries) {
+            const item = details(
+              list,
+              "delivery:" + delivery.task_id,
+              {
+                task: delivery.task_id,
+                ...Object.fromEntries(
+                  [
+                    "implemented",
+                    "integrated",
+                    "merged",
+                    "tracker_closed",
+                  ].map((key) => [
+                    key,
+                    delivery[key] === true
+                      ? tr("核验为是", "verified yes")
+                      : delivery[key] === false
+                        ? tr("核验为否", "verified no")
+                        : tr("未核验", "unverified"),
+                  ]),
+                ),
+                verified_at: delivery.verified_at,
+              },
+              value(delivery.task_id) +
+                " · " +
+                tr("交付核验明细", "Delivery verification"),
+            );
+            for (const ref of delivery.evidence || [])
+              reference(node("p", undefined, item), ref);
+          }
         }
-        const timeline = section(tr("近期事件", "Recent events"), bottom);
-        if (!s.events.length) empty(timeline);
-        const list = node("ol", undefined, timeline);
-        list.className = "timeline";
-        for (const e of [...s.events].reverse().slice(0, 6)) eventRow(list, e);
-        if (s.events.length > 6) {
-          const d = node("details", undefined, timeline);
-          d.dataset.key = "older-events";
+        return section;
+      }
+
+      function renderEvents(events) {
+        const section = panel(tr("事件", "Events"), null, "events");
+        const head = panelHead(section);
+        node(
+          "span",
+          tr("共 ", "Total ") + events.length + tr(" 条", " events"),
+          head,
+        ).className = "panel-note";
+        if (!events.length)
+          emptyState(section, tr("暂无事件记录。", "No events recorded."));
+        const ordered = [...events].reverse();
+        if (ordered.length) {
+          const list = node("ol", undefined, section);
+          list.className = "timeline";
+          for (const event of ordered.slice(0, 6)) eventRow(list, event);
+        }
+        if (ordered.length > 6) {
+          const older = node("details", undefined, section);
+          older.dataset.key = "older-events";
           node(
             "summary",
-            tr("更早事件", "Earlier events") + " · " + (s.events.length - 6),
-            d,
+            tr("更早事件", "Earlier events") + " · " + (ordered.length - 6),
+            older,
           );
-          const older = node("ol", undefined, d);
-          older.className = "timeline";
-          for (const e of [...s.events].reverse().slice(6)) eventRow(older, e);
+          const oldList = node("ol", undefined, older);
+          oldList.className = "timeline";
+          for (const event of ordered.slice(6)) eventRow(oldList, event);
         }
-        const runDetails = details(next, "run-full", s.run);
-        runDetails.querySelector("summary").textContent = tr(
-          "Run 完整字段",
-          "Full Run fields",
+        return section;
+      }
+
+      function render(snap) {
+        if (
+          !isRecord(snap) ||
+          !isRecord(snap.run) ||
+          !isRecord(snap.tasks) ||
+          !isRecord(snap.workers) ||
+          !isRecord(snap.deliveries) ||
+          !isRecord(snap.artifacts) ||
+          !Array.isArray(snap.events)
+        )
+          throw Error("Invalid snapshot shape");
+        const tasks = Object.values(snap.tasks);
+        const workers = Object.values(snap.workers);
+        const deliveries = Object.values(snap.deliveries);
+        const artifacts = Object.values(snap.artifacts);
+        for (const task of tasks)
+          if (!task || !Array.isArray(task.dependencies))
+            throw Error("Invalid dependencies");
+
+        const active = document.activeElement;
+        const focusedDetails = active?.closest("details")?.dataset.key;
+        const focusedLegend = active?.closest(".legend button")?.dataset.status;
+        const graph = content.querySelector(".scroll");
+        const graphPosition = graph
+          ? [graph.scrollLeft, graph.scrollTop]
+          : [0, 0];
+        const opened = new Set(
+          [...content.querySelectorAll("details[open]")]
+            .map((item) => item.dataset.key)
+            .filter(Boolean),
         );
-        for (const d of next.querySelectorAll("details"))
-          d.open = opened.has(d.dataset.key);
+
+        // Build entirely off-DOM: malformed data cannot replace the last valid view.
+        const next = document.createDocumentFragment();
+        next.append(renderOverview(snap));
+        next.append(renderAttention(snap, tasks, workers));
+        next.append(renderStats(tasks));
+        next.append(renderWorkflow(tasks, workers, deliveries));
+        next.append(renderGraph(tasks));
+        next.append(renderTasks(tasks, workers));
+        next.append(
+          renderDelivery(
+            tasks,
+            deliveries,
+            artifacts,
+            new Set(Object.keys(snap.deliveries)),
+          ),
+        );
+        next.append(renderEvents(snap.events));
+
+        for (const item of next.querySelectorAll("details"))
+          item.open = opened.has(item.dataset.key);
         content.replaceChildren(next);
         const newGraph = content.querySelector(".scroll");
         if (newGraph) {
@@ -1367,48 +2364,50 @@
         }
         if (focusedDetails)
           [...content.querySelectorAll("details")]
-            .find((d) => d.dataset.key === focusedDetails)
+            .find((item) => item.dataset.key === focusedDetails)
             ?.querySelector("summary")
             ?.focus({ preventScroll: true });
         else if (focusedLegend)
           [...content.querySelectorAll(".legend button")]
-            .find((b) => b.dataset.status === focusedLegend)
+            .find((button) => button.dataset.status === focusedLegend)
             ?.focus({ preventScroll: true });
-        else if (active === graph) newGraph?.focus({ preventScroll: true });
-        document.querySelectorAll("aside nav a").forEach((a, i) => {
-          a.textContent = navText[i];
-        });
-        document
-          .querySelector("aside nav")
-          .setAttribute("aria-label", tr("页面导航", "Page navigation"));
-        document.querySelector(".side-note").textContent = tr(
-          "PROGRESS CONSOLE · 只读观察 · 无调度动作 · Localhost",
-          "PROGRESS CONSOLE · Read-only observations · No scheduling · Localhost",
+        renderChrome(snap);
+        updateActiveNav();
+      }
+
+      function eventRow(parent, event) {
+        const item = node("li", undefined, parent);
+        const source =
+          event.source === "worker"
+            ? tr("worker 自报", "worker self report")
+            : value(event.source);
+        node("time", dateTime(event.at) + " · " + source, item);
+        node(
+          "strong",
+          value(event.type) +
+            " · " +
+            value(event.task_id || event.worker_id || event.entity_id),
+          item,
         );
+        if (event.summary) node("p", event.summary, item);
+        for (const ref of event.evidence || [])
+          reference(node("p", undefined, item), ref);
       }
-      function shortTitle(title) {
-        let result = "",
-          width = 0;
-        for (const char of String(title)) {
-          width += char.codePointAt(0) > 255 ? 2 : 1;
-          if (width > 32) return result + "…";
-          result += char;
-        }
-        return result;
-      }
-      function dependencyGraph(parent, tasks, taskMap) {
+
+      function dependencyGraph(parent, tasks) {
         if (!tasks.length) {
-          empty(parent);
+          emptyState(parent, tr("暂无任务记录。", "No task records yet."));
           return;
         }
-        const nodes = tasks.map((t) => ({
-          id: t.id,
-          title: t.title,
-          status: t.status,
+        const taskMap = new Map(tasks.map((task) => [task.id, task]));
+        const nodes = tasks.map((task) => ({
+          id: task.id,
+          title: task.title,
+          status: task.status,
         }));
-        const known = new Set(nodes.map((t) => t.id));
-        for (const t of tasks)
-          for (const id of t.dependencies)
+        const known = new Set(nodes.map((task) => task.id));
+        for (const task of tasks)
+          for (const id of task.dependencies)
             if (!known.has(id)) {
               known.add(id);
               nodes.push({ id, title: id, status: "unknown" });
@@ -1421,21 +2420,19 @@
           tr("可滚动任务依赖图", "Scrollable dependency graph"),
         );
         const incoming = new Map(
-          nodes.map((n) => [
-            n.id,
-            Object.hasOwn(taskMap, n.id)
-              ? taskMap[n.id].dependencies.length
-              : 0,
+          nodes.map((item) => [
+            item.id,
+            taskMap.has(item.id) ? taskMap.get(item.id).dependencies.length : 0,
           ]),
         );
-        const outgoing = new Map(nodes.map((n) => [n.id, []]));
-        for (const t of tasks)
-          for (const prerequisite of t.dependencies)
-            outgoing.get(prerequisite).push(t.id);
-        const levels = new Map(nodes.map((n) => [n.id, 0]));
+        const outgoing = new Map(nodes.map((item) => [item.id, []]));
+        for (const task of tasks)
+          for (const prerequisite of task.dependencies)
+            outgoing.get(prerequisite).push(task.id);
+        const levels = new Map(nodes.map((item) => [item.id, 0]));
         const queue = nodes
-          .filter((n) => incoming.get(n.id) === 0)
-          .map((n) => n.id);
+          .filter((item) => incoming.get(item.id) === 0)
+          .map((item) => item.id);
         for (let index = 0; index < queue.length; index++) {
           const id = queue[index];
           for (const target of outgoing.get(id)) {
@@ -1447,11 +2444,11 @@
             if (incoming.get(target) === 0) queue.push(target);
           }
         }
-        const unresolved = nodes.filter((n) => incoming.get(n.id) > 0);
+        const unresolved = nodes.filter((item) => incoming.get(item.id) > 0);
         if (unresolved.length) {
           const fallback =
             Math.max(...queue.map((id) => levels.get(id)), 0) + 1;
-          unresolved.forEach((n) => levels.set(n.id, fallback));
+          unresolved.forEach((item) => levels.set(item.id, fallback));
           badge(
             tr("循环或受循环阻塞节点：", "Cyclic or cycle-dependent nodes: ") +
               unresolved.length,
@@ -1461,18 +2458,18 @@
         }
         const rows = new Map();
         const positions = new Map(
-          nodes.map((n) => {
-            const level = levels.get(n.id),
-              row = rows.get(level) || 0;
+          nodes.map((item) => {
+            const level = levels.get(item.id);
+            const row = rows.get(level) || 0;
             rows.set(level, row + 1);
-            return [n.id, { x: 24 + level * 300, y: 22 + row * 84 }];
+            return [item.id, { x: 24 + level * 300, y: 22 + row * 84 }];
           }),
         );
         const width = Math.max(
-            760,
-            (Math.max(...levels.values()) + 1) * 300 + 35,
-          ),
-          height = Math.max(138, Math.max(...rows.values()) * 84 + 24);
+          760,
+          (Math.max(...levels.values()) + 1) * 300 + 35,
+        );
+        const height = Math.max(138, Math.max(...rows.values()) * 84 + 24);
         const svg = svgNode(
           "svg",
           {
@@ -1487,160 +2484,178 @@
           },
           wrap,
         );
-        for (const t of tasks)
-          for (const prerequisite of t.dependencies) {
-            const from = positions.get(prerequisite),
-              to = positions.get(t.id),
-              back = to.x <= from.x;
-            const x1 = from.x + 242,
-              y1 = from.y + 28,
-              x2 = back ? to.x + 242 : to.x,
-              y2 = to.y + 28;
+        for (const task of tasks)
+          for (const prerequisite of task.dependencies) {
+            const from = positions.get(prerequisite);
+            const to = positions.get(task.id);
+            const back = to.x <= from.x;
+            const x1 = from.x + 242;
+            const y1 = from.y + 28;
+            const x2 = back ? to.x + 242 : to.x;
+            const y2 = to.y + 28;
             const bend = back ? Math.max(x1, x2) + 32 : (x1 + x2) / 2;
             const path = svgNode(
               "path",
               {
                 d:
-                  prerequisite === t.id
+                  prerequisite === task.id
                     ? `M ${x1} ${y1} C ${bend} ${y1 - 38} ${bend} ${y2 + 38} ${x2} ${y2}`
                     : `M ${x1} ${y1} C ${bend} ${y1} ${bend} ${y2} ${x2} ${y2}`,
                 fill: "none",
-                stroke: back ? "#c48458" : "#8a9ebf",
+                stroke: back ? "#c48458" : "#9aaccb",
                 "stroke-width": 1.6,
               },
               svg,
             );
-            svgNode("title", {}, path, prerequisite + " → " + t.id);
+            svgNode("title", {}, path, prerequisite + " → " + task.id);
             const direction = back ? 1 : -1;
             svgNode(
               "path",
               {
                 d: `M ${x2 + direction * 7} ${y2 - 4} L ${x2} ${y2} L ${x2 + direction * 7} ${y2 + 4}`,
                 fill: "none",
-                stroke: back ? "#c48458" : "#8a9ebf",
+                stroke: back ? "#c48458" : "#9aaccb",
                 "stroke-width": 1.6,
               },
               svg,
             );
           }
-        for (const n of nodes) {
-          const p = positions.get(n.id),
-            g = svgNode("g", {}, svg);
+        for (const item of nodes) {
+          const position = positions.get(item.id);
+          const group = svgNode("g", {}, svg);
           svgNode(
             "title",
             {},
-            g,
-            n.title + " · " + n.id + " · " + label(n.status),
+            group,
+            item.title + " · " + item.id + " · " + label(item.status),
           );
           svgNode(
             "rect",
             {
-              x: p.x,
-              y: p.y,
+              x: position.x,
+              y: position.y,
               width: 242,
               height: 56,
-              rx: 8,
-              fill: "#f8faff",
-              stroke: statusColor(n.status),
+              rx: 9,
+              fill: "#ffffff",
+              stroke: statusColor(item.status),
+              "stroke-width": 1.4,
             },
-            g,
+            group,
           );
           svgNode(
             "text",
-            { x: p.x + 12, y: p.y + 22, fill: "#24334c", "font-size": 12 },
-            g,
-            shortTitle(n.title),
+            {
+              x: position.x + 12,
+              y: position.y + 22,
+              fill: "#1c2b45",
+              "font-size": 12,
+            },
+            group,
+            shortTitle(item.title),
           );
           svgNode(
             "text",
-            { x: p.x + 12, y: p.y + 43, fill: "#637189", "font-size": 11 },
-            g,
-            (Object.hasOwn(taskMap, n.id)
-              ? label(n.status)
+            {
+              x: position.x + 12,
+              y: position.y + 43,
+              fill: "#66738b",
+              "font-size": 11,
+            },
+            group,
+            (taskMap.has(item.id)
+              ? label(item.status)
               : tr("未记录依赖", "Unrecorded dependency")) +
               " · " +
-              String(n.id).slice(0, 22),
+              String(item.id).slice(0, 22),
           );
         }
-        const d = node("details", undefined, parent);
-        d.dataset.key = "dependency-text";
+        const detail = node("details", undefined, parent);
+        detail.dataset.key = "dependency-text";
         node(
           "summary",
           tr(
             "完整依赖文本（含未知节点）",
             "Full dependency text (including unknown nodes)",
           ),
-          d,
+          detail,
         );
-        for (const n of nodes) {
-          const t = Object.hasOwn(taskMap, n.id) ? taskMap[n.id] : null;
+        for (const item of nodes) {
+          const task = taskMap.get(item.id) || null;
           node(
             "p",
-            n.title +
+            item.title +
               " [" +
-              n.id +
+              item.id +
               "] · " +
-              label(n.status) +
+              label(item.status) +
               " ← " +
-              (t
-                ? t.dependencies.length
-                  ? t.dependencies.join(", ")
+              (task
+                ? task.dependencies.length
+                  ? task.dependencies.join(", ")
                   : tr("无依赖", "No dependencies")
                 : tr("未知依赖节点", "Unknown dependency node")),
-            d,
+            detail,
           );
         }
       }
+
       async function refresh() {
         if (busy) return;
         busy = true;
         try {
           const response = await fetch("/snapshot", { cache: "no-store" });
-          const data = await response.json();
+          let data;
+          try {
+            data = await response.json();
+          } catch {
+            throw Error(tr("快照不是有效 JSON", "Snapshot is not valid JSON"));
+          }
           if (!response.ok)
-            throw Error(data.error || "Snapshot request failed");
-          if (JSON.stringify(data) !== JSON.stringify(snapshot)) render(data);
-          snapshot = data;
-          last = new Date();
-          health.className = "health";
-          health.textContent =
-            tr("快照已更新 ", "Snapshot loaded ") +
-            last.toLocaleTimeString() +
-            " · " +
-            label(data.run.freshness) +
-            tr(
-              " · 每 3 秒读取 · 仅显式观察记录",
-              " · refresh every 3 seconds · explicit observations only",
+            throw Error(
+              data && data.error ? String(data.error) : "Snapshot request failed",
             );
+          const changed = JSON.stringify(data) !== JSON.stringify(snapshot);
+          if (changed || renderedLanguage !== language) render(data);
+          renderedLanguage = language;
+          snapshot = data;
+          lastLoaded = new Date();
+          healthState = { kind: "ok", at: null, message: "" };
         } catch (error) {
-          health.className = "health error";
-          health.textContent =
-            tr("观测错误 ", "Observation error ") +
-            new Date().toLocaleTimeString() +
-            " · " +
-            error.message +
-            (last
-              ? tr(
-                  " · 保留最后有效快照 ",
-                  " · showing last valid snapshot from ",
-                ) + last.toLocaleTimeString()
-              : tr(" · 尚无有效快照", " · no valid snapshot available"));
+          healthState = {
+            kind: "error",
+            at: new Date(),
+            message:
+              error && error.message ? String(error.message) : String(error),
+          };
         } finally {
           busy = false;
+          renderHealth();
         }
       }
-      document.getElementById("refresh").onclick = refresh;
-      document.getElementById("language").onclick = () => {
+
+      refreshButton.addEventListener("click", refresh);
+      languageButton.addEventListener("click", () => {
         language = language === "zh" ? "en" : "zh";
-        document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
-        document.getElementById("language").textContent =
-          language === "zh" ? "English" : "中文";
-        document.getElementById("refresh").textContent = tr(
-          "↻ 刷新",
-          "↻ Refresh",
-        );
-        if (snapshot) render(snapshot);
-      };
+        renderChrome(snapshot);
+        rerender();
+        renderHealth();
+      });
+      let scrollFrame = null;
+      window.addEventListener(
+        "scroll",
+        () => {
+          if (scrollFrame) return;
+          scrollFrame = requestAnimationFrame(() => {
+            scrollFrame = null;
+            updateActiveNav();
+          });
+        },
+        { passive: true },
+      );
+
+      renderChrome(null);
+      renderHealth();
       refresh();
       setInterval(refresh, 3000);
     </script>
