@@ -814,26 +814,26 @@
     },
     {
       "id": 30,
-      "name": "single-post-pr-backfill",
-      "prompt": "你正在跑 orchestra-auto。一个 worker 已经推送代码并创建了 PR，现在准备把 PR 号与一次 CI 读数记进票据 Answer。\n\n只输出：\n1. COMMIT: 这笔记账如何提交与推送\n2. CI: 这次文档改动与最终 CI 分别由谁跟进\n3. WHY: 一到两句\n不要执行命令。",
-      "expected_output": "PR 号与 CI 读数一次写全：PR 创建后只做一笔回填提交，不为每条读数各提交、各推送一次。该文档-only 提交不追 CI；最终 CI 由 coordinator 在验收与合并时确认。WHY 说明 PR 号只在 PR 创建后才存在，逐条读数提交只会制造 doc-only 推送与又一轮整跑 CI。",
+      "name": "no-post-pr-backfill-commit",
+      "prompt": "你正在跑 orchestra-auto。一个 worker 已经推送了最终代码并创建了 PR。PR 号、PR body 路径与一次 CI 读数现在都已知道，而票据的 Answer 在仓库内。\n\n只输出：\n1. COMMIT: worker 是否为携带这些事实追加提交\n2. LEDGER: worker 把它们记在哪里\n3. CI: 这次改动与最终 CI 分别由谁跟进\n4. WHY: 一到两句\n不要执行命令。",
+      "expected_output": "worker 不追加提交：交付文件在创建 PR 前就已定稿，用一笔提交携带 PR 号、body 路径或 CI 读数，只会推送一棵与被验收的树相同的树——不产生信息，却多花一轮完整 CI。这些事实记入 GitHub 与本轮仓库外台账；仓库内 Answer 只记录交付了什么与所在分支，验收留给 coordinator。最终 PR HEAD 的 CI 仍由 coordinator 在验收与合并时核对，worker 不为追它而推送。用户或仓库明确要求把该事实写进仓库时——写 PR 号的 changelog、release 清单、tracker 字段、必须点名 PR 的 Answer——以该规则为准。",
       "files": [],
       "assertions": [
         {
-          "name": "single_post_pr_commit",
-          "text": "PR 号与 CI 读数写在同一笔 PR 创建后的回填提交里"
+          "name": "no_post_pr_commit",
+          "text": "不为携带 PR 号、body 路径或 CI 读数追加项目提交"
         },
         {
-          "name": "no_commit_per_reading",
-          "text": "不为每条 CI 读数追加提交或推送"
-        },
-        {
-          "name": "docs_only_not_ci_chased",
-          "text": "文档-only 回填提交不追 CI"
+          "name": "facts_recorded_out_of_repo",
+          "text": "把 PR 号、body 路径与 CI 读数记入 GitHub 与仓库外台账，仓库内 Answer 只记交付内容与分支"
         },
         {
           "name": "coordinator_owns_final_ci",
-          "text": "最终 CI 由 coordinator 验收，而不是 worker 为它反复推送"
+          "text": "最终 PR HEAD 的 CI 留给 coordinator 在验收与合并时核对"
+        },
+        {
+          "name": "explicit_rule_overrides",
+          "text": "用户或仓库明示要求把该事实写进仓库时，遵循其规则"
         }
       ]
     }
