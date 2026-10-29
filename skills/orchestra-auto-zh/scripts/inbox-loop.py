@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Orca inbox loop: persist every delivery batch, and end the process on a wake event.
 
-Four safety guarantees must survive every change to this file:
+These safety guarantees must survive every change to this file:
 
 * every batch the CLI returns is written to disk atomically, keyed by a hash of its
-  ``deliveryId``, before anything else happens, so a crash can never lose a message;
+  ``deliveryId``, before anything else happens, and the parent directory is fsynced after
+  the rename, so a power loss can neither lose a message nor roll back the saved name;
 * an already saved delivery is never overwritten, so a FIFO replay cannot erase the
   evidence of the first read;
+* every ack — an automatic heartbeat-only one and a coordinator one through ``--ack`` —
+  appends ``{delivery_id, request_id, acked_at, result}`` to the append-only receipt file.
+  A receipt is appended as ``pending`` before the Orca call and as ``success`` or ``failed``
+  after it, so local state never claims an ack Orca refused and a failed ack stays unacked;
 * a batch whose every message is a heartbeat is acknowledged automatically, because it
   carries no decision; any other batch is left for the coordinator to handle and
   acknowledge itself;
 * a CLI failure, a JSON error or a lost binding is reported as an error and exits
-  non-zero. It is never reinterpreted as "the queue was empty";
+  non-zero. It is never reinterpreted as "the queue was empty", and the loop never retries
+  by itself;
 * a CLI child never outlives the call that owns it. An exception from the worker-state probe,
   a wake, or a signal reaps every process this loop started, because a survivor keeps its
   waiter slot: the next install then fails while the Run still looks watched.
@@ -22,6 +28,11 @@ coordinator turn by itself — only the end of a command the harness surfaces ca
 * a **newly persisted** batch that carries anything other than heartbeats ends the process
   and prints one machine-readable line on stdout (``event``, ``reason``, ``deliveryId``);
   the end of the process, not the file, is the wake;
+* a **reinstall** compares every saved delivery with the successful receipts. If the oldest
+  unacknowledged batch was saved but never announced, it emits exactly one wake naming the
+  reconciliation, records ``reconciled_delivery_id`` and a local observation in
+  ``state.json``, and exits. A batch already announced is never news again, and the consumer
+  never writes the ledger — the coordinator transcribes the observation;
 * a change in this Run's worker signature — the read-only ``worker-list --run``, reduced to
   ``dispatchId:workerState:dispatchStatus:stage`` per worker — is the second wake leg, so
   the coordinator does not have to wait for a ``worker_done`` that may never come;
@@ -33,6 +44,10 @@ poll-and-sleep: the CLI holds the connection and writes its keepalive lines to s
 which never reach this process's stdout. Every wake event ends the process, so the
 coordinator handles the batch and installs the next wait; not re-installing one is a silent
 stall. ``--status`` still inspects a directory without consuming its queue.
+
+A handled batch is acknowledged through ``--ack DELIVERY_ID STATE_DIR``: the entry writes
+the pending receipt, asks Orca, then records ``success`` or ``failed``. It refuses an id
+this consumer never saved, because a read-only ``check --all`` cannot yield an ackable id.
 
 Only the Python standard library is used (POSIX file locks; macOS, Linux and WSL).
 """
@@ -72,6 +87,18 @@ CLI_TIMEOUT_SECONDS = 45
 
 #: Grace added on top of ``--timeout-ms`` so the CLI's own timeout, not ours, decides.
 WAIT_GRACE_SECONDS = 15
+
+#: Append-only ack receipts in the state directory. A delivery is acknowledged locally only
+#: by a ``success`` entry; ``pending`` and ``failed`` are evidence, not proof.
+RECEIPTS_FILE = "receipts.jsonl"
+
+#: Local durable markers. They survive every state rewrite because they answer questions a
+#: transient phase cannot: which batches were already announced, and which one a reinstall
+#: reconciliation already woke for.
+WOKEN_KEY = "woken_deliveries"
+RECONCILED_KEY = "reconciled_delivery_id"
+OBSERVATION_KEY = "observation"
+LOCAL_STATE_KEYS = (WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY)
 
 
 class Wake(Exception):
@@ -116,12 +143,29 @@ def env_flag(name, default):
     return default
 
 
+def fsync_directory(directory):
+    """Flush a directory entry, so a completed rename survives power loss.
+
+    The file's own fsync makes its bytes durable; the name that points at them is metadata
+    in the parent directory, and a crash after ``os.replace`` but before that directory is
+    flushed can roll the rename back. Opening the directory read-only and syncing it closes
+    that window on POSIX filesystems.
+    """
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic(path, value):
-    """Write ``value`` to ``path`` atomically.
+    """Write ``value`` to ``path`` atomically and durably.
 
     The temporary file is written and fsynced in the same directory as the target, so
     ``os.replace`` is a same-filesystem rename: a reader either sees the previous
-    content or the complete new content, never a half-written file.
+    content or the complete new content, never a half-written file. The parent directory
+    is then fsynced, because the rename itself is a directory-entry change: without it a
+    delivery that the loop reported as saved could disappear after a power loss.
     """
     tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
@@ -130,6 +174,7 @@ def atomic(path, value):
             out.flush()
             os.fsync(out.fileno())
         os.replace(tmp, path)
+        fsync_directory(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -145,6 +190,220 @@ def read_json(path):
 def log(directory, message):
     with (directory / "watch.log").open("a") as out:
         out.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " " + message + "\n")
+
+
+def write_state(directory, payload, current=None):
+    """Write ``state.json`` while keeping the durable local markers.
+
+    Phase, error text and the pid of the moment are transient: a new install must be able
+    to replace them. ``woken_deliveries``, ``reconciled_delivery_id`` and the last
+    reconciliation ``observation`` are not — they are how a restart knows what was already
+    announced, so every rewrite carries them forward. ``current`` lets the install-time
+    reconciliation reuse the one read it already made.
+    """
+    if current is None:
+        current = read_json(directory / "state.json")
+    merged = {key: current[key] for key in LOCAL_STATE_KEYS if key in current}
+    merged.update(payload)
+    atomic(directory / "state.json", json.dumps(merged))
+
+
+def ack_request_id(delivery_id):
+    """The stable local key for one delivery's ack.
+
+    A retry after a refused Orca ack reuses it, so the receipt log shows one logical ack
+    attempt rather than a sequence of unrelated ones.
+    """
+    return "ack:" + delivery_id
+
+
+def append_receipt(directory, delivery_id, result):
+    """Append one ack receipt line and fsync it before returning.
+
+    ``pending`` is appended before the Orca call and the outcome after it, so a local
+    record can never claim a success that Orca never granted. The append is serialized with
+    ``flock`` because the coordinator's ``--ack`` is a separate process. A partial trailing
+    line left by a crash is ignored on read rather than mistaken for a decision.
+    """
+    entry = {
+        "delivery_id": delivery_id,
+        "request_id": ack_request_id(delivery_id),
+        "acked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "result": result,
+    }
+    path = directory / RECEIPTS_FILE
+    line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+    with path.open("a") as out:
+        fcntl.flock(out, fcntl.LOCK_EX)
+        try:
+            out.write(line)
+            out.flush()
+            os.fsync(out.fileno())
+        finally:
+            fcntl.flock(out, fcntl.LOCK_UN)
+    fsync_directory(directory)
+    return entry
+
+
+def read_receipts(directory):
+    """Read every complete receipt line, in append order."""
+    try:
+        text = (directory / RECEIPTS_FILE).read_text()
+    except OSError:
+        return []
+    entries = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            # A crash can leave a trailing partial append. It proves nothing, so it is
+            # skipped instead of being read as a failed or a successful ack.
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def acked_delivery_ids(directory):
+    """Delivery ids with at least one successful receipt.
+
+    Success is sticky: once Orca accepted an ack, a later retry of the same local key
+    cannot make the delivery unacknowledged again.
+    """
+    acked = set()
+    for entry in read_receipts(directory):
+        if entry.get("result") == "success" and isinstance(entry.get("delivery_id"), str):
+            acked.add(entry["delivery_id"])
+    return acked
+
+
+def delivery_rows(directory):
+    """Every saved delivery, oldest first, with the id its content names.
+
+    File mtime is the only local FIFO evidence: it is when this consumer persisted the
+    batch, and the oldest unacknowledged one is the head Orca would return. A corrupt file
+    raises instead of being skipped — an unreadable delivery is an error, not an empty
+    queue.
+    """
+    rows = []
+    for path in (directory / "deliveries").glob("*.json"):
+        try:
+            payload = json.loads(path.read_text())
+            result = payload["result"]
+            delivery_id = result["deliveryId"]
+            messages = result["messages"]
+        except (OSError, ValueError, KeyError, TypeError) as broken:
+            raise RuntimeError(f"unreadable delivery file {path.name}: {broken}") from broken
+        if not isinstance(delivery_id, str) or not delivery_id:
+            raise RuntimeError(f"delivery file {path.name} carries no deliveryId")
+        if not isinstance(messages, list):
+            raise RuntimeError(f"delivery file {path.name} carries no messages array")
+        rows.append({
+            "path": path,
+            "deliveryId": delivery_id,
+            "types": [m.get("type") if isinstance(m, dict) else None for m in messages],
+            "mtime": path.stat().st_mtime,
+        })
+    return sorted(rows, key=lambda row: (row["mtime"], row["path"].name))
+
+
+def inbox_progress(directory):
+    """Local saved/unacked arithmetic and the blocked FIFO head.
+
+    ``unacked`` is the saved deliveries without a successful receipt, and ``blocked`` names
+    the oldest of them with its reason. This reads local files only: it never calls the CLI
+    and never consumes the queue, and it never invents a delivery id.
+    """
+    rows = delivery_rows(directory)
+    acked = acked_delivery_ids(directory)
+    unacked = [row for row in rows if row["deliveryId"] not in acked]
+    blocked = None
+    if unacked:
+        blocked = {"deliveryId": unacked[0]["deliveryId"], "reason": "unacknowledged"}
+    return {
+        "saved": len(rows),
+        "unacked": len(unacked),
+        "unacked_delivery_ids": [row["deliveryId"] for row in unacked],
+        "blocked": blocked,
+        "oldest_unacked": unacked[0] if unacked else None,
+        "rows": rows,
+    }
+
+
+def woken_deliveries(directory, state=None):
+    """Delivery ids whose arrival this consumer already announced."""
+    if state is None:
+        state = read_json(directory / "state.json")
+    woken = state.get(WOKEN_KEY)
+    if not isinstance(woken, list):
+        return []
+    return [item for item in woken if isinstance(item, str)]
+
+
+def mark_woken(directory, delivery_id):
+    """Record that a wake for this batch was emitted, before the process ends.
+
+    The write happens before the wake line, so a batch that was really announced is never
+    reconciled as if it had been silent. If the process dies between the delivery write and
+    this marker, the reinstall reconciliation is exactly what covers that window.
+    """
+    current = read_json(directory / "state.json")
+    woken = woken_deliveries(directory, current)
+    if delivery_id not in woken:
+        woken = woken + [delivery_id]
+    write_state(directory, {WOKEN_KEY: woken}, current=current)
+
+
+def reconcile_reinstall(directory, run_id, terminal, baseline):
+    """Compare saved deliveries with receipts once per install.
+
+    Returns the one wake payload this install must emit, or ``None``. The oldest
+    unacknowledged batch that the consumer saved but never announced is the gap a crash
+    leaves between the delivery write and the wake line; waking once for it is how a
+    reinstall does not silently absorb it. A batch already announced stays the
+    coordinator's outstanding duty and is not news. ``reconciled_delivery_id`` and the
+    local observation are written before the wake, so neither a crash nor a second install
+    can wake twice for the same batch.
+
+    The observation is deliberately local: the consumer writes ``state.json`` only, and the
+    coordinator transcribes the record into the ledger.
+    """
+    current = read_json(directory / "state.json")
+    progress = inbox_progress(directory)
+    woken = woken_deliveries(directory, current)
+    previous = current.get(RECONCILED_KEY)
+    reconciled_id = previous if isinstance(previous, str) and previous else None
+    oldest = progress["oldest_unacked"]
+    payload = None
+    if oldest is not None and oldest["deliveryId"] not in woken \
+            and oldest["deliveryId"] != reconciled_id:
+        reconciled_id = oldest["deliveryId"]
+        woken = woken + [reconciled_id]
+        payload = wake_event(
+            "delivery", run_id, terminal,
+            f"reconciliation: oldest unacknowledged batch {reconciled_id} was saved but "
+            f"never announced; {progress['unacked']} unacknowledged of "
+            f"{progress['saved']} saved",
+            delivery_id=reconciled_id, types=oldest["types"], saved=str(oldest["path"]))
+    observation = {
+        "kind": "inbox_reconciliation",
+        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "saved": progress["saved"],
+        "unacked": progress["unacked"],
+        "unacked_delivery_ids": progress["unacked_delivery_ids"],
+        "blocked": progress["blocked"],
+        "reconciled_delivery_id": reconciled_id,
+        "baseline_worker_signature": baseline,
+        "write_scope": "state.json",
+        "transcribe_to": "ledger",
+    }
+    write_state(directory, {
+        WOKEN_KEY: woken,
+        RECONCILED_KEY: reconciled_id,
+        OBSERVATION_KEY: observation,
+        "phase": "reconciling",
+    }, current=current)
+    return payload
 
 
 def parse_cli_result(code, raw, problem):
@@ -293,10 +552,10 @@ def check(directory, run_id, terminal, args, timeout, watch=None):
     cmd = [CLI, "orchestration", "check", "--run", run_id,
            "--terminal", terminal, *args, "--json"]
     with cli_streams(directory, cmd, "") as (child, output, error):
-        atomic(directory / "state.json", json.dumps({
+        write_state(directory, {
             "run": run_id, "terminal": terminal, "loopPid": os.getpid(),
             "childPid": child.pid, "phase": "waiting" if "--wait" in args else "checking",
-            "updatedAt": time.time()}))
+            "updatedAt": time.time()})
         supervise(child, timeout, watch)
         return parse_cli_result(child.returncode, output.read_text(), error.read_text())
 
@@ -391,8 +650,7 @@ def fatal(directory, binding, run_id, terminal, error):
     wake leg — including the ones that happen before the first wait is installed.
     """
     log(directory, f"ERROR {error}")
-    atomic(directory / "state.json", json.dumps({**binding,
-        "phase": "error", "error": str(error)}))
+    write_state(directory, {**binding, "phase": "error", "error": str(error)})
     emit(wake_event("error", run_id, terminal, error))
     return 1
 
@@ -403,6 +661,58 @@ def batch_messages(data):
     if not isinstance(messages, list):
         raise RuntimeError("missing messages array")
     return messages
+
+
+def delivery_path(directory, delivery_id):
+    """The durable file this consumer saves for a delivery id."""
+    return directory / "deliveries" / (hashlib.sha256(delivery_id.encode()).hexdigest() + ".json")
+
+
+def ack_main(directory, delivery_id):
+    """Acknowledge one saved delivery for the coordinator, recording the attempt.
+
+    The receipt is appended as ``pending`` before Orca is asked and as ``success`` or
+    ``failed`` after it answers, so the local record can never claim an ack Orca refused.
+    A refused ack keeps the delivery unacked and the delivery file untouched; a retry uses
+    the same delivery id and therefore the same local request id. The entry never calls
+    Orca for an id this consumer never saved: an id read from a read-only ``check --all``
+    names a message, not an ackable delivery.
+    """
+    if not isinstance(delivery_id, str) or not delivery_id:
+        print("--ack needs a delivery id", file=sys.stderr)
+        return 2
+    if not directory.is_dir():
+        print("state directory missing: " + str(directory), file=sys.stderr)
+        return 2
+    binding = read_json(directory / "binding.json")
+    run_id, terminal = binding.get("run"), binding.get("terminal")
+    if not isinstance(run_id, str) or not run_id \
+            or not isinstance(terminal, str) or not terminal:
+        print("state directory has no Run/terminal binding", file=sys.stderr)
+        return 2
+    if not delivery_path(directory, delivery_id).exists():
+        print(f"refusing to ack {delivery_id}: no saved delivery in this state directory",
+              file=sys.stderr)
+        log(directory, f"ACK-REFUSED {delivery_id} no saved delivery")
+        return 1
+    request_id = ack_request_id(delivery_id)
+    append_receipt(directory, delivery_id, "pending")
+    try:
+        code, raw, problem = cli_run(
+            directory,
+            [CLI, "orchestration", "check", "--run", run_id, "--terminal", terminal,
+             "--ack", delivery_id, "--json"],
+            "check --ack",
+        )
+        parse_cli_result(code, raw, problem)
+    except (OSError, ValueError, RuntimeError) as error:
+        append_receipt(directory, delivery_id, "failed")
+        log(directory, f"ACK-FAILED {delivery_id} request={request_id}: {error}")
+        print(f"ack failed for {delivery_id}: {error}", file=sys.stderr)
+        return 1
+    append_receipt(directory, delivery_id, "success")
+    log(directory, f"ACK {delivery_id} request={request_id}")
+    return 0
 
 
 def persist_batch(directory, run_id, terminal, data):
@@ -421,7 +731,7 @@ def persist_batch(directory, run_id, terminal, data):
     did = data["result"].get("deliveryId")
     if not isinstance(did, str) or not did:
         raise RuntimeError("nonempty batch without deliveryId")
-    file = directory / "deliveries" / (hashlib.sha256(did.encode()).hexdigest() + ".json")
+    file = delivery_path(directory, did)
     # Existence, not a count, is the "is this news?" test: a count taken before an event
     # can miss a delivery that landed before the snapshot, while a saved file is never
     # overwritten, so its presence is the durable fingerprint of having seen the batch.
@@ -431,13 +741,28 @@ def persist_batch(directory, run_id, terminal, data):
         # unhandled file is never rotated away.
         atomic(file, json.dumps(data, ensure_ascii=False, indent=2))
     if all(isinstance(m, dict) and m.get("type") == "heartbeat" for m in messages):
-        check(directory, run_id, terminal, ["--ack", did], CLI_TIMEOUT_SECONDS)
+        # A heartbeat batch carries no decision, so it is acknowledged automatically — but
+        # an Orca refusal is still a CLI failure with evidence: the receipt says failed, the
+        # delivery stays unacked, and the raised error ends the loop in one error wake. It
+        # is never retried here, and it is never read as "nothing to do".
+        append_receipt(directory, did, "pending")
+        try:
+            check(directory, run_id, terminal, ["--ack", did], CLI_TIMEOUT_SECONDS)
+        except (OSError, ValueError, RuntimeError) as error:
+            append_receipt(directory, did, "failed")
+            log(directory, f"ACK-FAILED heartbeat-only {did}: {error}")
+            raise
+        append_receipt(directory, did, "success")
         log(directory, f"AUTO-ACK heartbeat-only {did}")
         return None, True
     if not saved:
         return None, False
     atomic(directory / "NEW-MESSAGE", f"{did}\nfile={file}\n")
     log(directory, f"PENDING {did} file={file}")
+    # Record the announcement before the wake line is printed: the durable marker is what
+    # lets a later install tell "already news" from "saved, then the process died before
+    # saying so". The window before this line is what reconciliation covers.
+    mark_woken(directory, did)
     types = [(m.get("type") if isinstance(m, dict) else None) for m in messages]
     return wake_event("delivery", run_id, terminal,
                       f"new batch {did} saved: {len(messages)} message(s) {types}",
@@ -517,9 +842,14 @@ def status(path):
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "--status":
         return status(sys.argv[2])
+    if len(sys.argv) >= 2 and sys.argv[1] == "--ack":
+        if len(sys.argv) != 4:
+            print("usage: inbox-loop.sh --ack DELIVERY_ID STATE_DIR", file=sys.stderr)
+            return 2
+        return ack_main(Path(sys.argv[3]).resolve(), sys.argv[2])
     if len(sys.argv) != 4:
-        print("usage: inbox-loop.sh RUN STATE_DIR COORDINATOR_HANDLE | --status STATE_DIR",
-              file=sys.stderr)
+        print("usage: inbox-loop.sh RUN STATE_DIR COORDINATOR_HANDLE"
+              " | --status STATE_DIR | --ack DELIVERY_ID STATE_DIR", file=sys.stderr)
         return 2
     run_id, path, terminal = sys.argv[1:]
     directory = Path(path).resolve()
@@ -562,9 +892,17 @@ def main():
         # Reading the baseline is a CLI call like any other: a failure here is reported
         # as an error, never swallowed into "nothing changed".
         try:
+            # One read of the worker list at install time, before any queue call. Its
+            # signature becomes the baseline this install compares against, and it is
+            # recorded in the local reconciliation observation too.
             baseline = worker_signature(directory, run_id) if watch_workers else None
+            reconciled = reconcile_reinstall(directory, run_id, terminal, baseline)
         except (OSError, ValueError, RuntimeError) as error:
             return fatal(directory, binding, run_id, terminal, error)
+        if reconciled is not None:
+            # The observation and reconciled id are already durable; the regular wake path
+            # below adds phase=wake and prints the one line the harness surfaces.
+            raise Wake(reconciled)
 
         def watch_probe():
             """Wake when this Run's worker signature no longer matches the baseline."""
@@ -611,17 +949,19 @@ def main():
                         raise Wake(woken)
                 # The marker is not cleared: an empty queue does not prove that the
                 # batches already on disk have been handled.
-                atomic(directory / "state.json", json.dumps({**binding, "loopPid": os.getpid(),
-                    "phase": "backoff", "updatedAt": time.time()}))
+                write_state(directory, {**binding, "loopPid": os.getpid(),
+                                        "phase": "backoff", "updatedAt": time.time()})
             except (OSError, ValueError, RuntimeError) as error:
                 # Permission, binding and waiter errors stop explicitly. Retrying
                 # forever or borrowing another identity is forbidden.
                 return fatal(directory, binding, run_id, terminal, error)
     except Wake as wake:
         payload = wake.payload
-        atomic(directory / "state.json", json.dumps({**binding, "loopPid": os.getpid(),
-            "phase": "wake", "reason": payload["reason"], "detail": payload["detail"],
-            "deliveryId": payload["deliveryId"], "updatedAt": time.time()}))
+        write_state(directory, {**binding, "loopPid": os.getpid(),
+                                "phase": "wake", "reason": payload["reason"],
+                                "detail": payload["detail"],
+                                "deliveryId": payload["deliveryId"],
+                                "updatedAt": time.time()})
         log(directory, "WAKE " + json.dumps(payload, ensure_ascii=False))
         emit(payload)
         return 0

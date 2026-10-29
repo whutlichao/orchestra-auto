@@ -40,9 +40,9 @@ ORCA_CLI_COMMAND=<confirmed executable path> <SKILL_DIR>/scripts/inbox-loop.sh \
 ```
 
 Run that command the way §3 describes — as a blocking call the harness surfaces — **not** as
-`nohup … &`. The script persists every batch atomically, acknowledges heartbeat-only batches, and
-then **ends the process** when something needs you: that end is your wakeup. `--status` inspects a
-directory without consuming its queue:
+`nohup … &`. The script persists every batch atomically, fsyncs the parent directory after the
+rename, acknowledges heartbeat-only batches, and then **ends the process** when something needs
+you: that end is your wakeup. `--status` inspects a directory without consuming its queue:
 
 ```bash
 <SKILL_DIR>/scripts/inbox-loop.sh --status /tmp/orch-<repo>-<run_id>
@@ -70,11 +70,24 @@ file had been unlinked by the consumer on its way out, so the waiter read "nothi
 
 Each cycle the script first checks without a filter and then installs a blocking wait, so
 heartbeats and ordinary messages cannot pile up at the head of the queue. A complete response is
-written atomically to `deliveries/*.json`, hashed by deliveryId; files are never rotated away. A
-batch that is **already** on disk is never treated as news: it is your outstanding duty, so the
-loop pauses instead of waking you again for it or busy-looping on it. `NEW-MESSAGE` is only a hint
-about the most recently saved batch, **not a to-do list**; when a new message arrives or a session
-resumes, enumerate every delivery file and reconcile against the ledger.
+written atomically to `deliveries/*.json`, hashed by deliveryId, and the parent directory is
+fsynced after the rename — the file write alone is not enough, because the rename is a directory
+entry — so a saved batch survives power loss; files are never rotated away. A batch that is
+**already** on disk **and was already announced** is never treated as news: it is your outstanding
+duty, so the loop pauses instead of waking you again for it or busy-looping on it. `NEW-MESSAGE`
+is only a hint about the most recently saved batch, **not a to-do list**; when a new message
+arrives or a session resumes, enumerate every delivery file and reconcile against the ledger.
+
+On a fresh install the loop reconciles every delivery file against the successful receipts. If the
+oldest unacknowledged batch was saved but never announced, it emits exactly one `delivery` wake
+whose `detail` names the reconciliation, writes `reconciled_delivery_id` and a local observation
+to `state.json`, then exits. A second install does not wake again for that batch, and a batch that
+was already announced is not news. This is install-time behaviour only: in steady state a saved
+batch remains your outstanding duty. The reconciliation reads `worker-list` and `state.json` once,
+records the worker baseline in the observation, and writes only `state.json`; the coordinator
+transcribes the observation into the ledger, and the consumer never writes the ledger itself. The
+observation names `kind`, `saved`, `unacked`, `blocked`, `reconciled_delivery_id` and
+`baseline_worker_signature`, with `write_scope: state.json` and `transcribe_to: ledger`.
 
 Errors are written to disk explicitly and end the process; a CLI failure, a JSON error or a lost
 binding must never be interpreted as an empty queue.
@@ -103,17 +116,35 @@ rather than being re-executed blind — an unverified replay is never inferred f
    pending and never self-answer it on timeout. Validate a `worker_done` against the real Dispatch
    and artifacts; a settled lifecycle is not a passed deliverable.
 3. Only after handling the whole batch and any needed terminal-ownership decision do you ack the
-   `.result.deliveryId` of **that read snapshot** under the current Orca guide. Keep the ack's
-   success receipt; on failure keep the ledger entry and re-verify — never assume it was
-   acknowledged.
-4. When a question waiting on a human blocks the FIFO, run a read-only
-   `check --run <run_id> --terminal <handle> --all --json` to see later messages, handle other
-   workers' questions and completion reports, and record them; `--all` offers no ackable Delivery
-   and you must not fabricate an ID. Consume the original batch afterwards, batch by batch, and
-   only reconcile already-handled messages.
+   `.result.deliveryId` of **that read snapshot** through the script:
+   `inbox-loop.sh --ack <delivery_id> <state_dir>`. It appends a `pending` receipt, calls
+   `orca orchestration check --ack <delivery_id>`, then appends `success` or `failed` to
+   `receipts.jsonl`. An Orca refusal records `failed` and leaves the batch unacked; retry with the
+   same delivery id, which reuses the same local `request_id`, and keep the delivery file. The
+   receipt is never written as `success` before Orca accepts, so a success receipt is the proof
+   the ack landed; on failure keep the ledger entry and re-verify — never assume it was
+   acknowledged. The entry exits `0` when the ack landed, `1` when Orca refused or the id was
+   never saved, and `2` for a usage error or a state directory without a binding.
+4. When a question waiting on a human blocks the FIFO, the head is **blocked**: its delivery id
+   and the reason `unacknowledged` are computed from the saved deliveries and successful receipts
+   (`blocked` in the status contract), so handle the head first. To inspect later messages without
+   consuming them, run a read-only
+   `check --run <run_id> --terminal <handle> --all --json`, handle other workers' questions and
+   completion reports, and record them; `--all` offers no ackable Delivery and you must not
+   fabricate an ID. Consume the original batch afterwards, batch by batch, and only reconcile
+   already-handled messages.
+
+Every ack — automatic or coordinator — appends an append-only receipt line to `receipts.jsonl` in
+the state directory: `{delivery_id, request_id, acked_at, result}`. `pending` is written before
+the Orca call and `success` or `failed` after it; `request_id` is the stable local key
+`ack:<delivery_id>`, so a retry after a refusal reuses it. A delivery id this consumer never saved
+is refused before Orca is called: `check --all` cannot yield an ackable id, and no id may be
+fabricated. The receipt file is what makes `unacked` shrink and the blocked FIFO head clear.
 
 The script auto-acks only a non-empty batch that is already on disk and where **every** message is
-a heartbeat; mixed batches and unknown types always go to the coordinator. Type filtering only
+a heartbeat; mixed batches and unknown types always go to the coordinator. The automatic ack
+writes the same pending/success receipts; an Orca refusal records `failed`, leaves the batch
+unacked, and ends the loop as an error wake — it is never retried by the loop. Type filtering only
 decides when the waiter wakes, and does not remove the obligation to handle the whole batch. The
 script never deletes a local to-do, and an empty queue does not mean the ledger is complete.
 
@@ -167,8 +198,10 @@ All three legs wake, and each one exists because the others cannot see it:
 
 1. **New messages** — a batch that was not on disk before and contains anything other than
    heartbeats. A heartbeat-only batch is acknowledged and does **not** wake: it carries no
-   decision. A FIFO replay of a batch already saved does not wake either — it is your outstanding
-   duty, not news, so handle it from the ledger.
+   decision. A FIFO replay of a batch already saved and already announced does not wake either —
+   it is your outstanding duty, not news, so handle it from the ledger. The one exception is
+   install-time: an unacknowledged batch that was saved but never announced produces exactly one
+   reconciliation wake (§1), and the persisted `reconciled_delivery_id` prevents a second one.
 2. **The loop's own death or error** — a non-zero exit is a wake by itself, because the process
    ending is what the harness surfaces; the `reason=error` line says why. A consumer that stops
    silently is the "total silence" case in §5.1, not an empty queue. One real case, from the
@@ -276,7 +309,7 @@ order; the first two account for nearly every case.
 | Break | Symptom and one-line evidence | Action |
 | --- | --- | --- |
 | Wakeup | A `worker_done` is already on disk or in the queue, yet the coordinator's turn ended long ago and nothing started a new one: delivery files newer than your last turn, or a stale `NEW-MESSAGE`, with no confirmed wake method from §3 | A successful `send` proves a durable enqueue only; wake and nudge are best-effort. Confirm which §3 branch you have. With a harness that surfaces job completion, the end of the consumer — the wake line in §3.1 — **is** the wake; if it never arrived, check that the consumer was installed as §3.2 describes and not via `nohup`, and that its next wait was installed after the previous wake (§3.4). Without such a harness, stay in the bounded tier of §3.3 or record the un-wakeable state before yielding. Never read "the loop is alive" as "I will be woken" |
-| Unacked FIFO head | Earlier messages were fine, later `worker_done` messages never appear, and an unanswered question or decision sits at the head of the batch | `check` returns the bound Run's **oldest unacknowledged** Delivery and replays that exact batch until `--ack`, so one unacked batch hides everything behind it. Handle the whole batch, then ack that snapshot's `deliveryId` (§2 step 3). While a human decision blocks the head, read later messages with the read-only `check --all` (§2 step 4); `--all` never yields an ackable ID. An ack is not a reply |
+| Unacked FIFO head | Earlier messages were fine, later `worker_done` messages never appear, and an unanswered question or decision sits at the head of the batch | `check` returns the bound Run's **oldest unacknowledged** Delivery and replays that exact batch until `--ack`, so one unacked batch hides everything behind it. The head is `blocked` with its delivery id and reason `unacknowledged`, computed from the delivery files and `receipts.jsonl`. Handle the whole batch, then ack that snapshot's `deliveryId` through `inbox-loop.sh --ack` (§2 step 3) so the receipt records pending, then success or failed. While a human decision blocks the head, read later messages with the read-only `check --all` (§2 step 4); `--all` never yields an ackable ID. An ack is not a reply |
 | Interrupted action | The batch is still unacked, its ledger entry sits at `processing`, and the process died between doing the work and recording it — so the effect may already have landed | Establish the fact before replaying (§2): read the real state — `pr view` for a merge, the reply receipt, the file itself. Replay under the same delivery ID only when the effect is verifiable and the action is idempotent; an effect you cannot establish from evidence goes to the human instead of being re-executed blind. This is the `runtime_unavailable` judgement one layer up: the mutation may already have taken effect, so prove it or ask, never assume |
 | Identity or mailbox | Nothing arrives at any inbox, or messages land where you are not looking | `check` names its caller with `--terminal <handle>` and rejects `--from`; a handle taken from a terminal title, from "the most recent terminal", or from another session or Run addresses the wrong mailbox. Take handles from the real calling identity (`orca status --json`) and keep them in the ledger. A `worker_done` or heartbeat cannot target a group, and its sender handle must equal the Dispatch assignee exactly or the task never settles |
 | Dead consumer | Total silence, heartbeats included: `--status` reports DEAD with `phase=error` or an `ERROR` line in `watch.log`; or the wake line arrived with `reason=error` | The script writes CLI failures, JSON errors and lost bindings to disk and exits non-zero on purpose, so a stop is never an empty queue — and that stop is itself a wake (§3.1). Judge death from `state.json`, never from the pid file alone (§1). Read the `ERROR` line and the `detail`; a binding/waiter problem usually means another instance or another Run's loop took the slot. Before re-issuing anything, follow the CLI's own recovery guidance when it printed one: a `runtime_unavailable` error carries a `request-show --request <id>` pointer, and the mutation may already have taken effect, so establish that with `request-show` and replay it with `--retry-request <id>` rather than treating it as a fresh attempt. The consumer never retries by itself. Waiter slots are a cross-directory resource: before starting a new loop, confirm and stop the old one, and never migrate an old state directory |
@@ -288,9 +321,10 @@ When a report is missing or a worker looks gone, read these together; each one o
 empty, or healthy when it is not:
 
 1. **Local**: `--status` for `loop`/`phase`; enumerate **every** `deliveries/*.json` instead of
-   trusting `NEW-MESSAGE`, which hints at the newest saved batch and is not a to-do list; read the
-   `ERROR` lines in `watch.log`, and `state.json`'s `phase=wake` reason for whatever ended the last
-   install.
+   trusting `NEW-MESSAGE`, which hints at the newest saved batch and is not a to-do list; compare
+   them with the successful receipts in `receipts.jsonl` (an unacked head is `blocked`); read the
+   `ERROR` lines in `watch.log`, `state.json`'s last reconciliation observation, and its
+   `phase=wake` reason for whatever ended the last install.
 2. **Server queue**: the read-only `check --run <run_id> --terminal <handle> --all --json`.
 3. **Worker state**: `worker-list --include-remote --json` (read every page), then `worker-show`
    and `worker-read` for the Dispatches in question — `projection.attention.requiresAction`, the
