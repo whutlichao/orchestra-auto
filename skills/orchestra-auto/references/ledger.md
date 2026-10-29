@@ -115,11 +115,17 @@ during a rewrite is preserved in `archive/corrupt-<timestamp>-<n>.jsonl`.
 
 ## Record-failure semantics
 
-| Record | Failure before the action | Failure after the action |
-| --- | --- | --- |
-| intent | do not run the action; report and escalate | not applicable |
-| result / observation | not applicable | retry the record; never replay the action; record a gap if needed |
-| acceptance / closeout / preflight | do not release, close or dispatch | retry until durable; the gate stays open |
+| Record | Failure before the action | Failure after the action | Effect on orchestration |
+| --- | --- | --- | --- |
+| ledger intent | do not run the action; report and stop or escalate | not applicable | blocks the action |
+| ledger result | not applicable | retry; preserve the raw receipt in the evidence directory; record a gap; never replay the action | no block; reconcile later |
+| ledger acceptance / closeout | do not release or declare the gate passed | retry; release waits until the record is durable | blocks release and gate close |
+| progress write | not applicable | record a gap; retry the same `event_id` at the next checkpoint | no block |
+| ack receipt | not applicable | do not assume the ack landed; retry the ack with the same `request_id`; keep the delivery file | no block; status shows unacked |
+| health record | not applicable | keep the in-memory evaluation and retry; the dashboard projection is not authority | no block |
+| preflight receipt | do not dispatch | not applicable | blocks dispatch |
+| registry descriptor / `server.json` | fall back to `serve --state`; record a gap | dashboard unavailable; record a gap | no block |
+| authority read (Orca, PR host, tracker, git) | do not infer an effect | retry the read; if still unreadable, record `unknown`; escalate if a destructive action depends on it | escalate if a destructive action depends on it |
 
 The rule: **a record that gates a side effect blocks the side effect; a record that describes
 an outcome never blocks orchestration and is repaired later.** Never infer durability from a
@@ -149,22 +155,43 @@ authority, so the effect probe still decides. An Orca Task ID is the only join k
 provisional progress task (`orca_task_id: null`) is never a join key, so a projection is
 only written once the authority supplies a non-empty Task ID or a dispatch identity.
 
+## Fixed dispatch order
+
+Every dispatch follows one order and never skips a durable predecessor:
+
+1. write the preflight receipt (a failed preflight blocks the dispatch);
+2. write the ledger intent (a failed intent write blocks the call);
+3. execute `worker-start --retry-request <request_id>`;
+4. write the result with the raw receipt summary and an evidence reference (a failed result write
+   preserves the raw receipt, records a gap and never replays the action);
+5. write progress best-effort; a failure records a gap and dispatch continues, and the next
+   checkpoint retries with the same `event_id`;
+6. run the post-receipt checks (`turnStart`, isolation, inbox) and record an observation. A failed
+   post-receipt check is evidence, not a reason to dispatch again.
+
+A lost `worker-start` response is reconciled from authority, never re-dispatched. A missing intent
+prevents a second dispatch; `absent` is not proof that nothing ran. The same request-id discipline
+applies to send, reply, ack, stop, abandon, retain and release.
+
 ## Action matrix
 
-`probe` is the authority that can prove the effect; `pending` is what a `pending` receipt
-permits.
+`Idempotency` is the pre-action key class; `Read-back` is the authority that proves the effect;
+`When uncertain` is what a pending or unreadable receipt permits.
 
-| Action | Probe | Pending receipt |
-| --- | --- | --- |
-| worker-start, stop, abandon | worker-list and task-list | same-key replay is joinable |
-| send, reply | message authority | same-key replay is joinable |
-| ack | message authority | repeat is replay-safe |
-| retain, release | worker-list | replay only after settlement |
-| merge | PR host plus git ancestry | never replayed; a decision |
-| pr-create | PR host | look up before creating |
-| tracker-close | tracker | never replayed; a decision |
-| progress, health | request-show only | repeat is replay-safe |
-| preflight, acceptance, closeout | none | local gates are never replayed |
+| Action | Idempotency | Key before the action | Read-back after | When uncertain |
+| --- | --- | --- | --- | --- |
+| dispatch / `worker-start` | `joinable` | `request_id` | receipt `state`/`stage`/`turnStart`/`dispatchId`; worker list by task/spec/worktree | `request-show`; `completed` → adopt the recorded outcome; `pending` → replay with the same key; `absent` → inventory Orca and git worktrees first, never dispatch again |
+| `send`, `reply` | `joinable` | `request_id` | message id/state and thread visibility | `request-show`; never auto-resend merely because no reply arrived |
+| `ack` | `replay_safe` | `request_id` | ack receipt | replay with the same key |
+| `stop`, `abandon` | `joinable` | `request_id` | `worker-show`/`worker-list` terminal state | `request-show` plus inventory; never retry without proof |
+| `retain`, `release` | `replay_safe` after settlement | `request_id` | receipt plus `worker-show` | `release_unknown` follows the receipt; never release an unsettled worker |
+| `merge` | `readback_only` | none | PR host `MERGED`, merge SHA, ancestry | read only; never auto-replay |
+| `pr-create` | `lookup_then_create` | head branch | PR number and head SHA | look up by head; adopt if found |
+| `tracker-close` | `readback_only` | none | tracker read-back | read only; the close follows repository and human rules |
+| `progress` | `replay_safe` | `event_id` | snapshot/receipt | same `event_id`; a failure records a gap and never blocks dispatch |
+| `preflight` | write-ahead (`none`) | `record_id` | ledger receipt | rerun the checks; never dispatch on an unreadable receipt |
+| `health` | `replay_safe` | `record_id` | ledger receipt | same `record_id` |
+| `acceptance`, `closeout` | `none` | `record_id` | ledger record | retry until durable; never release or close the gate early |
 
 Four outcomes are never replayed automatically, each a `decision`: a merge
 (`merge_replay`), a tracker close (`tracker_close_replay`), a retry after an unproven
@@ -172,6 +199,36 @@ failure (`unproven_retry`, and `unknown_outcome` when the recorded outcome is un
 a release or retain of a worker whose settlement is not proven (`unsettled_release`). A
 missing reply is `send_reply_no_resend`: no reply is not proof of failure. A stop or
 abandon with a running worker is `stop_abandon_no_retry`.
+
+## Two hard rules
+
+1. **Write the intent before the action.** The intent contains at least `request_id`, action,
+   `run_id`, task/dispatch/attempt when known, target, expected effect, timestamp and actor.
+2. **When uncertain, read authority before deciding.** `request-show` `absent` is not "did not
+   happen"; only positive absence in authority (no Dispatch for that Task, no PR for that head)
+   permits the "not executed" judgment.
+
+## Progress projection
+
+The ledger is the dispatch record; `progress.json` is a best-effort projection and never the only
+record of a dispatch. A progress write is `replay_safe` by `event_id`; its failure records a `gap`
+with action `progress` and never blocks dispatch. The next checkpoint retries with the same
+`event_id` and backfills a missing worker row from the ledger (dispatch id, attempt, worktree).
+
+Reconciliation and backfill writes carry `bookkeeping: true` and do not refresh `last_observed` or
+`last_effective_progress`; only a genuinely new fact refreshes them. The progress Run carries
+`orca_run_id`; a mismatch with the ledger Run is `divergent`. A provisional progress task
+(`provisional: true`, `orca_task_id: null`) is never a join key; after the receipt the Orca Task ID
+is the only join key. `turnStart: observed` is written as `observed` in one step; `unsupported` or a
+missing field is `unknown`, and `unobserved` (checked, not observed) stays distinct from `unknown`.
+`state: ready` is not a started turn. Worker self-report is enabled only when the spec explicitly
+carries PROGRESS/STATE paths; `source=worker` writes are never acceptance evidence.
+
+Attempt mapping: a dispatch result uses the Orca receipt's `attempt` when present. When the receipt
+has no verified attempt, record `detail.attempt_source: local` and exclude the local count from
+authoritative reconciliation. Convert receipt camelCase fields to snake_case on write and preserve
+the raw receipt in `detail.raw_receipt`; a receipt field the design has not verified is never
+asserted as a stable contract.
 
 ## Authority snapshot
 

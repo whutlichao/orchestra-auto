@@ -2,7 +2,7 @@
 
 **何时读取**：每个实际编排 Run 首次派活前，以及需要查看进度或离线演示时。
 
-目录：[使用](#使用)、[可视化看板](#阅读可视化看板)、[协议 v1](#协议-v1)、[流程写入责任](#流程写入责任)、[恢复与边界](#恢复与边界)。
+目录：[使用](#使用)、[可视化看板](#阅读可视化看板)、[协议 v2](#协议-v2)、[流程写入责任](#流程写入责任)、[恢复与边界](#恢复与边界)。
 
 ## 使用
 
@@ -88,29 +88,46 @@ Worker；每个实体在所属分组单独计数，不推断未报告的问题�
 `node tests/progress_dashboard_browser.cjs http://127.0.0.1:8766/ EVIDENCE_DIR`，覆盖四种视口、
 事实边界、刷新状态保留与安全渲染。
 
-## 协议 v1
+## 协议 v2
 
-`progress.json` 是 UTF-8 快照，包含 `schema_version: 1`、`run`、按 ID 索引的 `tasks`、`workers`、
+`progress.json` 是 UTF-8 快照，包含 `schema_version: 2`、`run`、按 ID 索引的 `tasks`、`workers`、
 `deliveries`、`artifacts`、有序 `events` 和私有幂等 `receipts`。每次成功写入在进程锁下原子替换
-整个快照；HTTP/show 不暴露 receipts。未知版本报错且不改文件。可备份此单文件作为审计；
-工具不写目标仓库。后续快照演进必须定义新的文档化版本。
+整个快照；HTTP/show 不暴露 receipts。读取接受 schema v1 与 v2；所有写入记为 v2，首次 v2 写入会
+就地迁移 v1 快照。未知版本报错且不改文件。可备份此单文件作为审计；工具不写目标仓库。
+
+schema v2 新增可选字段：`run.orca_run_id`（Orca Run 绑定，与台账 Run 不一致即 divergent）、
+`run.health`（`healthy`/`degraded`/`blocked`/`lost`/`unknown`，是投影；健康权威在台账）、
+`task.provisional`、`task.orca_task_id`，以及 event 上的 `bookkeeping`。Orca Task 尚不存在时先写
+`provisional: true` 且 `orca_task_id: null` 的任务，回执后绑定；只有 Orca Task ID 是 join key。
+未列出的 JSON 字段仍会被拒绝。
 
 统一写接口：
 
 ```text
-python3 PROGRESS --state STATE COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
+python3 PROGRESS --state STATE [--json] [--lock-timeout SECONDS] [--bookkeeping] COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
 ```
 
-相同事件 ID 只能重试完全相同的 command、source、JSON、effective；一致重试无副作用，时间戳
-也不更新，冲突重试失败。新观察使用新 ID。source 默认 coordinator，是可信本地写入者声明的来源，
-不是身份认证。只有 coordinator 观察到有效进展后才能加 `--effective`。`last_observed` 随记录的
-活动更新，`last_effective_progress` 仅由显式验证更新，不估算完成百分比或剩余时间。
+相同事件 ID 只能重试完全相同的 command、source、JSON、effective 与 bookkeeping；一致重试无副作用，
+时间戳也不更新，冲突重试失败。新观察使用新 ID。source 默认 coordinator，是可信本地写入者声明的
+来源，不是身份认证。只有 coordinator 观察到有效进展后才能加 `--effective`。`last_observed` 随
+记录的活动更新，`last_effective_progress` 仅由显式验证更新，不估算完成百分比或剩余时间。
+`--bookkeeping` 标记对账与回填写入：仍会记录，但不刷新 `last_observed` 或
+`last_effective_progress`，也不能与 `--effective` 同用。
+
+### 退出码
+
+使用 `--json` 时，写入在成功或有意降级时退出 `0`，在调用方输入或状态损坏时退出 `1`。降级在
+stdout 输出 `{"degraded": true, "reason": ...}`；快照锁冲突是 `degraded/lock_busy`，不是调用方
+错误。错误输出 `{"degraded": false, "error": ...}` 并退出 `1`。`--lock-timeout` 修改锁等待
+（默认 2 秒）。不使用 `--json` 时，旧退出码再保留一个小版本：所有失败都以 `1` 退出并在 stderr
+打印 `Progress warning`。coordinator 包装函数使用 `--json`，对任何非零或降级结果记录台账 gap
+并继续；派发控制流绝不以进度退出码分支。看板失败永不阻塞派发。
 
 | 命令 | JSON 摘要字段（其他键拒绝） |
 | --- | --- |
-| `init` | 必填 `id`、`target_repo`（已有目录）、`mode`（REAL/DEMO）；可选 `title`、`phase`、`status` |
-| `run` | 更新 `phase`、`status`、`title` |
-| `task` | 必填 `id`；可选 `title`、`dependencies`（ID 列表）、`status`、`blocked_reason`、`pending_decision` |
+| `init` | 必填 `id`、`target_repo`（已有目录）、`mode`（REAL/DEMO）；可选 `title`、`phase`、`status`、`orca_run_id`、`health` |
+| `run` | 更新 `phase`、`status`、`title`、`orca_run_id`、`health` |
+| `task` | 必填 `id`；可选 `title`、`dependencies`（ID 列表）、`status`、`blocked_reason`、`pending_decision`、`provisional`（布尔）、`orca_task_id`（标识符；provisional 阶段可为 null） |
 | `worker` | 必填 `id`；首次登记还需已有 `task_id`、`dispatch_id`、正整数 `attempt`；可选 `parent_worker_id`（先登记父级）、`worktree`、`start_confirmation`、`lifecycle`、`reported_lifecycle`、`reported_summary` |
 | `event` | 必填 `type`、`summary`；可选已有 `task_id`、`worker_id`、`dispatch_id`、`attempt`、`evidence`（引用列表） |
 | `delivery` | 必填已有 `task_id`；独立布尔字段 `implemented`、`integrated`、`merged`、`tracker_closed`；可选 `evidence` |
@@ -118,10 +135,14 @@ python3 PROGRESS --state STATE COMMAND --event-id STABLE_ID --source coordinator
 | `end` | 必填 `status`（completed/failed/paused/cancelled）；可选 `phase`、`summary`；记录 `ended_at` |
 
 Run status：`unknown`、`active`、`waiting_user`、`failed`、`paused`、`completed`、`cancelled`。
+Run health：`healthy`、`degraded`、`blocked`、`lost`、`unknown`。
 Task status：`unknown`、`pending`、`ready`、`running`、`blocked`、`waiting_user`、`reported`、
 `accepted`、`rejected`、`failed`、`paused`、`cancelled`。
 Worker lifecycle：`unknown`、`dispatched`、`running`、`waiting_user`、`reported_done`、`failed`、
-`lost`、`reclaimable`、`closed`。start_confirmation：`unknown`、`observed`、`unobserved`、`unsupported`。
+`lost`、`reclaimable`、`closed`。start_confirmation：`unknown`、`observed`、`unobserved`；v1 快照
+可能仍带旧值 `unsupported`。回执 `turnStart: observed` 一步写为 `observed`；`unsupported` 或缺失
+写为 `unknown` 并采集该 agent 支持的证据；`unobserved` 表示已检查但未观察到，与 `unknown` 不同。
+`state: ready` 永远不算已开始的 turn。
 字段缺失表示未知，不推断成功。ID 为字母、数字或 `_.:-`，长度 1–128；摘要字符串最多 4096 字符，
 引用列表最多 100 个短字符串，JSON 输入最多 64 KiB。task 可引用尚未记录的依赖，页面显示 unknown。
 依赖和阻塞由 coordinator 显式写入，不是自动计算的调度。每个 worker ID 对应不可变的
@@ -135,14 +156,20 @@ worker source 仅能更新已登记 worker 的 `reported_lifecycle`、`reported_
 实际对账后才设置 tracker_closed。开 PR 不自动改变任何交付字段。缺失事实为 null，页面显示
 unverified；显式 true/false 表示 verified yes/no，可用 false 纠正历史错误。
 
-以下包装函数在 `set -e` 下也始终成功，警告可见，正常编排继续：
+以下包装函数使用 `--json`，在 `set -e` 下也始终成功；失败或降级都会留下可见警告，coordinator
+据此记录台账 gap 并继续正常编排：
 
 ```bash
 progress_record() {
-  python3 "$PROGRESS" --state "$STATE" "$@" || {
-    printf '%s\n' 'Progress warning; continue orchestration' >&2
-    return 0
-  }
+  local output status
+  status=0
+  output=$(python3 "$PROGRESS" --state "$STATE" --json "$@" 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' 'Progress warning; continue orchestration; record a ledger gap' >&2
+  elif printf '%s' "$output" | grep -q '"degraded": true'; then
+    printf '%s\n' 'Progress degraded; continue orchestration; record a ledger gap' >&2
+  fi
+  return 0
 }
 progress_record task --event-id task-1 --data '{"id":"t1","title":"Protocol","dependencies":[],"status":"ready"}'
 progress_record worker --event-id dispatch-1 --data '{"id":"w1-a1","task_id":"t1","dispatch_id":"d1","attempt":1,"worktree":"protocol-worktree","lifecycle":"dispatched","start_confirmation":"unobserved"}'
@@ -151,6 +178,43 @@ progress_record worker --event-id report-1 --source worker --data '{"id":"w1-a1"
 progress_record delivery --event-id accept-1 --effective --data '{"task_id":"t1","implemented":true,"evidence":["acceptance-report.txt"]}'
 progress_record end --event-id end-1 --data '{"status":"paused","phase":"waiting","summary":"Awaiting integration"}'
 ```
+
+## 固定派发顺序与记录失败
+
+每次派发遵循同一固定顺序，任何步骤都不跳过尚未持久的前置记录：
+
+1. 写 preflight 回执；preflight 失败或被阻塞则不派发；
+2. 写台账 intent；intent 写失败则不执行调用；
+3. 执行 `worker-start --retry-request <request_id>`；
+4. 写带 raw receipt 摘要和证据引用的 result；result 写失败时在证据目录保留原始回执、记录台账
+   gap，且绝不重放该动作；
+5. 尽力写 progress；progress 写失败记录台账 gap，派发继续；下一个检查点用同一事件 ID 重试，
+   并从台账回填缺失的 worker 行（dispatch id、attempt、worktree）；
+6. 执行回执后检查（`turnStart`、隔离、inbox）并记录 observation。回执后检查失败是证据，不是
+   再次派发的理由。
+
+丢失的 `worker-start` 响应通过权威对账处理，绝不重新派发：`completed` 的 request 键重放其已记录
+结果，`absent` 不是“没发生”的证明。缺少 intent 就不会有第二次派发。send、reply、ack、stop、
+abandon、retain、release 遵循同样的 intent 与 request-id 纪律；完整动作矩阵见
+`references/ledger.md`。
+
+attempt 映射：回执带 `attempt` 时直接使用；缺失时在台账 result 的 detail 记
+`attempt_source: local`，该本地计数不参与权威对账。写入时把回执的 camelCase 字段转成
+snake_case，并在 `detail.raw_receipt` 保留原始回执；绝不把未验证的回执字段当作稳定契约。
+
+记录失败语义只有一条规则：**闸住副作用的记录会阻止副作用；描述结果的记录永远不阻塞编排，
+稍后修复。** progress 写属于后者——失败永远是 gap，绝不变成派发失败——而 intent、preflight
+回执、acceptance 或 closeout 写失败是其所保护动作的硬停止。
+
+两条硬规则：
+
+1. **动作前写 intent。** intent 至少包含 `request_id`、action、`run_id`、已知的
+   task/dispatch/attempt、目标、预期效果、时间戳与 actor。
+2. **不确定时先读权威。** `request-show` 的 `absent` 不是“没发生”；只有权威侧的正面缺失
+   （该 Task 没有 Dispatch、该 head 没有 PR）才允许判定“未执行”。
+
+仅当 spec 明确携带 PROGRESS/STATE 路径时才启用 worker 自报。`source=worker` 写入永远不是验收
+证据；验收记录由 coordinator 拥有。
 
 ## 流程写入责任
 
@@ -184,7 +248,9 @@ coordinator 拥有验证状态。每个动作完成后，在处理该动作的�
 过期仅指观察年龄，不是失败证明。查询失败保留最后有效快照，明显显示错误与其载入时间，不以空成功替代。
 
 写入先 fsync 文件、原子替换再 fsync 目录。替换前崩溃留下旧快照，可能残留被忽略的 `.progress-*`
-临时文件；替换后崩溃留下新快照，稳定事件 ID 保证安全重试。获取锁最多等待两秒，冲突则警告返回，避免无限阻塞 coordinator；稍后用相同事件 ID 重试。进程退出释放锁。不要删除活跃锁文件
+临时文件；替换后崩溃留下新快照，稳定事件 ID 保证安全重试。获取锁最多等待两秒
+（`--lock-timeout`，可配置的默认值），冲突则警告返回，避免无限阻塞 coordinator；使用 `--json`
+时这是 `degraded/lock_busy` 且退出 `0`。稍后用相同事件 ID 重试。进程退出释放锁。不要删除活跃锁文件
 或自动修复。损坏/未知版本快照报错且不覆盖：先保存证据，将已知正确审计备份恢复到另一个仓库外目录，
 再显式对账后续事实。不迁移、不截断、不猜测重建，备份也必须在仓库外。事件历史持续增长，是本地审计
 记录，不是数据库或保留服务；完成的 Run 目录按本地策略归档。
