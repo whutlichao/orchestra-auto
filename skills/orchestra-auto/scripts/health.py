@@ -20,8 +20,13 @@ state: health alone never authorizes it.
 The module is importable and pure at its core: ``evaluate``, ``transition``,
 ``authorize_release`` and ``authorize_retry`` do no I/O and read no clock (every age is
 computed from the snapshot's own ``observed_at``). The CLI is the coordinator's surface,
-not a test hook: ``health evaluate`` reads a signals snapshot, writes the ``kind: health``
-ledger record through the ledger module's append interface, and prints the machine result.
+not a test hook: ``health evaluate`` reads a signals snapshot (or one inbox observation,
+``--observation``), writes the ``kind: health`` ledger record through the ledger module's
+append interface, and prints the machine result.
+
+The inbox loop mounts this: it writes one lightweight observation per wake, and
+``observation_signals`` turns that observation into the snapshot the evaluator reads — copying
+only what the consumer actually observed, so everything else aggregates as ``unknown``.
 
 Defaults are configurable, never product constants. In particular the heartbeat window is
 the live preamble cadence × 2 plus a grace; without a cadence the heartbeat signal is
@@ -61,7 +66,28 @@ REQUIRED_INPUTS = SIGNALS + ("watch",)
 
 #: ``pending`` is optional input: a recorded decision item is the only source of the
 #: ``any -> blocked`` transition for a decision that leaves no other signal.
-OPTIONAL_INPUTS = ("pending",)
+OPTIONAL_INPUTS = ("pending", "binding")
+
+#: What counts as **effective** progress: a non-heartbeat message, an artifact change, a
+#: commit or a stage change. A heartbeat is liveness, never progress. The inbox loop and this
+#: module share the vocabulary so the observation it writes means the same thing here.
+PROGRESS_MARKERS = ("message", "artifact", "commit", "stage")
+
+#: The subset a consumer can observe on its own: a delivered batch and a changed worker
+#: stage. Artifact and commit changes belong to the coordinator's ledger, not to the loop.
+CONSUMER_MARKERS = ("message", "stage")
+
+#: The two binding losses the specification names. They stop consumption and lifecycle
+#: operations for that identity; they never authorize a retry by themselves.
+BINDING_OUTCOMES = ("consumer_fenced", "run_binding_lost")
+
+#: What a binding loss refuses, whatever the recovery path: borrowing another handle and
+#: creating a Run without proving the old one ended. Both are published in the finding.
+BINDING_REFUSALS = ("impersonate_handle", "create_new_run")
+
+#: ``ownership`` is the fact that decides whether the loss is blocked or unknown. A caller
+#: that recorded the loss but never verified who really owns the binding has not observed it.
+BINDING_OWNERSHIP = ("verified", "unproven")
 
 STATES = ("healthy", "degraded", "blocked", "lost", "unknown")
 STATE_RANK = {"healthy": 0, "degraded": 1, "unknown": 2, "blocked": 3, "lost": 4}
@@ -406,6 +432,15 @@ def _progress(snapshot, config, now):
 
 
 def _last_effective_progress(snapshot, config, now):
+    """Stall detection: non-heartbeat progress only, plus the consumer's unacked count.
+
+    ``rounds_without_progress`` is the counter the coordinator or the inbox observation
+    advances. ``markers`` names what progressed since the previous round; a heartbeat is
+    liveness, never progress, so it is listed in ``ignored_markers`` and changes nothing. A
+    ``mode: consumer`` block also has to carry the ``--status --json`` ``unacked`` count:
+    empty waits are invisible to a consumer, so the count is part of the stall signal, and a
+    block that omits it is evidence absent rather than a healthy scan.
+    """
     block = _block(snapshot, "last_effective_progress")
     if block is None:
         return _absent("last_effective_progress")
@@ -415,12 +450,52 @@ def _last_effective_progress(snapshot, config, now):
             "last_effective_progress", "unknown", "unreadable_count",
             "signals.last_effective_progress.rounds_without_progress is not a count",
         )
+    mode = block.get("mode", "coordinator")
+    if mode not in ("consumer", "coordinator"):
+        return _finding(
+            "last_effective_progress", "unknown", "unknown_progress_mode",
+            "signals.last_effective_progress.mode " + repr(mode) + " is not a known mode",
+        )
+    detail = {"rounds_without_progress": rounds, "limit": config["stall_rounds"]}
+    markers = block.get("markers", [])
+    if not isinstance(markers, list) or any(not isinstance(item, str) for item in markers):
+        return _finding(
+            "last_effective_progress", "unknown", "unreadable_markers",
+            "signals.last_effective_progress.markers is not a list of marker names",
+        )
+    detail["markers"] = [item for item in markers if item in PROGRESS_MARKERS]
+    ignored = [item for item in markers if item not in PROGRESS_MARKERS]
+    if ignored:
+        detail["ignored_markers"] = ignored
+    if "unacked" in block:
+        unacked = block["unacked"]
+        if type(unacked) is not int or unacked < 0:
+            return _finding(
+                "last_effective_progress", "unknown", "unreadable_count",
+                "signals.last_effective_progress.unacked is not a count",
+            )
+        detail["unacked"] = unacked
+    if "empty_waits" in block:
+        empty_waits = block["empty_waits"]
+        if type(empty_waits) is not int or empty_waits < 0:
+            return _finding(
+                "last_effective_progress", "unknown", "unreadable_count",
+                "signals.last_effective_progress.empty_waits is not a count",
+            )
+        detail["empty_waits"] = empty_waits
+    if mode == "consumer" and "unacked" not in detail:
+        return _finding(
+            "last_effective_progress", "unknown", "consumer_unacked_missing",
+            "a consumer-mode stall block must carry the --status --json unacked count; "
+            "empty waits are invisible to a consumer",
+            detail=detail,
+        )
     limit = config["stall_rounds"]
     if rounds >= limit:
         return _finding(
             "last_effective_progress", "degraded", "no_effective_progress",
             str(rounds) + " rounds without non-heartbeat progress",
-            detail={"rounds_without_progress": rounds, "limit": limit},
+            detail=detail,
         )
     return None
 
@@ -525,6 +600,59 @@ def _watch(snapshot, config, now):
     return None
 
 
+def _binding(snapshot, config, now):
+    """The binding-loss protocol, as an optional recorded input.
+
+    ``consumer_fenced`` or a lost Run binding stops consumption and lifecycle operations for
+    that identity, so it is never healthy. What decides between ``blocked`` and ``unknown``
+    is ownership: a fenced consumer is a positive stop signal (Orca itself refused the
+    identity), while a bare ``run_binding_lost`` without a verified owner leaves the question
+    of whose binding this is unobserved. Either way the finding publishes the two refusals —
+    never impersonate a handle, never create a Run unconditionally — and an ownership that
+    cannot be established escalates. An absent block is not an observation, so it adds nothing.
+    """
+    block = snapshot.get("binding")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        _invalid("binding must be an object")
+    outcome = block.get("outcome", "none")
+    if outcome == "none":
+        return None
+    detail = {"outcome": outcome, "refused": list(BINDING_REFUSALS)}
+    if not isinstance(outcome, str) or outcome not in BINDING_OUTCOMES:
+        return _finding(
+            "binding", "unknown", "unknown_binding_outcome",
+            "binding.outcome " + repr(outcome) + " is not a recorded binding loss",
+            detail=detail, next_action="escalate",
+        )
+    ownership = block.get("ownership")
+    detail["ownership"] = ownership
+    if "evidence" in block:
+        detail["evidence"] = block["evidence"]
+    if not isinstance(ownership, str) or ownership not in BINDING_OWNERSHIP:
+        return _finding(
+            "binding", "unknown", "ownership_unobserved",
+            "the binding loss was recorded without verifying the real caller and Run/Dispatch "
+            "ownership, so the next step is evidence collection and escalation",
+            detail=detail, next_action="escalate",
+        )
+    if outcome == "run_binding_lost" and ownership != "verified":
+        return _finding(
+            "binding", "unknown", "ownership_unproven",
+            "ownership of the binding was not verified; do not reclaim it from a guess",
+            detail=detail, next_action="escalate",
+        )
+    escalate = outcome == "consumer_fenced" and ownership != "verified"
+    return _finding(
+        "binding", "blocked", "binding_loss",
+        "binding outcome " + outcome + ": stop consuming and stop lifecycle operations for "
+        "this identity, preserve the evidence, and verify the real caller and ownership",
+        detail=detail,
+        next_action="escalate" if escalate else "record_pending",
+    )
+
+
 def _pending(snapshot, config, now):
     """An optional recorded decision item; its absence is not an observation."""
     block = snapshot.get("pending")
@@ -594,7 +722,7 @@ def _snapshot(snapshot):
         value = snapshot.get(name)
         if value is not None and not isinstance(value, dict):
             _invalid("signals." + name + " must be an object")
-    for name in ("watch", "pending"):
+    for name in ("watch", "pending", "binding"):
         value = snapshot.get(name)
         if value is not None and not isinstance(value, dict):
             _invalid("signals." + name + " must be an object")
@@ -784,6 +912,9 @@ def evaluate(signals, config=None):
     pending = _pending(snapshot, settings, now)
     if pending is not None:
         findings.append(pending)
+    binding = _binding(snapshot, settings, now)
+    if binding is not None:
+        findings.append(binding)
 
     state = "healthy"
     for item in findings:
@@ -796,6 +927,75 @@ def evaluate(signals, config=None):
         "reasons": findings,
         "next_action": _next_action(state, findings),
     }
+
+
+# ---------------------------------------------------------------------------
+# The inbox observation → signals snapshot seam
+# ---------------------------------------------------------------------------
+#
+# The consumer writes one lightweight observation per wake into its own ``state.json`` and
+# publishes it in the wake payload; the coordinator transcribes it into the ledger and runs
+# one evaluation. ``observation_signals`` is that translation and nothing else: it copies the
+# facts the loop actually observed and omits the signals it cannot see, so they read as
+# ``unknown`` — the aggregate then says "this consumer alone cannot prove the Run healthy",
+# which is the truth. It never invents a field.
+
+
+def observation_signals(observation):
+    """Turn one inbox observation into a signals snapshot; a pure function.
+
+    Observed by the consumer and copied: the observation instant, the ``--status --json``
+    unacked arithmetic, the watch switch, the inbox phase when it has one, the recorded
+    binding-loss outcome, and the stall counters. Everything else — heartbeat, worker-show,
+    worker-list, turnStart, the projection, reclaimable terminals, waiter slots, nested
+    roster — is left out so it aggregates as ``unknown`` rather than as a pass.
+    """
+    if not isinstance(observation, dict):
+        _invalid("an inbox observation must be an object")
+    observed_at = observation.get("observed_at")
+    if _parse(observed_at, "observed_at") is None:
+        _invalid("an inbox observation needs a readable observed_at instant")
+    signals = {"observed_at": observed_at}
+    run_id = observation.get("run")
+    if isinstance(run_id, str) and run_id:
+        signals["run_id"] = run_id
+
+    unacked = observation.get("unacked")
+    if type(unacked) is int and unacked >= 0:
+        ids = observation.get("unacked_delivery_ids")
+        signals["unacked"] = {
+            "unacked": unacked,
+            "batches": [item for item in ids if isinstance(item, str)]
+            if isinstance(ids, list) else [],
+        }
+
+    watch = observation.get("watch")
+    if watch in ("on", "off"):
+        signals["watch"] = {"enabled": watch == "on"}
+
+    phase = observation.get("phase")
+    if phase == "error":
+        block = {"phase": "error", "updated_at": observed_at}
+        error = observation.get("error")
+        if isinstance(error, str) and error:
+            block["error"] = error
+        signals["inbox"] = block
+    elif phase in INBOX_LIVE_PHASES:
+        signals["inbox"] = {"phase": phase, "updated_at": observed_at}
+
+    for name in ("last_effective_progress", "binding"):
+        value = observation.get(name)
+        if isinstance(value, dict):
+            signals[name] = value
+    return signals
+
+
+def evaluate_observation(observation, config=None, run_id=None):
+    """Evaluate one inbox observation directly; a convenience over the two steps above."""
+    signals = observation_signals(observation)
+    if run_id is not None and signals.get("run_id") not in (None, run_id):
+        _invalid("the inbox observation belongs to another run")
+    return evaluate(signals, config)
 
 
 # ---------------------------------------------------------------------------
@@ -1025,9 +1225,14 @@ def main(argv=None):
     evaluate_parser = sub.add_parser(
         "evaluate", help="evaluate one signals snapshot and record the health state")
     evaluate_parser.add_argument("--run-id", required=True)
-    evaluate_parser.add_argument(
-        "--signals", required=True, metavar="FILE",
+    source = evaluate_parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--signals", metavar="FILE",
         help="signals snapshot JSON, or - for stdin")
+    source.add_argument(
+        "--observation", metavar="FILE",
+        help="one inbox observation as the loop publishes it in the wake payload "
+             "(or - for stdin); the signals this consumer cannot see read as unknown")
     evaluate_parser.add_argument(
         "--config", metavar="FILE",
         help="threshold overrides as a JSON object; defaults are documented")
@@ -1039,10 +1244,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        snapshot = _read_snapshot(args.signals)
         config = None
         if args.config:
             config = _read_snapshot(args.config)
+        if args.observation:
+            snapshot = observation_signals(_read_snapshot(args.observation))
+        else:
+            snapshot = _read_snapshot(args.signals)
         payload = evaluate_to_ledger(
             args.run_id, snapshot, config, record_id=args.record_id,
             decided_by=args.decided_by,

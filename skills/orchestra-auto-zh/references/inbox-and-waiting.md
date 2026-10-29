@@ -116,6 +116,28 @@ terminal 或 CLI」——是另一份契约，不变；被拒绝的安装让 own
 
 错误显式落盘并退出，不能将 CLI 失败、JSON 错误或绑定失效解释成空队列。
 
+### 1.2 绑定丢失
+
+`consumer_fenced` 或 Run 绑定丢失会停止该身份上的消费与生命周期操作。收件器对失败进行分类、
+保留证据、把 `binding` 写入 `state.json` 并放进唤醒的 observation，然后照常以 error 唤醒结束
+进程——它从不自行重试。记录的块是：
+
+```json
+{"outcome": "consumer_fenced", "ownership": "unproven",
+ "refused": ["impersonate_handle", "create_new_run"], "evidence": "…", "observed_at": "…"}
+```
+
+- `outcome` 为 `consumer_fenced` 或 `run_binding_lost`。没有点明绑定丢失的失败**不会**被重新
+  归类：权限或 waiter 错误保持 `outcome: none`，仍是一次普通 error 唤醒。
+- `ownership` 为 `unproven`，因为收件器无法核验真实调用方；核验是 coordinator 的读取。health
+  把未证实的绑定判为 `unknown` 并升级，把被 fence 的收件器判为 `blocked`。两种情况下的下一步
+  都是取证，不是使用权柄。
+- `refused` 列出任何恢复路径都不得做的事：冒充句柄，或无条件新建 Run。先清点旧 Dispatch 与
+  产物；无法确立归属时升级给人，而不是猜。
+
+安装被拒——另一个 loop 占着目录，或该目录绑定的是别的 Run/句柄/CLI——发生在循环启动之前，
+因此不携带 observation，也不会改动该目录所属 loop 的状态。
+
 ## 2. 收件与确认
 
 维护逐 message ID 的台账：`received → processing → handled`，记录 reply 回执、验收结果、
@@ -180,7 +202,11 @@ stdout 打印恰好一行。这才是正确的分工，写全了就是：**收�
 ```json
 {"event": "wake", "reason": "delivery", "run": "run_ab12", "terminal": "term_coord",
  "deliveryId": "dlv_9f", "types": ["worker_done"], "messageCount": 1,
- "saved": "/tmp/orch-repo-run_ab12/deliveries/<deliveryId 的 sha256>.json", "detail": "new batch dlv_9f saved: 1 message(s) ['worker_done']"}
+ "saved": "/tmp/orch-repo-run_ab12/deliveries/<deliveryId 的 sha256>.json", "detail": "new batch dlv_9f saved: 1 message(s) ['worker_done']",
+ "observation": {"kind": "inbox_observation", "observed_at": "…", "run": "run_ab12",
+                 "unacked": 1, "watch": "on", "binding": {"outcome": "none"},
+                 "last_effective_progress": {"mode": "consumer", "markers": ["message"],
+                 "rounds_without_progress": 0, "empty_waits": 0, "unacked": 1}}}
 ```
 
 | 字段 | 含义 |
@@ -193,6 +219,30 @@ stdout 打印恰好一行。这才是正确的分工，写全了就是：**收�
 | `messageCount` | 该批消息条数；非批次唤醒时为 `0` |
 | `saved` | 唤醒**之前**已写入的文件；非批次唤醒时为 `null` |
 | `detail` | 一行说明原因；`error` 时是错误文本，已压平成一行并截断 |
+| `observation` | 这次唤醒恰好一条本地 observation——即下面的字段，也是 `health evaluate` 的输入 |
+
+**observation**。每次唤醒都恰好携带一个 `observation` 对象，同一对象在打印该行之前持久化为
+`state.json` 里的 `wake_observation`。它只在本地写入，由 coordinator 转录进台账；收件器从不写
+台账。字段为 `kind`、`observed_at`、`reason`、`run`、`terminal`、`deliveryId`、`phase`、
+`saved`、`unacked`、`unacked_delivery_ids`、`blocked`、`watch`、`last_effective_progress`、
+`binding`、`write_scope: state.json` 与 `transcribe_to: ledger`。其中 `saved`/`unacked`/`blocked`
+与 `--status --json`（§1.1）是同一套算术，所以唤醒行与状态读取永不矛盾。对账唤醒保留自己的
+`kind: inbox_reconciliation` 记录在 `observation` 中，同时仍携带本次唤醒的 `wake_observation`。
+无需手工转换即可喂给 health：
+
+```bash
+python3 <SKILL_DIR>/scripts/health.py evaluate --run-id <run_id> --observation observation.json
+```
+
+收件器看不见的信号在那里读作 `unknown`，不是 healthy；要得出 `healthy`，coordinator 必须先用
+自己的读取补齐。状态与信号表见 [运行健康](run-health.md)。
+
+**停滞标记**。`last_effective_progress.markers` 记录本轮推进在什么上，取自共享词汇 `message`、
+`artifact`、`commit`、`stage`；收件器能观测到 `message`（非心跳批次）与 `stage`（worker 生命周期
+stage 变化）。`rounds_without_progress` 统计连续无这些标记的轮次，连续三轮即 `degraded`。
+**心跳绝不是进展**：它列在 `ignored_markers`，从不重置计数。`empty_waits` 统计自上一批次以来
+超时的等待；收件器读文件看不到空等待，所以唤醒行携带它以及旁边的 `unacked` 计数——空等待从不被
+当作不可见。
 
 退出码：`0` 唤醒；`1` 运行中的收件器自身的致命错误——同样是一次唤醒，带同一行（`reason=error`）
 以及 `watch.log` 与 `state.json phase=error`；`2` 循环尚未启动就被拒绝安装——本状态目录已被另一个

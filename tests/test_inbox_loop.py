@@ -852,6 +852,337 @@ class ReinstallReconciliationTests(InboxLoopCase):
             self.stop(second)
 
 
+def health_state_of(snapshot):
+    """Evaluate a snapshot with a fresh import of the shipped module."""
+    return load_health_module().evaluate(snapshot)["state"]
+
+
+def load_health_module(skill_dir=SKILL_DIRS[0]):
+    """Import a skill's ``health.py`` by path, the way the health tests do."""
+    path = skill_dir / "scripts" / "health.py"
+    spec = importlib.util.spec_from_file_location(
+        "health_for_inbox_" + Path(skill_dir).name.replace("-", "_"), path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class WakeObservationTests(InboxLoopCase):
+    """Every wake carries exactly one lightweight observation, and health reads it (#38).
+
+    The observation is local: the consumer writes ``state.json`` and the coordinator
+    transcribes it into the ledger and feeds it to ``health evaluate``. These cases drive the
+    real loop, take the observation out of the published wake line, and run the health
+    evaluator as a second subprocess against a temporary ledger home — never a live Orca.
+    ``consumer_fenced`` and binding loss are fixtures: this ticket does not execute them live.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.root = Path(os.path.realpath(self.tmp))
+        self.home = self.root / "ledger-home"
+
+    def health_cli(self, observation, run_id="run_test", home=None):
+        """Run ``health evaluate --observation`` in its own process, with a temp ledger."""
+        payload = self.root / "observation.json"
+        payload.write_text(json.dumps(observation))
+        env = {
+            key: value for key, value in os.environ.items()
+            if key not in ("ORCA_LEDGER_HOME", "ORCA_CLI_COMMAND")
+        }
+        env["ORCA_LEDGER_HOME"] = str(home or self.home)
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "health.py"),
+             "evaluate", "--run-id", run_id, "--observation", str(payload)],
+            capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20,
+        )
+
+    def ledger_records(self, run_id="run_test"):
+        env = {
+            key: value for key, value in os.environ.items()
+            if key not in ("ORCA_LEDGER_HOME", "ORCA_CLI_COMMAND")
+        }
+        env["ORCA_LEDGER_HOME"] = str(self.home)
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "ledger.py"),
+             "show", "--run-id", run_id, "--kind", "health"],
+            capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_delivery_wake_carries_exactly_one_observation(self):
+        process, _ = self.start([batch("delivery_obs", [normal()])])
+        payload = self.wake(process)
+        observation = payload["observation"]
+
+        self.assertIsInstance(observation, dict, "a wake must carry one observation object")
+        self.assertEqual(observation["kind"], "inbox_observation")
+        self.assertEqual(observation["reason"], "delivery")
+        self.assertEqual(observation["run"], "run_test")
+        self.assertEqual(observation["terminal"], "term_coordinator")
+        self.assertEqual(observation["deliveryId"], "delivery_obs")
+        self.assertEqual(observation["saved"], 1)
+        self.assertEqual(observation["unacked"], 1)
+        self.assertEqual(observation["blocked"],
+                         {"deliveryId": "delivery_obs", "reason": "unacknowledged"})
+        self.assertEqual(observation["watch"], "on")
+        self.assertEqual(observation["write_scope"], "state.json")
+        self.assertEqual(observation["transcribe_to"], "ledger")
+        self.assertEqual(observation["binding"]["outcome"], "none")
+        progress = observation["last_effective_progress"]
+        self.assertEqual(progress["mode"], "consumer")
+        self.assertEqual(progress["rounds_without_progress"], 0,
+                         "a non-heartbeat batch is effective progress")
+        self.assertEqual(progress["markers"], ["message"])
+        self.assertIsNotNone(progress["at"])
+        self.assertEqual(progress["unacked"], 1)
+        self.assertEqual(progress["empty_waits"], 0)
+        self.assertEqual(read_state(self.state)["wake_observation"], observation,
+                         "the observation the coordinator transcribes must be on disk")
+
+    def test_the_observation_unacked_count_is_the_status_contract_count(self):
+        process, _ = self.start([batch("delivery_status", [normal()])])
+        payload = self.wake(process)
+        result = run_status(self.state)
+        reported = json.loads(result.stdout)
+        self.assertEqual(payload["observation"]["unacked"], reported["unacked"])
+        self.assertEqual(payload["observation"]["blocked"], reported["blocked"])
+
+    def test_the_observation_feeds_health_evaluate_and_the_ledger_rebuilds_it(self):
+        process, _ = self.start([batch("delivery_health", [normal()])])
+        observation = self.wake(process)["observation"]
+
+        first = self.health_cli(observation)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        printed = json.loads(first.stdout)
+        self.assertTrue(printed["recorded"])
+        self.assertEqual(printed["state"], "blocked")
+        self.assertEqual(printed["next_action"], "record_pending")
+        reasons = {item["signal"]: item for item in printed["reasons"]}
+        self.assertEqual(reasons["unacked"]["reason"], "unacked_batch")
+        self.assertNotIn("last_effective_progress", reasons,
+                         "the consumer observed the stall counters, so they are not unknown")
+
+        records = self.ledger_records()
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["kind"], "health")
+        self.assertEqual(record["detail"]["health_state"], "blocked")
+        self.assertEqual(record["detail"]["signals"]["unacked"]["unacked"], 1)
+        self.assertEqual(
+            record["detail"]["signals"]["last_effective_progress"]["markers"], ["message"])
+
+        # The record itself carries the whole snapshot, so a recovery turn that lost every
+        # local file can re-evaluate the same health state from the ledger alone.
+        recovered = record["detail"]["signals"]
+        self.assertEqual(health_state_of(recovered), "blocked",
+                         "the ledger record alone must rebuild the health state")
+
+        # A fresh process reads the ledger and recovers the previous state without the wake.
+        second = self.health_cli(observation)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        rebuilt = json.loads(second.stdout)
+        self.assertEqual(rebuilt["record_id"], printed["record_id"], "the record is idempotent")
+        self.assertEqual(rebuilt["previous_state"], "blocked")
+        self.assertEqual(rebuilt["entered_at"], printed["entered_at"])
+        self.assertEqual(len(self.ledger_records()), 1)
+
+    def test_three_wakes_without_progress_degrade_and_a_heartbeat_never_refreshes(self):
+        module = load_inbox_module(SKILL_DIRS[0])
+        health = load_health_module()
+        rounds = []
+        for _ in range(3):
+            observation = module.wake_observation(self.state, {
+                "reason": "worker_state", "run": "run_test", "terminal": "term_coordinator",
+                "deliveryId": None,
+            })
+            rounds.append(observation["last_effective_progress"]["rounds_without_progress"])
+        self.assertEqual(rounds, [1, 2, 3])
+        result = health.evaluate(health.observation_signals(observation))
+        stall = next(item for item in result["reasons"]
+                     if item["signal"] == "last_effective_progress")
+        self.assertEqual(stall["state"], "degraded",
+                         "three rounds without progress degrade the stall signal")
+        self.assertEqual(stall["reason"], "no_effective_progress")
+        self.assertEqual(stall["detail"]["rounds_without_progress"], 3)
+
+        heartbeat = module.wake_observation(self.state, {
+            "reason": "worker_state", "run": "run_test", "terminal": "term_coordinator",
+            "deliveryId": None,
+        }, markers=["heartbeat"])
+        self.assertEqual(
+            heartbeat["last_effective_progress"]["rounds_without_progress"], 4,
+            "a heartbeat is liveness, never effective progress")
+        self.assertEqual(heartbeat["last_effective_progress"]["markers"], [])
+        self.assertEqual(heartbeat["last_effective_progress"]["ignored_markers"],
+                         ["heartbeat"])
+
+    def test_a_progress_marker_resets_the_stall_rounds(self):
+        module = load_inbox_module(SKILL_DIRS[0])
+        for _ in range(2):
+            module.wake_observation(self.state, {"reason": "worker_state", "run": "run_test",
+                                                 "terminal": "term_coordinator"})
+        refreshed = module.wake_observation(self.state, {
+            "reason": "delivery", "run": "run_test", "terminal": "term_coordinator",
+        }, markers=["stage"])
+        self.assertEqual(refreshed["last_effective_progress"]["rounds_without_progress"], 0)
+        self.assertEqual(refreshed["last_effective_progress"]["markers"], ["stage"])
+        self.assertIsNotNone(refreshed["last_effective_progress"]["at"])
+
+    def test_empty_waits_are_counted_and_reported_not_invisible(self):
+        module = load_inbox_module(SKILL_DIRS[0])
+        module.note_empty_wait(self.state, True)
+        module.note_empty_wait(self.state, True)
+        for _ in range(3):
+            observation = module.wake_observation(self.state, {
+                "reason": "worker_state", "run": "run_test", "terminal": "term_coordinator",
+            })
+        self.assertEqual(observation["last_effective_progress"]["empty_waits"], 2)
+        health = load_health_module()
+        result = health.evaluate(health.observation_signals(observation))
+        stall = next(item for item in result["reasons"]
+                     if item["signal"] == "last_effective_progress")
+        self.assertEqual(stall["detail"]["empty_waits"], 2,
+                         "a consumer-mode stall must show the empty waits it saw")
+
+        module.note_empty_wait(self.state, False)
+        self.assertEqual(module.progress_block(self.state)["empty_waits"], 0,
+                         "a batch that arrived ends the empty-wait streak")
+
+    def test_a_worker_state_wake_records_a_stage_marker(self):
+        process, _ = self.start(
+            [batch("empty", [])],
+            worker_states=[[worker(state="ready")],
+                           [worker(state="working", detail="running tests")]])
+        payload = self.wake(process)
+        self.assertEqual(payload["reason"], "worker_state")
+        progress = payload["observation"]["last_effective_progress"]
+        self.assertEqual(progress["markers"], ["stage"])
+        self.assertEqual(progress["rounds_without_progress"], 0)
+
+    def test_consumer_fenced_stops_the_loop_and_records_the_binding_loss(self):
+        process, fake = self.start(
+            [batch("empty", [])],
+            worker_states=[{"fail": "consumer_fenced: this delivery belongs to another consumer"}])
+        payload = self.wake(process, expect=1)
+
+        self.assertEqual(payload["reason"], "error")
+        observation = payload["observation"]
+        self.assertEqual(observation["phase"], "error")
+        self.assertEqual(observation["binding"]["outcome"], "consumer_fenced")
+        self.assertEqual(observation["binding"]["ownership"], "unproven")
+        self.assertEqual(set(observation["binding"]["refused"]),
+                         {"impersonate_handle", "create_new_run"})
+        state = read_state(self.state)
+        self.assertEqual(state["phase"], "error")
+        self.assertEqual(state["wake_observation"], observation)
+        log_text = (self.state / "watch.log").read_text()
+        self.assertIn("BINDING-LOSS consumer_fenced", log_text)
+        # Nothing was impersonated and no Run was created: the only calls are the read the
+        # install was already making.
+        self.assertEqual(fake.calls_starting("orchestration check"), [])
+        self.assertNotIn("worker-start", " ".join(fake.calls()))
+
+        health = load_health_module()
+        result = health.evaluate(health.observation_signals(observation))
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["next_action"], "escalate")
+
+    def test_a_lost_run_binding_records_the_loss_and_refuses_a_new_run(self):
+        process, fake = self.start(
+            [batch("empty", [])],
+            worker_states=[{"fail": "run binding lost: this Run is not bound to this terminal"}])
+        payload = self.wake(process, expect=1)
+
+        self.assertEqual(payload["reason"], "error")
+        observation = payload["observation"]
+        self.assertEqual(observation["binding"]["outcome"], "run_binding_lost")
+        self.assertEqual(observation["binding"]["ownership"], "unproven")
+        self.assertEqual(set(observation["binding"]["refused"]),
+                         {"impersonate_handle", "create_new_run"})
+        self.assertIn("BINDING-LOSS run_binding_lost", (self.state / "watch.log").read_text())
+        self.assertNotIn("worker-start", " ".join(fake.calls()))
+        self.assertEqual(fake.calls_starting("orchestration check"), [])
+
+    def test_a_binding_failure_that_is_not_a_binding_loss_records_no_loss(self):
+        """A waiter or permission failure must not be reclassified as binding loss."""
+        process, _ = self.start([batch("empty", [])],
+                                worker_states=[{"fail": "permission denied"}])
+        payload = self.wake(process, expect=1)
+        observation = payload["observation"]
+        self.assertEqual(observation["binding"]["outcome"], "none")
+        self.assertNotIn("BINDING-LOSS", (self.state / "watch.log").read_text())
+        health = load_health_module()
+        evaluated = health.evaluate(health.observation_signals(observation))
+        self.assertEqual(evaluated["state"], "blocked",
+                         "a fatal loop error is an inbox error, never healthy")
+        self.assertNotIn("binding", {item["signal"] for item in evaluated["reasons"]},
+                         "a non-binding failure must not be reclassified as binding loss")
+
+    def test_an_install_refusal_carries_no_observation_and_touches_no_state(self):
+        process, _ = self.start([batch("delivery_owned", [heartbeat()])])
+        try:
+            self.wait_for(lambda: (self.state / "binding.json").exists()
+                          and (self.state / "binding.json").read_text() != "",
+                          what="the binding")
+            before = owner_state_snapshot(self.state)
+            env = dict(os.environ)
+            env["ORCA_CLI_COMMAND"] = str(
+                FakeOrca(self.tmp / "fake-refusal-obs", []).path)
+            refused = subprocess.run(
+                [sys.executable, str(self.skill_dir / self.script),
+                 "another_run", str(self.state), "term_other"],
+                env=env, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(refused.returncode, 2, refused.stderr)
+            self.assertNotIn("observation", json.loads(refused.stdout),
+                             "a refusal must not write another Run's observation")
+            self.assertEqual(owner_state_snapshot(self.state), before)
+        finally:
+            self.stop(process)
+
+
+class WiringDocumentationTests(unittest.TestCase):
+    """Both language bundles must describe the same wiring and binding-loss protocol.
+
+    The package suite proves the reference files exist in both bundles; this checks the #38
+    contract itself, in each bundle's own wording: one observation per wake, its payload
+    field, the stall rule that a heartbeat never refreshes progress, and the binding-loss
+    protocol with its refusals.
+    """
+
+    ANCHORS = {
+        "orchestra-auto": {
+            "run-health.md": ("observation", "one per wake", "last effective progress",
+                              "heartbeat", "consumer", "binding loss", "consumer_fenced",
+                              "impersonate", "escalate", "agentWait"),
+            "inbox-and-waiting.md": ("observation", "markers", "unacked",
+                                     "binding loss", "consumer_fenced"),
+            "failure-and-reporting.md": ("consumer_fenced", "binding", "Run"),
+        },
+        "orchestra-auto-zh": {
+            "run-health.md": ("observation", "每次唤醒", "last effective progress",
+                              "heartbeat", "consumer", "绑定丢失", "consumer_fenced",
+                              "冒充", "升级", "agentWait"),
+            "inbox-and-waiting.md": ("observation", "markers", "unacked",
+                                     "绑定丢失", "consumer_fenced"),
+            "failure-and-reporting.md": ("consumer_fenced", "绑定", "Run"),
+        },
+    }
+
+    def test_the_documented_wiring_matches_in_both_bundles(self):
+        for bundle, files in self.ANCHORS.items():
+            for filename, anchors in files.items():
+                text = (REPO_ROOT / "skills" / bundle / "references" / filename).read_text()
+                flat = "".join(text.split()).lower()
+                for anchor in anchors:
+                    self.assertIn("".join(anchor.split()).lower(), flat,
+                                  f"{bundle}/{filename}: missing the #38 anchor {anchor!r}")
+
+
 class ReceiptStatusTests(unittest.TestCase):
     """The local arithmetic that makes an unacked FIFO head visible as ``blocked``.
 
@@ -1883,7 +2214,10 @@ class BothLanguageVariantsTests(unittest.TestCase):
                      "env_number", "fatal", "idle", "locked", "main", "parse_cli_result",
                      "persist_batch", "status", "wake_event", "worker_changes",
                      "worker_signature", "status_report", "signature_lines", "scalar",
-                     "directory_mtime", "loop_state", "status_arguments"):
+                     "directory_mtime", "loop_state", "status_arguments",
+                     "progress_block", "note_empty_wait", "classify_binding_loss",
+                     "record_binding_loss", "wake_observation", "stage_changes",
+                     "write_local"):
             self.assertTrue(hasattr(english, name), f"missing {name}")
             self.assertTrue(hasattr(chinese, name), f"missing {name}")
 

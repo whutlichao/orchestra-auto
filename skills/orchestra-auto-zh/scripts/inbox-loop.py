@@ -43,6 +43,18 @@ coordinator turn by itself — only the end of a command the harness surfaces ca
 * a fatal error of the loop itself is the third leg: it exits non-zero and prints the same
   line with ``reason=error``.
 
+Every wake carries **exactly one** lightweight observation, both in the line's ``observation``
+field and as ``wake_observation`` in ``state.json``. It holds the local ``--status --json``
+arithmetic, the watch switch, the inbox phase, the recorded binding-loss outcome and the stall
+counters, and it is what the coordinator transcribes into the ledger and feeds to
+``health evaluate``. The observation is one per wake — never a stream, and never none. Stall
+detection counts consecutive wakes without **effective** progress (a non-heartbeat message or a
+stage change); a heartbeat is liveness and never refreshes it, three such rounds degrade the
+Run, and a timed-out wait is counted rather than read as "no news". A ``consumer_fenced`` or lost
+Run binding is preserved as ``binding`` (with the two refusals: never impersonate a handle, never
+create a new Run unconditionally) and ends the loop in an error wake; an ownership the consumer
+cannot establish is escalated, never guessed.
+
 Waiting is a native block (``check --wait --types --timeout-ms``) rather than a short
 poll-and-sleep: the CLI holds the connection and writes its keepalive lines to stderr,
 which never reach this process's stdout. Every wake event ends the process, so the
@@ -115,12 +127,43 @@ RECEIPTS_FILE = "receipts.jsonl"
 
 #: Local durable markers. They survive every state rewrite because they answer questions a
 #: transient phase cannot: which batches were already announced, which one a reinstall
-#: reconciliation already woke for, and whether worker watching was installed at all.
+#: reconciliation already woke for, whether worker watching was installed at all, the
+#: reconciliation observation (#34), the last wake's observation, the stall counters, and a
+#: recorded binding loss. ``observation`` stays the reconciliation record; every wake writes
+#: its own ``wake_observation`` next to it rather than overwriting that evidence.
 WOKEN_KEY = "woken_deliveries"
 RECONCILED_KEY = "reconciled_delivery_id"
 OBSERVATION_KEY = "observation"
 WATCH_KEY = "watch"
-LOCAL_STATE_KEYS = (WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY, WATCH_KEY)
+PROGRESS_KEY = "progress"
+BINDING_KEY = "binding"
+WAKE_OBSERVATION_KEY = "wake_observation"
+LOCAL_STATE_KEYS = (
+    WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY, WATCH_KEY, PROGRESS_KEY, BINDING_KEY,
+    WAKE_OBSERVATION_KEY,
+)
+
+#: What counts as **effective** progress: a non-heartbeat message, an artifact change, a
+#: commit, or a stage change. A heartbeat is liveness, never progress, so a Run can be
+#: perfectly awake and still be stalling. ``health.py`` holds the same vocabulary and its
+#: tests assert the two do not drift; the consumer can only observe its own two markers.
+PROGRESS_MARKERS = ("message", "artifact", "commit", "stage")
+CONSUMER_MARKERS = ("message", "stage")
+
+#: A binding loss stops consumption and lifecycle operations for that identity, preserves the
+#: evidence and never authorizes borrowed authority. The two refusals are published in the
+#: observation so the coordinator transcribes them into the ledger.
+BINDING_REFUSALS = ("impersonate_handle", "create_new_run")
+
+#: The error tokens that identify a binding loss in a CLI failure. This is a local
+#: classification of *our own* envelopes and fixtures, not a claim about a live Orca contract:
+#: an unrecognised failure is left unclassified, and the loop still ends in an error wake.
+BINDING_TOKENS = (
+    ("consumer_fenced", "consumer_fenced"),
+    ("run_binding_lost", "run_binding_lost"),
+    ("run binding lost", "run_binding_lost"),
+    ("binding lost", "run_binding_lost"),
+)
 
 #: Exit codes of ``--status --json``. They are a published contract: ``0`` resting after a
 #: wake or healthy, ``1`` fatal, ``2`` no state directory, ``3`` degraded or blocked. The
@@ -133,11 +176,17 @@ STATUS_DEGRADED = 3
 
 
 class Wake(Exception):
-    """A wake event detected while a ``check --wait`` child was still blocked."""
+    """A wake event detected while a ``check --wait`` child was still blocked.
 
-    def __init__(self, payload):
+    ``markers`` names what the wake observed that counts as effective progress, in the
+    shared progress vocabulary (a delivered non-heartbeat message, a stage change). It is not
+    part of the published wake line; it decides the stall counter the observation carries.
+    """
+
+    def __init__(self, payload, markers=()):
         super().__init__(payload.get("detail", "wake"))
         self.payload = payload
+        self.markers = list(markers)
 
 
 def env_number(name, default, cast):
@@ -227,16 +276,31 @@ def write_state(directory, payload, current=None):
     """Write ``state.json`` while keeping the durable local markers.
 
     Phase, error text and the pid of the moment are transient: a new install must be able
-    to replace them. ``woken_deliveries``, ``reconciled_delivery_id`` and the last
-    reconciliation ``observation`` are not — they are how a restart knows what was already
-    announced, so every rewrite carries them forward. ``current`` lets the install-time
-    reconciliation reuse the one read it already made.
+    to replace them. ``woken_deliveries``, ``reconciled_delivery_id``, the last observed
+    ``observation``, the ``watch`` switch, the stall ``progress`` counters and a recorded
+    ``binding`` loss are not — they are how a restart knows what was already announced and
+    what it last proved, so every rewrite carries them forward. ``current`` lets the
+    install-time reconciliation reuse the one read it already made.
     """
     if current is None:
         current = read_json(directory / "state.json")
     merged = {key: current[key] for key in LOCAL_STATE_KEYS if key in current}
     merged.update(payload)
     atomic(directory / "state.json", json.dumps(merged))
+
+
+def write_local(directory, changes):
+    """Update only the local facts of ``state.json``, leaving the phase and binding intact.
+
+    The observation, the stall counters and a binding-loss record are written while the loop
+    is mid-phase. ``write_state`` replaces the document (keeping the local markers), which
+    would erase the phase a status read needs; this merges instead, so recording evidence
+    never makes a live loop look dead.
+    """
+    current = read_json(directory / "state.json")
+    current.update(changes)
+    atomic(directory / "state.json", json.dumps(current))
+    return current
 
 
 def ack_request_id(delivery_id):
@@ -722,7 +786,171 @@ def worker_changes(before, after):
     return changes
 
 
-def wake_event(reason, run_id, terminal, detail, delivery_id=None, types=(), saved=None):
+def stage_changes(before, after):
+    """Whether a worker's lifecycle stage changed, not merely its liveness detail.
+
+    The stage part of a signature line is ``workerState:dispatchStatus:stage.detail`` — the
+    first four colon-separated fields. A change there is effective progress; a change in
+    ``liveness``, ``attention`` or ``nextAction`` alone is news for the coordinator but is
+    not progress, so the stall counter must not be reset by it.
+    """
+    def stages(signature):
+        mapping = {}
+        for line in (signature or "").splitlines():
+            fields = line.split(":")
+            mapping[fields[0]] = tuple(fields[1:4])
+        return mapping
+
+    return stages(before) != stages(after)
+
+
+def progress_block(directory):
+    """The stall counters this consumer owns, as a ``last_effective_progress`` signal block.
+
+    ``rounds_without_progress`` counts consecutive wakes that carried no effective progress;
+    ``markers`` names what progressed in the last round, and ``empty_waits`` counts the waits
+    that timed out since the last batch. A heartbeat is never a marker: it proves liveness,
+    not progress. ``unacked`` is filled in when an observation is built, because the count is
+    the same ``--status --json`` arithmetic and must not be duplicated here.
+    """
+    current = read_json(directory / "state.json").get(PROGRESS_KEY)
+    if not isinstance(current, dict):
+        current = {}
+    rounds = current.get("rounds_without_progress")
+    waits = current.get("empty_waits")
+    markers = current.get("markers")
+    return {
+        "mode": "consumer",
+        "at": current.get("at") if isinstance(current.get("at"), str) else None,
+        "markers": [item for item in markers if isinstance(item, str)]
+        if isinstance(markers, list) else [],
+        "rounds_without_progress": rounds if type(rounds) is int and rounds >= 0 else 0,
+        "empty_waits": waits if type(waits) is int and waits >= 0 else 0,
+    }
+
+
+def note_empty_wait(directory, empty):
+    """Record that a wait returned an empty batch, or that a real batch ended the streak.
+
+    An empty wait is invisible to a consumer — nothing arrives, so nothing is written — which
+    is exactly why it is counted here and published in the observation instead of being read
+    as "no news". A batch that did arrive resets the streak. Nothing is written when the value
+    would not change, so the steady state does not churn ``state.json`` for a status read.
+    """
+    progress = progress_block(directory)
+    waits = 0 if not empty else progress["empty_waits"] + 1
+    if waits == progress["empty_waits"]:
+        return progress
+    progress = {**progress, "empty_waits": waits}
+    write_local(directory, {PROGRESS_KEY: progress})
+    return progress
+
+
+def classify_binding_loss(error):
+    """Name the binding loss an error text reports, or ``None``.
+
+    Only the two documented outcomes are recognised. An unrecognised failure stays
+    unclassified on purpose: reclassifying a permission or waiter error as binding loss would
+    tell the coordinator to stop using an identity that is fine. The error itself is still a
+    wake either way.
+    """
+    text = str(error).lower()
+    for token, outcome in BINDING_TOKENS:
+        if token in text:
+            return outcome
+    return None
+
+
+def record_binding_loss(directory, outcome, evidence):
+    """Preserve a binding loss as durable local evidence, and refuse borrowed authority.
+
+    ``consumer_fenced`` and a lost Run binding stop consumption and lifecycle operations for
+    that identity. The record keeps the error text, the outcome, and the two refusals — never
+    impersonate a handle, never create a Run unconditionally — so the coordinator transcribes
+    the same facts into the ledger. Ownership is recorded as ``unproven``: the consumer cannot
+    verify who really owns the binding, and a guess is worse than an escalation.
+    """
+    block = {
+        "outcome": outcome,
+        "ownership": "unproven",
+        "refused": list(BINDING_REFUSALS),
+        "evidence": " ".join(str(evidence).split())[:500],
+        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    log(directory, "BINDING-LOSS " + outcome + ": " + block["evidence"])
+    write_local(directory, {BINDING_KEY: block})
+    return block
+
+
+def wake_observation(directory, payload, markers=(), phase="wake", error=None, kind=None,
+                     extra=None, advance=True):
+    """Build and persist the one lightweight observation a wake carries.
+
+    Each wake is one round, so this advances the progress counter: a round whose ``markers``
+    include something the consumer can see (a non-heartbeat message, a stage change) resets
+    ``rounds_without_progress`` and records when it happened; every other round increments it.
+    Heartbeats are never effective progress and are listed as ``ignored_markers`` rather than
+    silently kept.
+
+    The observation is deliberately local: it is written to ``state.json`` and published in
+    the wake payload, and the coordinator transcribes it into the ledger and runs one
+    ``health evaluate``. The consumer never writes the ledger. A state directory whose
+    deliveries cannot be read still produces an observation — the arithmetic is then absent,
+    which reads as ``unknown`` rather than as a healthy empty inbox.
+    """
+    stored = read_json(directory / "state.json")
+    progress = progress_block(directory)
+    reported = list(markers or [])
+    effective = [item for item in reported if item in CONSUMER_MARKERS]
+    ignored = [item for item in reported if item not in CONSUMER_MARKERS]
+    if advance:
+        if effective:
+            progress["rounds_without_progress"] = 0
+            progress["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        else:
+            progress["rounds_without_progress"] += 1
+        progress["markers"] = effective
+        progress["ignored_markers"] = ignored
+
+    observation = {
+        "kind": kind or "inbox_observation",
+        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "reason": payload.get("reason"),
+        "run": payload.get("run"),
+        "terminal": payload.get("terminal"),
+        "deliveryId": payload.get("deliveryId"),
+        "phase": phase,
+        "saved": None,
+        "unacked": None,
+        "unacked_delivery_ids": [],
+        "blocked": None,
+        "watch": stored.get(WATCH_KEY, UNKNOWN),
+        "last_effective_progress": progress,
+        "binding": stored.get(BINDING_KEY) or {"outcome": "none"},
+        "write_scope": "state.json",
+        "transcribe_to": "ledger",
+    }
+    if error:
+        observation["error"] = " ".join(str(error).split())[:500]
+    try:
+        counts = inbox_progress(directory)
+    except RuntimeError:
+        # An unreadable delivery is the error being reported; the arithmetic stays absent.
+        counts = None
+    if counts is not None:
+        observation["saved"] = counts["saved"]
+        observation["unacked"] = counts["unacked"]
+        observation["unacked_delivery_ids"] = counts["unacked_delivery_ids"]
+        observation["blocked"] = counts["blocked"]
+        progress["unacked"] = counts["unacked"]
+    if isinstance(extra, dict):
+        observation.update(extra)
+    write_local(directory, {PROGRESS_KEY: progress, WAKE_OBSERVATION_KEY: observation})
+    return observation
+
+
+def wake_event(reason, run_id, terminal, detail, delivery_id=None, types=(), saved=None,
+               observation=None):
     """Build the one-line wake payload.
 
     The shape is a published contract: ``event`` is always ``wake``; ``reason`` is one of
@@ -730,9 +958,10 @@ def wake_event(reason, run_id, terminal, detail, delivery_id=None, types=(), sav
     types in order and ``messageCount`` its length (empty/0 when the wake was not a batch);
     ``deliveryId`` and ``saved`` name the batch and the file it was persisted to, and are
     null for the other two legs. ``detail`` is one line, because the payload is one line:
-    payloads and error texts are flattened and truncated.
+    payloads and error texts are flattened and truncated. ``observation`` is the one
+    lightweight local observation this wake carries, when the loop got as far as observing.
     """
-    return {
+    payload = {
         "event": "wake",
         "reason": reason,
         "run": run_id,
@@ -743,6 +972,9 @@ def wake_event(reason, run_id, terminal, detail, delivery_id=None, types=(), sav
         "saved": saved,
         "detail": " ".join(str(detail).split())[:500],
     }
+    if observation is not None:
+        payload["observation"] = observation
+    return payload
 
 
 def emit(payload):
@@ -756,10 +988,21 @@ def fatal(directory, binding, run_id, terminal, error):
     Retrying forever or borrowing another identity is forbidden: a permission, binding,
     waiter or CLI failure stops this process explicitly, and that stop is itself the third
     wake leg — including the ones that happen before the first wait is installed.
+
+    A failure that names a binding loss is preserved as such before the error wake: the
+    outcome, the error text and the two refusals (never impersonate a handle, never create a
+    Run unconditionally). The observation the wake carries says the same thing, so the
+    coordinator transcribes one record. The loop never retries and never reclaims the
+    identity, and an ownership it cannot establish is escalated, not guessed.
     """
+    outcome = classify_binding_loss(error)
+    if outcome is not None:
+        record_binding_loss(directory, outcome, error)
     log(directory, f"ERROR {error}")
+    payload = wake_event("error", run_id, terminal, error)
+    observation = wake_observation(directory, payload, phase="error", error=error)
     write_state(directory, {**binding, "phase": "error", "error": str(error)})
-    emit(wake_event("error", run_id, terminal, error))
+    emit(wake_event("error", run_id, terminal, error, observation=observation))
     return 1
 
 
@@ -1208,17 +1451,23 @@ def main():
             return fatal(directory, binding, run_id, terminal, error)
         if reconciled is not None:
             # The observation and reconciled id are already durable; the regular wake path
-            # below adds phase=wake and prints the one line the harness surfaces.
-            raise Wake(reconciled)
+            # below adds phase=wake and prints the one line the harness surfaces. The saved
+            # batch it names is a message this consumer can prove, so the round is progress.
+            raise Wake(reconciled, ["message"])
 
         def watch_probe():
             """Wake when this Run's worker signature no longer matches the baseline."""
-            changes = worker_changes(baseline, worker_signature(directory, run_id))
+            after = worker_signature(directory, run_id)
+            changes = worker_changes(baseline, after)
             if not changes:
                 return None
+            # A lifecycle stage change is effective progress; a liveness-only change is
+            # news for the coordinator but must not reset the stall counter.
+            probe_markers[0] = ["stage"] if stage_changes(baseline, after) else []
             return wake_event("worker_state", run_id, terminal,
                               "worker state changed: " + "; ".join(changes))
 
+        probe_markers = [[]]
         watch = (worker_poll, watch_probe) if watch_workers else None
         while True:
             try:
@@ -1227,9 +1476,13 @@ def main():
                 data = check(directory, run_id, terminal, [], CLI_TIMEOUT_SECONDS)
                 messages = batch_messages(data)
                 woken, acknowledged = persist_batch(directory, run_id, terminal, data)
+                markers = ["message"] if woken is not None else []
                 if woken is None and watch is not None:
+                    probe_markers[0] = []
                     woken = watch_probe()
+                    markers = probe_markers[0]
                 if messages:
+                    note_empty_wait(directory, False)
                     # A batch already on disk is the coordinator's outstanding duty: it
                     # must not wake again, and it must not busy-loop either, so pause and
                     # re-check rather than block behind it. A batch we just acknowledged
@@ -1242,18 +1495,26 @@ def main():
                                  wait_ms / 1000 + WAIT_GRACE_SECONDS, watch=watch)
                     messages = batch_messages(data)
                     woken, _ = persist_batch(directory, run_id, terminal, data)
+                    markers = ["message"] if woken is not None else []
                     if woken is None and watch is not None:
+                        probe_markers[0] = []
                         woken = watch_probe()
+                        markers = probe_markers[0]
+                    if not messages:
+                        note_empty_wait(directory, True)
+                    else:
+                        note_empty_wait(directory, False)
                     # An empty batch means the CLI timed out: back off and install the next
                     # wait, which is where the reinstall/backoff semantics live.
                     pause = backoff
                 if woken is not None:
-                    raise Wake(woken)
+                    raise Wake(woken, markers)
                 if pause > 0:
+                    probe_markers[0] = []
                     woken = idle(pause, worker_poll if watch else None,
                                  watch_probe if watch else None)
                     if woken is not None:
-                        raise Wake(woken)
+                        raise Wake(woken, probe_markers[0])
                 # The marker is not cleared: an empty queue does not prove that the
                 # batches already on disk have been handled.
                 write_state(directory, {**binding, "loopPid": os.getpid(),
@@ -1269,8 +1530,15 @@ def main():
                                 "detail": payload["detail"],
                                 "deliveryId": payload["deliveryId"],
                                 "updatedAt": time.time()})
-        log(directory, "WAKE " + json.dumps(payload, ensure_ascii=False))
-        emit(payload)
+        # Exactly one observation per wake, written before the line that carries it, so a
+        # coordinator that reads the wake finds the same facts in ``state.json`` and a
+        # recovery turn can rebuild the record from the ledger.
+        emitted = wake_event(
+            payload["reason"], payload["run"], payload["terminal"], payload["detail"],
+            delivery_id=payload["deliveryId"], types=payload["types"], saved=payload["saved"],
+            observation=wake_observation(directory, payload, markers=wake.markers))
+        log(directory, "WAKE " + json.dumps(emitted, ensure_ascii=False))
+        emit(emitted)
         return 0
     finally:
         (directory / "inbox-loop.pid").unlink(missing_ok=True)
