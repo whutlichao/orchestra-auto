@@ -111,10 +111,16 @@ start confirmation and freshness are separate. Full identities/worktrees and sum
 into expandable details. HTTP(S) references without credentials are links; all other values remain
 text, and no file contents are served.
 
+The page also states the **warning is not a start failure** notice: a recording or dashboard warning
+means "continue orchestration", records a gap and never turns a dispatch into a failed start.
+
 Optional browser regression checks require an externally installed Playwright and Chromium, not
-runtime dependencies. Set `PLAYWRIGHT_MODULE` to that external package, then run
-`node tests/progress_dashboard_browser.cjs http://127.0.0.1:8766/ EVIDENCE_DIR` against an isolated
-DEMO server. It covers four viewports, semantic edge cases, refresh state and safe rendering.
+runtime dependencies, and they are not the mandatory gate — the CLI/HTTP contract above is.
+Set `PLAYWRIGHT_MODULE` to that external package, then run
+`node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=FIRST&second=SECOND' EVIDENCE_DIR`
+against a singleton service with two registered Runs. The script routes `**/snapshot*`, switches the
+selected Run through the Run list, and covers four viewports, semantic edge cases, refresh state and
+safe rendering; when Playwright is absent it is simply not run and nothing in the suite fails for it.
 
 ## Protocol v2
 
@@ -264,6 +270,38 @@ timeout is degraded: no second service is ever started.
 renders read-only snapshots. `GET /health` returns `{ok, protocol_version, pid, started_at, runs}`;
 `protocol_version` starts at `1`. `GET /?run=<id>` renders the page and `GET /snapshot?run=<id>`
 returns that Run's snapshot; an unknown Run is an error, never another Run's data.
+
+**HTTP surface and Run isolation.** The service exposes exactly three GET routes and no write API:
+
+| Route | Answer |
+| --- | --- |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs}`: the service plus the registered Run IDs, never their state paths |
+| `GET /?run=<id>` | the page: a Run list built from `/health` plus the selected Run's tasks, workers, deliveries, events, freshness and health projection, and the "warning is not a start failure" notice |
+| `GET /snapshot?run=<id>` | that Run's read-only snapshot, and nothing from any other Run |
+
+Run isolation is one descriptor lookup per request: each snapshot reads only the selected Run's
+`progress.json` through the shared state-path validator, responses name Run IDs and never a state
+path, and cross-Run access is limited to the Run ID list in `/health` and on the page. A descriptor
+that cannot be read, or whose `progress.json` is missing or corrupt, answers `503` with
+`Snapshot unavailable` and a Run list entry marked unavailable; the descriptor is never deleted and
+never repaired, and an unknown Run ID answers `404`. The page keeps the Run list when one Run is
+unavailable instead of silently showing another Run's data. The service keeps no per-Run state, so
+it is restartable: `progress.json` remains the source of truth and an outage is only a gap.
+
+**Security boundary.** The service binds `127.0.0.1` (IPv4) only and never a wildcard or IPv6
+address; every route is GET only and any other method answers `405` with `Allow: GET`, including
+`POST` to a top-level form. Every response, errors included, carries
+`Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`. The page loads no external asset; only
+same-origin JSON is fetched. The `Host` header must be `localhost` or `127.0.0.1`, optionally with
+the serving port, otherwise the request is refused with `403` before routing — that is the
+DNS-rebinding guard, so a rebound page cannot read the dashboard. The service reads only registered
+`state_path`s: it never maps a request path to a file, never serves file contents, never accepts a
+path as input, and path traversal, symlinked state paths and repository ancestors are refused by the
+shared validator. `$ORCA_PROGRESS_HOME` stays `0700` and descriptors carry no credentials. This is a
+single-user, local-trust service: it has no authentication and must not be exposed or forwarded.
 
 **Compatibility and fallback.** An old service without `/health` is legacy: never register with it,
 never kill it. Any `serve --state` fallback (lock timeout, legacy/incompatible/hung service, viewer

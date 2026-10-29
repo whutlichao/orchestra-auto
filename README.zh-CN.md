@@ -379,5 +379,12 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 
 页面不提供 artifact 文件正文；HTTP(S) 引用可点击，其他引用仅文本。本地访问可信，不要转发端口。
 只观察显式提交的事实，查询错误保留最后有效快照并显示错误横幅。
+
+单例服务只在 `127.0.0.1` 上暴露三条只读 GET 路由：`/health`（服务状态与已注册 Run ID）、
+`/?run=<id>`（页面，列出所有已注册 Run 并渲染所选 Run）与 `/snapshot?run=<id>`（仅该 Run 的快照）。
+跨 Run 访问仅限 Run 列表；响应只出现 Run ID，绝不出现状态路径；不可读的 Run 标为不可用且绝不删除。
+所有响应只支持 GET，并带 CSP、`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，
+`Host` 头必须是 `localhost` 或 `127.0.0.1`。`serve --state` 仍用于 DEMO、测试与单 Run 查看，
+且从不注册。
 完整 JSON 命令、嵌套 task/dispatch/attempt 上报、警告后继续包装、恢复与派发/问答/验收/合并/
 tracker/收尾各节点责任见[协议与流程责任](skills/orchestra-auto-zh/references/progress-dashboard.md)。

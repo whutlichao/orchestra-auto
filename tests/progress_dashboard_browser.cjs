@@ -1,12 +1,23 @@
 /* Optional real-browser regression check. Runtime packages remain dependency-free.
- * PLAYWRIGHT_MODULE=/external/node_modules/playwright node tests/progress_dashboard_browser.cjs URL EVIDENCE_DIR
+ *
+ * This script is NOT the mandatory gate: the mandatory gate is the CLI/HTTP contract in
+ * tests/test_progress_dashboard.py. Run this only in an environment that already provides
+ * Playwright and Chromium; when they are absent the script is simply not run.
+ *
+ * It drives one singleton service with TWO registered Runs:
+ * PLAYWRIGHT_MODULE=/external/node_modules/playwright \
+ *   node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=alpha&second=beta' EVIDENCE_DIR
  */
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const url = process.argv[2] || "http://127.0.0.1:8766/";
+const url =
+  process.argv[2] || "http://127.0.0.1:8766/?run=alpha&second=beta";
 const output = process.argv[3];
+const base = new URL(url);
+const SELECTED = base.searchParams.get("run") || "alpha";
+const SECOND = base.searchParams.get("second") || "beta";
 const task = (id, status, dependencies = [], extra = {}) => ({
   id,
   title: id,
@@ -14,9 +25,9 @@ const task = (id, status, dependencies = [], extra = {}) => ({
   dependencies,
   ...extra,
 });
-const fixture = () => ({
+const fixture = (runId = "browser-run") => ({
   run: {
-    id: "browser-run",
+    id: runId,
     title: "可验证的运行目标 / verified objective",
     mode: "DEMO",
     status: "active",
@@ -111,7 +122,7 @@ let browser;
     }
     results.push(`viewport ${width}x${height}: no page overflow`);
   }
-  let snapshot = fixture(),
+  let snapshot = fixture(SELECTED),
     response = "valid";
   await page.route("**/snapshot*", async (route) => {
     if (response === "error")
@@ -125,11 +136,37 @@ let browser;
       body: JSON.stringify(snapshot),
     });
   });
+  // The singleton lists every registered Run; only the selected one is rendered.
+  await page.route("**/health", async (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        protocol_version: 1,
+        pid: 1,
+        started_at: "2026-01-01T00:00:00Z",
+        runs: [SELECTED, SECOND],
+      }),
+    }),
+  );
   async function refresh() {
     await page.locator("#refresh").click();
     await page.waitForTimeout(180);
   }
   await refresh();
+  assert.equal(await page.locator(".run-chip").count(), 2);
+  assert.equal(
+    await page.locator('.run-chip[aria-current="true"]').innerText(),
+    SELECTED,
+  );
+  assert.match(
+    await page.locator("#notice").innerText(),
+    /不是启动失败[\s\S]*not a start failure/,
+  );
+  assert.match(
+    await page.locator(".run-meta").innerText(),
+    new RegExp("Run " + SELECTED),
+  );
   assert.equal(
     await page
       .locator(".step .count")
@@ -235,7 +272,7 @@ let browser;
   assert.match(await page.locator("#health").innerText(), /最后有效快照/);
   response = "valid";
   snapshot = {
-    ...fixture(),
+    ...fixture(SELECTED),
     tasks: { bad: { id: "bad", dependencies: null } },
   };
   await refresh();
@@ -247,7 +284,7 @@ let browser;
   results.push(
     "HTTP and malformed snapshots preserve complete last valid view",
   );
-  snapshot = fixture();
+  snapshot = fixture(SELECTED);
   snapshot.tasks = {};
   snapshot.workers = {};
   snapshot.deliveries = {};
@@ -283,7 +320,7 @@ let browser;
   results.push(
     "empty and unknown honest; run.phase never backfills workflow facts; unknown dependency stays visible",
   );
-  snapshot = fixture();
+  snapshot = fixture(SELECTED);
   snapshot.tasks = {
     bad: task("bad", "failed"),
     held: task("held", "blocked", [], {
@@ -322,7 +359,7 @@ let browser;
   results.push(
     "attention covers blocked, failed and lost records without inventing others",
   );
-  snapshot = fixture();
+  snapshot = fixture(SELECTED);
   snapshot.tasks = { a: task("a", "accepted"), b: task("b", "accepted") };
   snapshot.deliveries = {
     a: {
@@ -351,7 +388,7 @@ let browser;
   results.push(
     "all accepted is not merged; merged is not tracker closed; false and null stay distinct",
   );
-  snapshot = fixture();
+  snapshot = fixture(SELECTED);
   snapshot.events = [
     {
       at: "2026-01-01T12:00:00Z",
@@ -385,7 +422,7 @@ let browser;
     "older events retain self-report source, entity and safe evidence after six newer events",
   );
   const attack = '<img src=x onerror="window.injected=true">';
-  snapshot = fixture();
+  snapshot = fixture(SELECTED);
   snapshot.tasks.a.title = attack + "长标题".repeat(100);
   snapshot.tasks.a.dependencies = ["b", "missing"];
   snapshot.tasks.b.dependencies = ["a"];
@@ -449,7 +486,7 @@ let browser;
     "cycles, missing nodes, long titles and 90 tasks stay scrollable; graph scroll survives refresh; malicious HTML/URLs stay text",
   );
   assert.deepEqual(
-    requests.filter((requestUrl) => !requestUrl.startsWith(url)),
+    requests.filter((requestUrl) => !requestUrl.startsWith(base.origin + "/")),
     [],
     "no remote requests",
   );
