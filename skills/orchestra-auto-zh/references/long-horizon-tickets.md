@@ -114,6 +114,22 @@ implementer 若是 Orca 嵌套 worker，必须遵守 `nested_worker_depth_exceed
 分支缺失、测试红、某张票的工作不在分支里、或 head 过期时，把发现打回顶层 worker。协调者不进入
 嵌套 worktree，也不自己补完一张票。
 
+### 4.1 收尾、单向门 pending 与 release
+
+长程票图通过[门禁验收](gate-acceptance.md) §6.7 的十行收尾清单关闭，而不是凭记忆：
+`scripts/closeout.py plan` 读权威事实，`reconcile` 再读权威并持久化 `kind: closeout` 记录。
+本路径额外要单独说明两点。
+
+**单向门 pending 在对账前一直可见。** 单向门集成 PR 交人类合并，因此记录一条 `pending` 台账项
+（`pending_type: human_merge`）。它无需 coordinator turn 就可见——`ledger.py show --run-id
+"$RUN" --kind pending` 与看板——下一次 turn 再对账 PR host、merge SHA、main 同步与 tracker。
+PR 开着时票保持开启，任何状态都不得声称相反。本地 main 未同步时清单第 5 行暂停后续合并。
+
+**release 在结算与持久收尾之后，绝不在之前。** 仅凭已结算 Dispatch 不能授权 release，健康的
+Run 也不能。release 需要持久化的收尾记录——成功时是验收加 dispatch → task → attempt →
+worktree 映射，失败时是分类加证据。`release_unknown` 先读 `worker-show` 与 `worker-list`，
+未结算的 worker 绝不 release。写不成的收尾记录同时阻断 release 与宣告，直到写入修复。
+
 ## 5. 门感知合并
 
 worker 用 `pr` skill 写 PR 正文，包含 `Door`、`Blast Radius` 与证据。协调者随后用真实 diff

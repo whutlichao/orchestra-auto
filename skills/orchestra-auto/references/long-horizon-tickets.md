@@ -133,6 +133,27 @@ Check:
 On a missing branch, a red test, a ticket whose work is absent or a stale head, send the finding back
 to the top-level worker. The coordinator does not enter nested worktrees or finish a ticket itself.
 
+### 4.1 Closeout, pending one-way doors and release
+
+A long-horizon map closes through the ten-row closeout checklist in
+[gate acceptance](gate-acceptance.md) §6.7, not from memory: `scripts/closeout.py plan` over
+authority facts, then `reconcile` to read authority and persist the `kind: closeout` record.
+The two facts this path adds are worth stating on their own.
+
+**A pending one-way door stays visible until it is reconciled.** A one-way integration PR is
+left open for a human, so a `pending` ledger item records it (`pending_type: human_merge`). It
+is visible without a coordinator turn — `ledger.py show --run-id "$RUN" --kind pending` and the
+dashboard — and the next turn reconciles it against the PR host, the merge SHA, main sync and
+the tracker. The tickets stay open while the PR is open; no status may claim otherwise. The
+checklist's row 5 pauses later merges while local main is unsynced.
+
+**Release comes after settlement and a durable closeout, never before.** A settled Dispatch
+alone does not authorize release, and neither does a healthy Run. Release needs the persisted
+closeout record — acceptance plus the dispatch → task → attempt → worktree mapping on success,
+a classification plus evidence on failure. `release_unknown` reads `worker-show` and
+`worker-list` first, and an unsettled worker is never released. A closeout record that could not
+be written blocks both the release and the declaration until the write is repaired.
+
 ## 5. Door-aware merge
 
 The worker writes the PR body with the `pr` skill, including `Door`, `Blast Radius` and evidence.
