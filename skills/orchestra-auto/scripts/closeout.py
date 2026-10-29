@@ -71,7 +71,8 @@ ROWS = (
 )
 NON_REPEATABLE = tuple(item["id"] for item in ROWS if not item["repeatable"])
 
-STATUSES = ("ok", "blocked", "pending", "gap", "unknown")
+#: The statuses a row can take. ``gap`` never blocks: it is how row 9 records a
+#: non-authoritative projection.
 BLOCKING_STATUSES = ("blocked", "pending", "unknown")
 
 #: A pending item explains a closeout that is not ready while only these rows block.
