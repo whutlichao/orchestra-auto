@@ -1123,12 +1123,14 @@ class WakeObservationTests(InboxLoopCase):
                          "a non-binding failure must not be reclassified as binding loss")
 
     def test_an_install_refusal_carries_no_observation_and_touches_no_state(self):
-        process, _ = self.start([batch("delivery_owned", [heartbeat()])])
+        process, _ = self.start([batch("delivery_owned", [heartbeat()])],
+                                env_extra={"BACKOFF_SECONDS": "30",
+                                           "PENDING_BACKOFF_SECONDS": "30"})
         try:
             self.wait_for(lambda: (self.state / "binding.json").exists()
                           and (self.state / "binding.json").read_text() != "",
                           what="the binding")
-            before = owner_state_snapshot(self.state)
+            before = stable_owner_snapshot(self.state)
             env = dict(os.environ)
             env["ORCA_CLI_COMMAND"] = str(
                 FakeOrca(self.tmp / "fake-refusal-obs", []).path)
@@ -1795,6 +1797,37 @@ class LegacyStatusCompatibilityTests(unittest.TestCase):
         self.assertIn("deprecat", result.stderr.lower())
 
 
+def stable_owner_snapshot(state, timeout=15.0):
+    """The owner's durable files once the loop has settled between cycles.
+
+    A refusal must not change the owner's files, but the owner loop rewrites ``state.json``
+    while it runs — comparing against a snapshot taken mid-cycle would fail for a reason that
+    has nothing to do with the refusal. Waiting for a steady phase (the loop is in a CLI
+    block or a long pause) and then for three consecutive identical snapshots is how the
+    comparison is about the refusal alone.
+    """
+    steady = ("checking", "waiting", "backoff")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            phase = json.loads((state / "state.json").read_text()).get("phase")
+        except (OSError, ValueError):
+            phase = None
+        if phase in steady:
+            break
+        time.sleep(0.05)
+    previous = owner_state_snapshot(state)
+    same = 0
+    while time.time() < deadline:
+        time.sleep(0.2)
+        current = owner_state_snapshot(state)
+        same = same + 1 if current == previous else 0
+        previous = current
+        if same >= 2:
+            return current
+    raise AssertionError("the owner loop never stopped rewriting its state")
+
+
 class InstallRefusalInvariantTests(InboxLoopCase):
     """The install command's exit 2 is a separate contract: a refusal changes nothing.
 
@@ -1802,15 +1835,21 @@ class InstallRefusalInvariantTests(InboxLoopCase):
     leave every one of them byte for byte as it was; ``watch.log`` is deliberately excluded,
     because the refusal's own evidence line is appended there by the documented rule that a
     refusal never overwrites the state file of the loop that owns the directory.
+
+    The owner loop is started with a long backoff so it is between cycles while the refusal
+    runs: its own end-of-cycle rewrite is not evidence about the refusal.
     """
 
+    QUIET = {"BACKOFF_SECONDS": "30", "PENDING_BACKOFF_SECONDS": "30"}
+
     def test_a_refused_second_install_leaves_the_owner_state_byte_identical(self):
-        process, fake = self.start([batch("delivery_owned", [heartbeat()])])
+        process, fake = self.start([batch("delivery_owned", [heartbeat()])],
+                                   env_extra=self.QUIET)
         try:
             self.wait_for(lambda: "delivery_owned" in fake.acks(), what="the heartbeat ack")
             self.wait_for(lambda: (self.state / "receipts.jsonl").exists(),
                           what="the receipt log")
-            before = owner_state_snapshot(self.state)
+            before = stable_owner_snapshot(self.state)
             env = dict(os.environ)
             env["ORCA_CLI_COMMAND"] = str(fake.path)
             occupied = subprocess.run(
@@ -1829,12 +1868,13 @@ class InstallRefusalInvariantTests(InboxLoopCase):
             self.stop(process)
 
     def test_a_binding_mismatch_refusal_changes_no_owner_file(self):
-        process, _ = self.start([batch("delivery_owned", [heartbeat()])])
+        process, _ = self.start([batch("delivery_owned", [heartbeat()])],
+                                env_extra=self.QUIET)
         try:
             self.wait_for(lambda: (self.state / "binding.json").exists()
                           and (self.state / "binding.json").read_text() != "",
                           what="the binding")
-            before = owner_state_snapshot(self.state)
+            before = stable_owner_snapshot(self.state)
             env = dict(os.environ)
             env["ORCA_CLI_COMMAND"] = str(
                 FakeOrca(self.tmp / "fake-rebind-invariant", []).path)
@@ -2217,7 +2257,7 @@ class BothLanguageVariantsTests(unittest.TestCase):
                      "directory_mtime", "loop_state", "status_arguments",
                      "progress_block", "note_empty_wait", "classify_binding_loss",
                      "record_binding_loss", "wake_observation", "stage_changes",
-                     "write_local"):
+                     "write_local", "empty_wait_progress"):
             self.assertTrue(hasattr(english, name), f"missing {name}")
             self.assertTrue(hasattr(chinese, name), f"missing {name}")
 
