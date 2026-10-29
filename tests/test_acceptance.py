@@ -774,8 +774,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(records[0]["record_id"], failed["record_id"])
 
     def test_a_retry_of_the_same_record_is_idempotent(self):
-        first = self.record()
-        second = self.record()
+        payload = acceptance()
+        first = self.record(payload)
+        second = self.record(payload)
         self.assertEqual(first["record_id"], second["record_id"])
         self.assertEqual(len(self.ledger_records()), 1)
 
