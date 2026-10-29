@@ -4,7 +4,8 @@
 need to view progress or the reproducible offline demonstration.
 
 Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v2](#protocol-v2),
-[Workflow ownership](#workflow-ownership), [Recovery and boundaries](#recovery-and-boundaries).
+[Singleton registry](#singleton-dashboard-registry), [Workflow ownership](#workflow-ownership),
+[Recovery and boundaries](#recovery-and-boundaries).
 
 ## Operation
 
@@ -34,12 +35,13 @@ python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; co
 Replace `PROGRESS` with the absolute path inside the currently installed copy of this skill. Before
 the first dispatch, run the init and open commands above with the real Run ID, a new audit directory
 outside the repository and the actual target repository; do not use the example ID or paths. `open`
-selects a free port, starts the read-only server in the background and attempts to open the default
-browser, printing its URL and PID as JSON; give the URL to the user. If the browser cannot open, tell
-the user to visit the printed URL manually. The page refreshes every three seconds; keep recording at
+registers the Run with the per-user dashboard service, starts that single service when none is
+running, and attempts to open the default browser, printing `{url, pid, degraded, reason,
+browser_opened}` as JSON; give the URL to the user. If the browser cannot open, tell the user to
+visit the printed URL manually. The page refreshes every three seconds; keep recording at
 the checkpoints below, and recording works whether or not the server is running. Leave the dashboard
-available to inspect the final state; stop it with `kill PID` on the printed PID, which leaves the
-snapshot intact. `show` prints the current snapshot without starting a server. `serve --port 0`
+available to inspect the final state; stop it with `kill PID` on the printed singleton PID, which leaves every
+snapshot intact; the next `open` starts a new service and re-registers the Run. `show` prints the current snapshot without starting a server. `serve --port 0`
 selects and prints an available address. `--stale-seconds 300` controls freshness;
 unknown timestamps are unknown, old observations are stale, and a coordinator-recorded `lost`
 lifecycle is displayed independently. Fresh activity does not mean meaningful progress.
@@ -216,6 +218,66 @@ progress_record worker --event-id report-1 --source worker --data '{"id":"w1-a1"
 progress_record delivery --event-id accept-1 --effective --data '{"task_id":"t1","implemented":true,"evidence":["acceptance-report.txt"]}'
 progress_record end --event-id end-1 --data '{"status":"paused","phase":"waiting","summary":"Awaiting integration"}'
 ```
+
+## Singleton dashboard registry
+
+One read-only dashboard service per user; `open` is the only command that starts or adopts it.
+`$ORCA_PROGRESS_HOME` (default `~/.orca/progress`, directory mode `0700`, outside every repository,
+override with `--registry`) holds:
+
+```text
+$ORCA_PROGRESS_HOME
+├── server.json          # {pid, port, protocol_version, started_at, binary_version}
+├── startup.lock         # flock held only during startup
+├── starting.json        # {pid, port}: the startup crash window
+└── runs/
+    └── run_xxx.json     # {run_id, state_path, registered_at, label}
+```
+
+`progress.json` stays the persistent source of truth; the service is stateless and its loss is a gap,
+never a Run event. Registry descriptors hold Run IDs, state paths, registration times and optional
+labels only: no credentials, no message or terminal content. `$ORCA_PROGRESS_HOME` must not sit inside
+a repository, and the recorder and the registry share one state-path validator (symlinks and
+repository paths are refused for both).
+
+**Startup algorithm.** Under `flock(startup.lock)` with a 10 s timeout (`--startup-timeout`):
+
+1. Read `server.json` and probe `GET /health` with a 500 ms timeout.
+2. Healthy and protocol-compatible: register the Run with it and open `/?run=<id>`. A second `open`
+   for an already registered Run updates its descriptor instead of creating a duplicate.
+3. Legacy (no `/health`) or incompatible (`protocol_version` below the client minimum): never send
+   it a kill or a delete; fall back and record a gap, and tell the user to stop the old service.
+4. Timeout or 5xx: treat the service as hung; never kill or delete it; fall back and record a gap.
+5. Connection refused: the recorded service is definitely gone; delete only `server.json` and start
+   a new service.
+6. Otherwise start `serve --registry $ORCA_PROGRESS_HOME --port 0`, write `starting.json` with the
+   child pid and port, and wait up to 5 s for `/health`; then write `server.json` atomically (temp,
+   fsync, rename, directory fsync), register the Run and remove `starting.json`.
+
+A later caller that finds `starting.json` probes it and adopts a healthy child, recording it in
+`server.json`; it removes `starting.json` only when the recorded child is definitely dead. A
+crash-window child that never becomes ready is stopped by the caller that started it. A startup-lock
+timeout is degraded: no second service is ever started.
+
+**Interfaces.** The script exposes `registry.register(run)`, `registry.discover()`,
+`registry.probe()` and `registry.open(run) -> {url, pid, degraded, reason}`; the HTTP layer only
+renders read-only snapshots. `GET /health` returns `{ok, protocol_version, pid, started_at, runs}`;
+`protocol_version` starts at `1`. `GET /?run=<id>` renders the page and `GET /snapshot?run=<id>`
+returns that Run's snapshot; an unknown Run is an error, never another Run's data.
+
+**Compatibility and fallback.** An old service without `/health` is legacy: never register with it,
+never kill it. Any `serve --state` fallback (lock timeout, legacy/incompatible/hung service, viewer
+failure, DEMO) is unregistered, reports `degraded: true` with a `reason`, and is exempt from the
+singleton invariant. `serve --state` remains for DEMO, tests and single-Run use and never writes
+`server.json`.
+
+**Exit codes and budget.** With `--json`, `open` exits `0` on success and on an intentional
+degradation (including a viewer that cannot start) and `1` on caller input; without `--json` the
+legacy codes remain and a viewer that cannot start exits `1`. `open` is not on the dispatch critical
+path: call it after the dispatch decision or as a best-effort post-step with a 15 s budget and
+continue on timeout. Every registry or startup failure records a ledger gap and never blocks
+dispatch; no path holds the startup lock while waiting for an Orca call, and `open` makes no Orca
+call at all.
 
 ## Fixed dispatch order and record failures
 

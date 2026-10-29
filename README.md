@@ -367,10 +367,13 @@ with separate last observation and effective progress timestamps, unknown/lost/s
 estimated percentage. Recording errors warn and orchestration continues even if the viewer is down.
 
 **When it starts**: before the first dispatch of every actual orchestration Run, the coordinator
-initializes a REAL progress record in a new directory outside the repository and runs `open`. `open`
-selects a free port, starts the read-only server in the background, attempts to open the default
-browser, and prints the URL and PID as JSON. If the browser cannot open, it warns and the printed
-URL must be opened manually. If startup or recording fails, it warns and the Run continues: the
+initializes a REAL progress record in a new directory outside the repository and runs `open`. One
+read-only dashboard service runs per user under `$ORCA_PROGRESS_HOME` (default `~/.orca/progress`):
+`open` registers the Run with that singleton, starts it only when none is running or the recorded one
+is refused, attempts to open the default browser, and prints `{url, pid, degraded, reason,
+browser_opened}` as JSON. If the browser cannot open, it warns and the printed URL must be
+opened manually; a degraded result (an old or hung service, a contended startup lock) also warns and
+never blocks dispatch. If startup or recording fails, it warns and the Run continues: the
 dashboard never blocks dispatch, questions, acceptance or the single inbox receiver. Pure Q&A and
 edits to the skill do not start it. The DEMO below instead uses an explicit `serve`, which prints an
 address without opening a browser.
@@ -412,7 +415,8 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/run-examp
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-`open` prints `{"url": ..., "pid": ..., "browser_opened": ...}`: give the URL to the user. If
+`open` prints `{"url": ..., "pid": ..., "degraded": false, "reason": "", "browser_opened": ...}`:
+give the URL to the user. If
 `browser_opened` is false, tell the user to visit that URL manually. To stop the background viewer
 later, run `kill PID` with the printed PID; the snapshot remains. Record updates in another terminal,
 and recording works whether or not the viewer is running. `show` prints a snapshot without a server;
