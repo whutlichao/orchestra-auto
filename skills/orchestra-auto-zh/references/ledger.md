@@ -198,6 +198,10 @@ Task ID 可以作 join key：临时进度任务（`orca_task_id: null`）永远�
 的 turn。仅当 spec 明确携带 PROGRESS/STATE 路径时才启用 worker 自报；`source=worker` 写入永远
 不是验收证据。
 
+attempt 映射：派发结果优先使用 Orca 回执的 `attempt`；回执没有已验证的 attempt 时，记录
+`detail.attempt_source: local`，该本地计数不参与权威对账。写入时把回执 camelCase 字段转成
+snake_case，并在 `detail.raw_receipt` 保留原始回执；设计未验证的回执字段绝不当作稳定契约断言。
+
 ## 权威快照
 
 `reconcile` 把当前状态读成一份快照。每个来源要么是带行的 `ok`，要么是带原因的 `unknown`——

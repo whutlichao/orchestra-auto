@@ -224,6 +224,12 @@ missing field is `unknown`, and `unobserved` (checked, not observed) stays disti
 `state: ready` is not a started turn. Worker self-report is enabled only when the spec explicitly
 carries PROGRESS/STATE paths; `source=worker` writes are never acceptance evidence.
 
+Attempt mapping: a dispatch result uses the Orca receipt's `attempt` when present. When the receipt
+has no verified attempt, record `detail.attempt_source: local` and exclude the local count from
+authoritative reconciliation. Convert receipt camelCase fields to snake_case on write and preserve
+the raw receipt in `detail.raw_receipt`; a receipt field the design has not verified is never
+asserted as a stable contract.
+
 ## Authority snapshot
 
 `reconcile` reads the current state into one snapshot. Every source is either `ok` with
