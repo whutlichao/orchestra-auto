@@ -1,6 +1,6 @@
 # Orca 编排稳定性设计
 
-Ticket: task_e468f8fedab8 · Run run_40d969cf37a7 · Dispatch ctx_d192209f3f41
+Ticket: the spec ticket in the tracker · Run: recorded in the out-of-repo ledger · Dispatch: recorded in the out-of-repo ledger
 Base: main bf96405
 状态：设计定稿；决策记录见 §6；本票 Answer 在仓库外台账（A4=C），工作树只放本设计文档。
 
@@ -602,7 +602,7 @@ orchestra-auto 把编排安全规则写成了大量散文，但缺少与副作�
 
 ### 6.2 第 1 轮
 
-coordinator 回答（message `msg_8f657f803589`，2026-10-29T09:29Z）：
+coordinator 回答（message id 记录在仓库外台账，2026-10-29T09:29Z）：
 
 - **A1 A**：`docs/design/orchestration-stability.md`，本文件结构；仓库无 effort 模板的偏差在 §9.1 报告。
 - **A2 A**：中文设计文档；后续实施票同步两个语言包。

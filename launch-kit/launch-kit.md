@@ -250,7 +250,7 @@ Do **not** write a submission post — there is no submission channel. What a ma
 > to wake the coordinator, decisions escalated to a human, gates by ticket type, evidence preserved
 > before any revert, bounded retries.
 >
-> 30 scenarios per language in `evals/`, plus real behaviour tests for the inbox script (atomic
+> 38 scenarios per language in `evals/`, plus real behaviour tests for the inbox script (atomic
 > writes, replay safety, ack discipline, the wake line, loud failure). MIT. Feedback welcome.
 
 ### 6.4 X / Twitter
@@ -325,7 +325,7 @@ subreddits punish launch posts and reward "here is what went wrong for me".
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
 > One small standard-library Python script handles the inbox and ends the process to wake the
-> coordinator when a real batch lands. The rest is Markdown plus 20 prompt-level scenarios per
+> coordinator when a real batch lands. The rest is Markdown plus 38 prompt-level scenarios per
 > language so the reasoning is testable, and real behaviour tests for the script.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether

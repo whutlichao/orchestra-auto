@@ -2,7 +2,7 @@
 
 **[English](README.md) · [简体中文](README.zh-CN.md)**
 
-[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-90%20passing%2C%201%20skipped-brightgreen)](#verification) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-unittest%20discover-blue)](#verification) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 An Orca best practice built around [Matt Pocock's engineering skills](https://github.com/mattpocock/skills). The chain is his. Supervision, isolation, gates and merging are [Orca](https://www.onorca.dev/)'s.
 
@@ -197,8 +197,9 @@ command does not match the public documentation.
 
 ## Verification
 
-The repository is checked with `python3 -m unittest discover`, which runs two suites. No network, no
-credentials, and no dependence on any particular machine:
+The repository is checked with `python3 -m unittest discover`, which runs every module under
+`tests/`. The list below is prose, not a count: a new suite is expected, and the command is what
+decides. No network, no credentials, and no dependence on any particular machine:
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -214,6 +215,16 @@ python3 -m unittest discover -s tests -v
   after a timeout. It also pins process lifetime: a CLI child never outlives the call that owns it,
   so a failing worker-state probe or a signal that lands during a nested call reaps every child the
   loop started instead of leaving one holding a waiter slot.
+- `tests/test_progress_dashboard.py` covers the progress CLI and the localhost dashboard: the
+  snapshot and registry contracts, the singleton startup lock, protocol compatibility, the
+  old-service and incompatible-service fallbacks, Run isolation, the read-only HTTP surface and its
+  security headers, and the `serve --state` DEMO path.
+- `tests/test_ledger.py`, `tests/test_preflight.py`, `tests/test_health.py`,
+  `tests/test_acceptance.py` and `tests/test_closeout.py` cover the stability modules through their
+  declared seams: the ledger's storage, reconciliation and crash-window classification; the
+  preflight receipt and its blocking decision; the pure health state machine and its transition
+  table; the acceptance record with its evidence rules and four levels; and the closeout checklist
+  with its release gate.
 - `tests/test_package_content.py` checks the package itself: parity between the two language
   variants, frontmatter validity with `name` matching the directory, every relative link resolving,
   every shipped reference being reachable and declaring its trigger, eval JSON shape and uniqueness,
@@ -221,9 +232,14 @@ python3 -m unittest discover -s tests -v
   licence, and the leak scan. A prose-contract suite pins the decisions the documents used to
   get wrong: the three dispatch checkpoints and which of them can block a dispatch, the four
   frontier states, the four acceptance levels, one authoritative Merge Danger definition, the
-  start-verification scenarios and the real eval count in this README.
+  six prose anchors, the new parity scenarios, the start-verification scenarios and the real
+  counts in this README. The anchor test **checks anchors, not full semantic equivalence**: it looks
+  for the six clauses' wording in both bundles, and does not (and cannot) prove the paragraphs
+  between them still mean the same thing, so the two-axis review still reads the diff.
 
-The recorded result is **90 OK (1 skipped)**. This is the primary structural and behavioral gate.
+The suite's own total is **not recorded here on purpose**: a number would rot on the next test that
+lands. The command above is the gate, and its exit status is the answer. This ticket's run is
+reported in its Answer, not in this file.
 
 Individual check commands, if you want them directly:
 
@@ -246,10 +262,12 @@ Compared with pre-thin commit `fbb09b9`, the entrypoint sizes are:
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 20,287 (−32.8%) | 7,552 → 5,071 |
-| Chinese | 24,359 → 15,963 (−34.5%) | 6,089 → 3,990 |
+| English | 30,208 → 22,442 (−25.7%) | 7,552 → 5,610 |
+| Chinese | 24,359 → 19,112 (−21.5%) | 6,089 → 4,778 |
 
-The token figures use **bytes ÷ 4**, not a tokenizer measurement. Total package bytes barely change
+The right-hand column is the file as it ships today, and a test recomputes it from the bundle, so
+this table cannot drift from the files it describes. The token figures use **bytes ÷ 4**, not a
+tokenizer measurement. Total package bytes barely change
 because the detail remains in the references. If a turn loads both new references, activation
 savings are not whole-turn savings.
 
@@ -257,8 +275,12 @@ savings are not whole-turn savings.
 
 `LeakScanTests` in `tests/test_package_content.py` is the automated half of the disclosure check. It
 scans every published text file for the shapes that must never ship: absolute home-directory paths, a
-specific profile database filename, credential-style variable names, and token literals. Four
-properties matter as much as the patterns:
+specific profile database filename, credential-style variable names, token literals, and **internal
+Run/Task/Dispatch/message identifiers** — a `run`, `task`, `ctx`, `msg`, `request`, `delivery` or
+`attempt` prefix followed by eight or more hex characters. The last one matters because such an id
+identifies one particular operation, means nothing to a reader outside it, and cannot be checked by
+anyone — template placeholders like `run_xxx` deliberately do not match, since they carry no hex.
+Five properties matter as much as the patterns:
 
 1. **No private literal is written down.** The scanner holds generic *shapes*, never the exact
    private repository name, account name or credential variable name — putting those in a published
@@ -279,6 +301,10 @@ properties matter as much as the patterns:
    case asserts the credential shape matches realistic variable names (all-caps with a `_TOKEN` or
    `_API_KEY` suffix) and does not match ordinary prose, so replacing literal names with a shape
    cannot silently turn the check into a no-op.
+5. **The identifier pattern is tested both ways.** A `test_internal_id_pattern_matches_a_real_id_but_not_a_placeholder`
+   case asserts that a real minted id is caught while the `xxx` placeholder, an angle-bracket
+   placeholder and a short human name are not, so the pattern cannot widen into a false-positive
+   generator that people switch off.
 
 Two manual checks belong beside it, and neither can be automated from inside the repository:
 
@@ -289,12 +315,19 @@ Two manual checks belong beside it, and neither can be automated from inside the
 
 ## Evals
 
-Each language variant ships an `evals/evals.json` with 31 prompt-level scenarios covering channel
+Each language variant ships an `evals/evals.json` with 38 prompt-level scenarios covering channel
 routing, worker-slot resolution, start verification (including `turnStart: observed`, an
 unsupported receipt, and a worker with no terminal), gate choice, review arrangement, send-back
 judgement, decision classification, escalation, the merge exceptions and the wake-then-reinstall
 contract. A scenario that needs a filesystem path supplies a self-contained `SKILLS_ROOT` /
 `PRE_SKILL` fixture, so no scenario asks the model to invent a real machine path.
+
+The last seven scenarios cover the stability workstreams: crash-window reconciliation, reinstall
+with unacked batches, concurrent singleton startup, old or incompatible dashboard fallback, a
+dashboard failure that does not block dispatch, revert/reopen closeout, and binding loss.
+**Crash-window reconciliation is one scenario that names all three windows W1/W2/W3**, so the total
+is 31 baseline + 7 = 38 rather than 40. `tests/test_package_content.py` derives the total from the
+files and asserts it, and a scenario never claims a test ran: a prompt cannot run one.
 
 These are **scenario checks, not end-to-end proof**: they show whether an agent that has read the
 skill reasons the way the skill intends. They do not prove that orchestration works against a live
@@ -318,7 +351,7 @@ without leaking exactly the data this repository is careful to keep out, so the 
 ├── skills/
 │   ├── orchestra-auto/         English bundle
 │   │   ├── SKILL.md            routing and the core constraints
-│   │   ├── references/         conditionally-read detail, twelve files
+│   │   ├── references/         conditionally-read detail, sixteen files
 │   │   ├── scripts/            the optional inbox loop
 │   │   ├── evals/evals.json    prompt-level scenarios
 │   │   └── eval.yaml           optional cases for external skill runners
