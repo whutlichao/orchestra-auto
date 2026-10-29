@@ -36,11 +36,15 @@ SCRIPT_FILES = (
     "inbox-loop.py",
     "inbox-loop.sh",
     "ledger.py",
+    "preflight.py",
     "progress-demo.py",
     "progress.html",
     "progress.py",
 )
-PYTHON_SCRIPTS = ("health.py", "inbox-loop.py", "ledger.py", "progress-demo.py", "progress.py")
+PYTHON_SCRIPTS = (
+    "health.py", "inbox-loop.py", "ledger.py", "preflight.py", "progress-demo.py",
+    "progress.py",
+)
 
 REFERENCE_FILES = (
     "dispatch-loop.md",
@@ -655,6 +659,62 @@ class ContractRegressionTests(unittest.TestCase):
             for phrase in expected["exemption"]:
                 self.assertIn(phrase, squash(before),
                               f"{name}: the review exemption lost its condition {phrase!r}")
+
+    def test_dispatch_preflight_documents_the_receipt_contract(self):
+        """A receipt item the reference never describes can drift from the sheet.
+
+        The machine anchors below are the same tokens ``preflight.py`` emits: the twelve
+        tick-line ids and classes, the independent ``live-settings`` item, the receipt
+        fields, and the three post-receipt observations. The post-receipt observations
+        must sit in §4.0.2, not §4.0.1: they are ledger observations, never pre-dispatch
+        gates.
+        """
+        tokens = (
+            "kind: preflight",
+            "`live-settings`",
+            "`guide-freshness`",
+            "`cli-app-up`",
+            "`cli-command-surface`",
+            "`baseline-source-commit`",
+            "mechanical",
+            "judgment",
+            "blocking",
+            "overrides",
+            "`by`",
+            "`reason`",
+            "post_dispatch",
+            "version-scoped",
+            "1.4.244",
+            "2026-10-29",
+        )
+        post_dispatch_tokens = (
+            "`review-exemption-recheck`",
+            "`dashboard-backfill`",
+            "`inbox-health`",
+        )
+        for name in SKILL_NAMES:
+            _entrypoint, references = self.corpus(name)
+            text = references["dispatch-preflight.md"]
+            flat = squash(text)
+            for token in tokens:
+                self.assertIn(token, flat, f"{name}: preflight receipt lost {token!r}")
+            sections = markdown_sections(text)
+            before = find_section(sections, "4.0.1", name)
+            after = find_section(sections, "4.0.2", name)
+            for token in post_dispatch_tokens:
+                self.assertIn(token, after,
+                              f"{name}: §4.0.2 lost the post-receipt observation {token!r}")
+                self.assertNotIn(token, before,
+                                  f"{name}: {token!r} must not be a pre-dispatch gate")
+            self.assertEqual(
+                len([line for line in before.splitlines() if line.startswith("- [ ]")]),
+                12,
+                f"{name}: the tick sheet must keep exactly twelve lines",
+            )
+            self.assertNotIn(
+                "`live-settings`", before,
+                f"{name}: live-settings is an independent blocking item, not a tick line",
+            )
 
     def test_wayfinder_frontier_is_not_completion(self):
         """An empty frontier has three causes; only one of them finishes the stage."""
