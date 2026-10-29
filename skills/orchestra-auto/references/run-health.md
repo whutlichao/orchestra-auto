@@ -8,6 +8,18 @@ turn rebuilds the state from the ledger.
 Health answers exactly one question: **what can this Run prove right now?** It never answers
 "is the work good?" — that is acceptance — and it never authorizes a release.
 
+## Contents
+
+- [The five states](#the-five-states)
+- [Signals and windows](#signals-and-windows)
+- [The observation the inbox loop mounts](#the-observation-the-inbox-loop-mounts)
+- [Stall detection](#stall-detection)
+- [Binding loss](#binding-loss)
+- [Transitions and authorization](#transitions-and-authorization)
+- [The coordinator surface](#the-coordinator-surface)
+- [`WORKER_WATCH=0`](#worker_watch0)
+- [Reading the verdict](#reading-the-verdict)
+
 ## The five states
 
 | State | Meaning |

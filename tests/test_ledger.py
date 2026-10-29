@@ -119,7 +119,8 @@ def orca_section(**overrides):
     return section
 
 
-def authority(orca=None, pr_host=None, tracker=None, git=None, **overrides):
+def authority(orca=None, pr_host=None, tracker=None, git=None, progress=None,
+              **overrides):
     """A complete authority snapshot fixture, readable by default."""
     snapshot = {
         "schema_version": 1,
@@ -133,6 +134,8 @@ def authority(orca=None, pr_host=None, tracker=None, git=None, **overrides):
         "git": {"state": "ok", "reason": "", "ancestry": []}
         if git is None else git,
     }
+    if progress is not None:
+        snapshot["progress"] = progress
     snapshot.update(overrides)
     return snapshot
 
@@ -1295,16 +1298,125 @@ class ActionMatrixTests(LedgerTestCase):
         self.assertIn("stop_abandon_no_retry", self.decisions(report))
         self.assertNotIn("replay", self.repair_kinds(report))
 
-    def test_stop_with_a_vanished_worker_adopts_the_effect(self):
+    def test_stop_with_no_worker_row_proves_nothing(self):
+        """A vanished row is absence of proof, never proof that the stop happened."""
         intent = intent_record(action="stop", subject={"task_id": "task-1",
                                                        "dispatch_id": "dispatch-1"})
         report = self.classify([intent], authority(orca=orca_section(
             request_show={intent["request_id"]: {"state": "absent"}},
             workers={"state": "ok", "reason": "", "rows": []},
         )))
+        self.assertEqual(report["classifications"][0]["classification"], "orphan_intent")
+        self.assertIn("stop_abandon_no_retry", self.decisions(report))
+        self.assertNotIn("late_result", self.repair_kinds(report))
+
+    def test_a_completed_stop_with_no_worker_row_is_divergent(self):
+        """A result claiming a stop the authority cannot prove is a conflict."""
+        intent = intent_record(action="stop", subject={"task_id": "task-1",
+                                                       "dispatch_id": "dispatch-1"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": []},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "divergent")
+        self.assertEqual(report["classifications"][0]["conflicts"],
+                         [{"field": "effect", "ledger": "completed",
+                           "authority": "no matching effect"}])
+
+    def test_stop_with_a_terminal_worker_show_and_no_list_row_is_matched(self):
+        """worker-show is a proof source of its own: an empty list does not disprove it."""
+        intent = intent_record(action="stop", subject={"task_id": "task-1",
+                                                       "dispatch_id": "dispatch-1"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": []},
+            worker_show={"dispatch-1": {
+                "state": "ok",
+                "worker": {"task_id": "task-1", "dispatch_id": "dispatch-1",
+                           "worker_state": "stopped"}}},
+        )))
         self.assertEqual(report["classifications"][0]["classification"], "matched")
-        self.assertIn("late_result", self.repair_kinds(report))
-        self.assertNotIn("replay", self.repair_kinds(report))
+
+    def test_an_unknown_worker_show_does_not_displace_a_terminal_list_row(self):
+        """An unreadable worker-show proves nothing, but worker-list may still prove."""
+        intent = intent_record(action="stop", subject={"task_id": "task-1",
+                                                       "dispatch_id": "dispatch-1"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "",
+                     "rows": [worker_row(worker_state="stopped")]},
+            worker_show={"dispatch-1": {
+                "state": "unknown", "reason": "worker-show failed", "worker": {}}},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "matched")
+        self.assertIn("unknown", [item["state"]
+                                  for item in report["classifications"][0]["evidence"]])
+
+    def test_a_terminal_worker_show_does_not_override_a_running_list_row(self):
+        """The proof union is conservative: every readable proof row must agree.
+
+        worker-show and worker-list are both allowed proof sources, so a stop counts
+        only when every proof row is terminal; one source still saying "running" keeps
+        the claim unproven.
+        """
+        intent = intent_record(action="stop", subject={"task_id": "task-1",
+                                                       "dispatch_id": "dispatch-1"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "",
+                     "rows": [worker_row(worker_state="ready")]},
+            worker_show={"dispatch-1": {
+                "state": "ok",
+                "worker": {"task_id": "task-1", "dispatch_id": "dispatch-1",
+                           "worker_state": "stopped"}}},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "divergent")
+        self.assertEqual(report["classifications"][0]["conflicts"],
+                         [{"field": "effect", "ledger": "completed",
+                           "authority": "no matching effect"}])
+
+    def test_release_with_no_worker_row_is_unproven(self):
+        """A missing row is never a release outcome."""
+        intent = intent_record(action="release", idempotency="replay_safe",
+                               subject={"task_id": "task-1",
+                                        "dispatch_id": "dispatch-1"},
+                               detail={"expected_effect": "release"})
+        report = self.classify([intent], authority(orca=orca_section(
+            request_show={intent["request_id"]: {"state": "absent"}},
+            workers={"state": "ok", "reason": "", "rows": []},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "orphan_intent")
+        self.assertIn("unsettled_release", self.decisions(report))
+
+    def test_a_completed_release_with_no_worker_row_is_divergent(self):
+        intent = intent_record(action="release", idempotency="replay_safe",
+                               subject={"task_id": "task-1",
+                                        "dispatch_id": "dispatch-1"},
+                               detail={"expected_effect": "release"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": []},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "divergent")
+        self.assertEqual(report["classifications"][0]["conflicts"],
+                         [{"field": "effect", "ledger": "completed",
+                           "authority": "no matching effect"}])
+
+    def test_a_settled_worker_show_proves_a_release_with_an_empty_list(self):
+        """The settled flag on a worker-show row is proof, even with no list row."""
+        intent = intent_record(action="release", idempotency="replay_safe",
+                               subject={"task_id": "task-1",
+                                        "dispatch_id": "dispatch-1"},
+                               detail={"expected_effect": "release"})
+        completed = result_record(intent, state="completed")
+        report = self.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": []},
+            worker_show={"dispatch-1": {
+                "state": "ok",
+                "worker": {"task_id": "task-1", "dispatch_id": "dispatch-1",
+                           "settled": True, "worker_state": "ready"}}},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "matched")
 
     def test_pr_create_adopts_an_existing_pr_instead_of_creating_another(self):
         intent = intent_record(action="pr-create", idempotency="lookup_then_create",
@@ -1348,6 +1460,80 @@ class ActionMatrixTests(LedgerTestCase):
         self.assertEqual(report["classifications"][0]["classification"], "orphan_intent")
         self.assertEqual(report["classifications"][0]["window"], "W1")
         self.assertNotIn("replay", self.repair_kinds(report))
+
+
+class RunBindingTests(LedgerTestCase):
+    """The progress Run binding and the ledger Run must name the same Run."""
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = load_ledger(SKILL_DIRS[0])
+
+    def classify(self, progress):
+        return self.ledger.classify([], authority(progress=progress))
+
+    def test_a_matching_binding_is_not_divergent(self):
+        report = self.classify({"state": "ok", "reason": "",
+                                "orca_run_id": RUN_ID})
+        self.assertEqual(report["counts"]["divergent"], 0)
+        self.assertEqual(report["counts"]["unknown"], 0)
+
+    def test_a_null_binding_is_unbound_not_divergent(self):
+        report = self.classify({"state": "ok", "reason": "", "orca_run_id": None})
+        self.assertEqual(report["counts"]["divergent"], 0)
+
+    def test_an_absent_section_is_unbound_not_divergent(self):
+        report = self.ledger.classify([], authority())
+        self.assertEqual(report["counts"]["divergent"], 0)
+
+    def test_an_unreadable_binding_is_not_divergent(self):
+        report = self.classify({"state": "unknown", "reason": "unreadable",
+                                "orca_run_id": "run_other"})
+        self.assertEqual(report["counts"]["divergent"], 0)
+
+    def test_a_mismatched_binding_is_one_run_level_divergence(self):
+        report = self.classify({"state": "ok", "reason": "",
+                                "orca_run_id": "run_other"})
+        self.assertEqual(report["counts"]["divergent"], 1)
+        outcome = next(item for item in report["classifications"]
+                       if item["classification"] == "divergent")
+        self.assertEqual(outcome["window"], "W2")
+        self.assertEqual(outcome["action"], "progress")
+        self.assertEqual(outcome["conflicts"], [{
+            "field": "orca_run_id", "ledger": RUN_ID, "authority": "run_other"}])
+        self.assertEqual([repair["kind"] for repair in outcome["repairs"]],
+                         ["divergent_marker"])
+        self.assertEqual(outcome["decision"]["class"], "run_binding_mismatch")
+        self.assertIn("run_other", outcome["decision"]["reason"])
+
+    def test_the_divergent_marker_becomes_a_durable_observation(self):
+        """Reconciliation records the mismatch once and a repeat is a no-op."""
+        progress_path = self.root / "progress.json"
+        progress_path.write_text(json.dumps({
+            "schema_version": 2,
+            "run": {"id": "run_other", "orca_run_id": "run_other"}}))
+        ledger = self.ledger
+        progress = ledger._load_progress_file(progress_path)
+        self.assertEqual(progress, {"state": "ok", "reason": "",
+                                    "orca_run_id": "run_other"})
+        report = ledger.reconcile(RUN_ID, {"schema_version": 1, "run_id": RUN_ID,
+                                           "observed_at": utc_now(),
+                                           "progress": progress}, home=self.home)
+        markers = [record for record in self.read()
+                   if record["kind"] == "observation"
+                   and record["detail"].get("repair") == "divergent_marker"]
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["state"], "divergent")
+        self.assertEqual(markers[0]["detail"]["conflicts"], [{
+            "field": "orca_run_id", "ledger": RUN_ID, "authority": "run_other"}])
+        again = ledger.reconcile(RUN_ID, {"schema_version": 1, "run_id": RUN_ID,
+                                          "observed_at": utc_now(),
+                                          "progress": progress}, home=self.home)
+        self.assertEqual(again["closeout"], report["closeout"])
+        self.assertEqual(len([record for record in self.read()
+                              if record["kind"] == "observation"
+                              and record["detail"].get("repair")
+                              == "divergent_marker"]), 1)
 
 
 class ReconcileTests(LedgerTestCase):
@@ -1762,6 +1948,38 @@ class ReconcileCliTests(LedgerTestCase):
         closeouts = [record for record in self.read() if record["kind"] == "closeout"]
         self.assertEqual([record["record_id"] for record in closeouts],
                          [report["closeout"]["record_id"]])
+
+    def test_a_progress_file_is_compared_with_the_ledger_run(self):
+        """``--progress`` supplies the binding; a mismatch is one divergent outcome."""
+        progress_path = self.root / "progress.json"
+        progress_path.write_text(json.dumps({
+            "schema_version": 2,
+            "run": {"id": "progress-run", "orca_run_id": "run_other"}}))
+
+        result = self.reconcile(self.fake(), "--progress", str(progress_path))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["counts"]["divergent"], 1)
+        divergent = next(item for item in report["classifications"]
+                         if item["classification"] == "divergent")
+        self.assertEqual(divergent["conflicts"], [{
+            "field": "orca_run_id", "ledger": RUN_ID, "authority": "run_other"}])
+
+    def test_the_authority_file_may_carry_the_progress_section(self):
+        self.authority_path.write_text(json.dumps({
+            "pr_host": {"state": "ok", "reason": "", "pull_requests": []},
+            "tracker": {"state": "ok", "reason": "", "tickets": []},
+            "git": {"state": "ok", "reason": "", "ancestry": []},
+            "progress": {"state": "ok", "reason": "",
+                         "orca_run_id": "run_other"},
+        }))
+
+        result = self.reconcile(self.fake())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["counts"]["divergent"], 1)
 
     def test_a_second_reconcile_of_the_same_authority_does_not_duplicate_records(self):
         fake = self.fake()

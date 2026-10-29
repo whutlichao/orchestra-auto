@@ -262,7 +262,7 @@ Compared with pre-thin commit `fbb09b9`, the entrypoint sizes are:
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 22,442 (−25.7%) | 7,552 → 5,610 |
+| English | 30,208 → 22,520 (−25.5%) | 7,552 → 5,630 |
 | Chinese | 24,359 → 19,112 (−21.5%) | 6,089 → 4,778 |
 
 The right-hand column is the file as it ships today, and a test recomputes it from the bundle, so

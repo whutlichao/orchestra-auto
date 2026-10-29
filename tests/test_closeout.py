@@ -915,7 +915,7 @@ class ReconciliationTests(unittest.TestCase):
             self.ledger.append(
                 self.acceptance._ledger_record(payload, RUN_ID), home=self.home)
         self.assertGreater(
-            len(self.module._canonical(facts(
+            len(self.ledger.canonical_json(facts(
                 acceptance={"state": "ok", "reason": "", "records": [
                     {"record_id": str(uuid.uuid4()),
                      **acceptance_record(answer_location=long_answer)}

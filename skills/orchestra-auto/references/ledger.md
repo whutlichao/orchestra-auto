@@ -10,6 +10,24 @@ before an action, a preflight receipt, an acceptance or closeout record — must
 before the action runs. A failed append exits non-zero and never reports the record as
 written, so never treat an effect as authorized, or a gate as passed, on a failed write.
 
+## Contents
+
+- [Location and permissions](#location-and-permissions)
+- [Schema v1](#schema-v1)
+- [CLI](#cli)
+- [Durability and concurrency](#durability-and-concurrency)
+- [Retention](#retention)
+- [Record-failure semantics](#record-failure-semantics)
+- [Crash windows and classification](#crash-windows-and-classification)
+- [Fixed dispatch order](#fixed-dispatch-order)
+- [Action matrix](#action-matrix)
+- [Two hard rules](#two-hard-rules)
+- [Progress projection](#progress-projection)
+- [Authority snapshot](#authority-snapshot)
+- [Reconciliation report](#reconciliation-report)
+- [Reconciliation concurrency](#reconciliation-concurrency)
+- [Module seam](#module-seam)
+
 ## Location and permissions
 
 - `$ORCA_LEDGER_HOME` names the ledger home; the default is `~/.orca/ledger` under the
@@ -217,7 +235,9 @@ with action `progress` and never blocks dispatch. The next checkpoint retries wi
 
 Reconciliation and backfill writes carry `bookkeeping: true` and do not refresh `last_observed` or
 `last_effective_progress`; only a genuinely new fact refreshes them. The progress Run carries
-`orca_run_id`; a mismatch with the ledger Run is `divergent`. A provisional progress task
+`orca_run_id`; reconciliation compares it with the ledger Run, and a readable non-null mismatch
+is one run-level `divergent` outcome (W2, action `progress`) with a `divergent_marker` repair and
+a `run_binding_mismatch` decision. A provisional progress task
 (`provisional: true`, `orca_task_id: null`) is never a join key; after the receipt the Orca Task ID
 is the only join key. `turnStart: observed` is written as `observed` in one step; `unsupported` or a
 missing field is `unknown`, and `unobserved` (checked, not observed) stays distinct from `unknown`.
@@ -246,6 +266,7 @@ rows, or `unknown` with a reason — a missing adapter is never an empty success
 | `pr_host` | `{state, reason, pull_requests}` with `pr`, `head`, `merged` |
 | `tracker` | `{state, reason, tickets}` with `ticket`, `state` |
 | `git` | `{state, reason, ancestry}` with `commit`, `merged_into` |
+| `progress` | optional `{state, reason, orca_run_id}`; absent means the progress Run binding is unknown |
 
 Unknown top-level or per-source fields are rejected, so a typo cannot silently drop
 authority. `LiveAuthority` builds the snapshot: Orca read commands resolve through
@@ -283,12 +304,15 @@ records; `detail.repair` names the repair on every generated record.
 # JSON report on stdout; --human prints the readable rendering.
 python3 "$LEDGER" reconcile --run-id "$RUN"
 python3 "$LEDGER" reconcile --run-id "$RUN" --authority recorded.json --human
+# Compare the progress projection's Run binding with the ledger Run.
+python3 "$LEDGER" reconcile --run-id "$RUN" --progress progress.json
 # Never repeat a pending joinable action; record a decision instead.
 python3 "$LEDGER" reconcile --run-id "$RUN" --no-replay
 ```
 
-`--authority FILE` supplies only the `pr_host`, `tracker` and `git` sections; Orca is always
-read through the CLI. A replay is the one sanctioned mutation: it repeats the command
+`--authority FILE` supplies only the `pr_host`, `tracker` and `git` sections (and may carry a
+`progress` section); Orca is always read through the CLI. `--progress FILE` reads the progress
+snapshot's `run.orca_run_id`. A replay is the one sanctioned mutation: it repeats the command
 recorded on the intent with the same `--retry-request` id. Reconciliation never merges,
 closes a ticket, or stops, releases or retries a worker.
 

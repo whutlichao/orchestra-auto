@@ -7,6 +7,18 @@
 健康检查只回答一个问题：**这个 Run 此刻能证明什么？** 它不回答「工作做得好不好」——那是验收，
 也从不授权 release。
 
+## 目录
+
+- [五种状态](#五种状态)
+- [信号与窗口](#信号与窗口)
+- [收件器挂载的 observation](#收件器挂载的-observation)
+- [停滞检测（stall detection）](#停滞检测stall-detection)
+- [绑定丢失（binding loss）](#绑定丢失binding-loss)
+- [状态迁移与授权](#状态迁移与授权)
+- [Coordinator 面](#coordinator-面)
+- [`WORKER_WATCH=0`](#worker_watch0)
+- [怎么读结论](#怎么读结论)
+
 ## 五种状态
 
 | 状态 | 含义 |

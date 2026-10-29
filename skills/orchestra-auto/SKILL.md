@@ -286,9 +286,9 @@ gate blocked the merge.
 
 ## 8. Planning dependency initialization (on demand)
 
-Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their
-repository configuration is missing, check the planning setup. Reuse the existing tracker and docs
-configuration; confirm new governance files, labels or PRs belong to the round. A worker lands it.
+Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their repository
+configuration is missing, check the planning setup. Reuse the existing tracker and docs configuration;
+confirm new governance files, labels or PRs belong to the round. When genuinely needed, a worker lands it in an isolated worktree and the coordinator accepts it.
 
 ## 9. Failure and reporting discipline
 

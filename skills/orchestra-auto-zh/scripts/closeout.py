@@ -13,9 +13,10 @@ authoritative; the ledger is an index; ``progress.json`` is a projection and nev
 Row 9 therefore records a gap and never raises the checklist, and row 10 keeps a one-way
 door visible without a coordinator turn.
 
-Storage, locking, fsync and retention belong to ``ledger.py``; the acceptance schema and
-aggregate belong to ``acceptance.py``; the release decision consumes
-``health.authorize_release`` and never restates it. None of them is copied here.
+Storage, locking, fsync and retention belong to ``ledger.py``, which also owns the shared
+JSON encoding; the acceptance schema, aggregate, value predicates and pending-write seam
+belong to ``acceptance.py``; the release decision consumes ``health.authorize_release`` and
+never restates it. Each is imported from its owning module, not copied or reimplemented here.
 
 Only the Python standard library is used. The checklist is documented in
 ``references/gate-acceptance.md`` §6.7.
@@ -27,9 +28,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
-import re
 import sys
 import uuid
 
@@ -108,8 +107,6 @@ SECTION_STATES = ("ok", "unknown")
 RELEASE_VERIFICATION_KEYS = ("source", "at", "version_scope")
 MAPPING_KEYS = ("dispatch_id", "task_id", "attempt", "worktree")
 
-_SHA_TEXT = re.compile(r"[0-9a-fA-F]{7,64}\Z")
-
 
 def _load(name, module_name):
     """Import a sibling script by path: the shared modules are reused, not copied."""
@@ -129,38 +126,6 @@ HEALTH = _load("health.py", "orca_closeout_health")
 
 def _invalid(message):
     raise ValueError(message)
-
-
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-
-
-def _nonempty(value):
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _sha(value):
-    return isinstance(value, str) and bool(_SHA_TEXT.fullmatch(value))
-
-
-def _number(value):
-    if type(value) is int:
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
-
-
-def _utc(value):
-    if not isinstance(value, str):
-        return False
-    if not (value.endswith("Z") or value.endswith("+00:00")):
-        return False
-    try:
-        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError:
-        return False
-    return True
 
 
 def _now():
@@ -236,7 +201,7 @@ def _merge_sha(payload):
 
 def _pr_number(payload):
     pr = payload.get("pr") if isinstance(payload, dict) else None
-    return _number(pr.get("number")) if isinstance(pr, dict) else None
+    return ACCEPTANCE.as_int(pr.get("number")) if isinstance(pr, dict) else None
 
 
 def _row(index, status, detail=None, evidence=None):
@@ -295,14 +260,14 @@ def _row_two(facts, accepted):
         number = _pr_number(payload)
         accepted_sha = payload.get("accepted_sha")
         merge_sha = _merge_sha(payload)
-        if not _sha(merge_sha):
+        if not ACCEPTANCE.is_sha(merge_sha):
             problems.append(
                 "PR " + str(number) + ": levels.merged.merge_sha must be the merge "
                 "commit SHA")
-        if not _sha(accepted_sha):
+        if not ACCEPTANCE.is_sha(accepted_sha):
             problems.append("PR " + str(number) + ": the accepted SHA is missing")
         row = next((candidate for candidate in rows
-                    if _number(candidate.get("pr")) == number), None)
+                    if ACCEPTANCE.as_int(candidate.get("pr")) == number), None)
         if row is None:
             problems.append("PR host has no record for PR " + str(number))
             continue
@@ -336,7 +301,7 @@ def _row_three(facts, accepted):
         payload = item["payload"]
         accepted_sha = payload.get("accepted_sha")
         merge_sha = _merge_sha(payload)
-        if not _sha(accepted_sha) or not _sha(merge_sha):
+        if not ACCEPTANCE.is_sha(accepted_sha) or not ACCEPTANCE.is_sha(merge_sha):
             problems.append(
                 "PR " + str(_pr_number(payload)) + ": the accepted SHA and merge SHA "
                 "are needed before ancestry can be checked")
@@ -366,12 +331,12 @@ def _row_four(facts, accepted):
     main = section.get("main") if isinstance(section.get("main"), dict) else {}
     head = main.get("head")
     problems, evidence = [], []
-    if not _sha(head):
+    if not ACCEPTANCE.is_sha(head):
         problems.append("git.main.head is missing, so main cannot be checked")
     for item in accepted:
         payload = item["payload"]
         merge_sha = _merge_sha(payload)
-        if not _sha(merge_sha) or not _sha(head):
+        if not ACCEPTANCE.is_sha(merge_sha) or not ACCEPTANCE.is_sha(head):
             problems.append(
                 "PR " + str(_pr_number(payload)) + ": the merge SHA and main head are "
                 "needed before containment can be checked")
@@ -410,7 +375,7 @@ def _row_five(facts):
             + ", not on " + repr(main.get("branch")))
     if main.get("clean") is not True:
         problems.append("the local main working tree or index is not clean")
-    if not _nonempty(main.get("upstream")):
+    if not ACCEPTANCE.is_nonempty(main.get("upstream")):
         problems.append("the upstream is not explicit")
     if main.get("synced") is not True or main.get("local_head") != main.get("head"):
         problems.append(
@@ -433,7 +398,7 @@ def _row_six(facts, accepted):
         return _row(6, "unknown", {"reason": section.get("reason", "")})
     rows = _rows(section, "tickets")
     tickets = sorted({item["payload"].get("ticket") for item in accepted
-                      if _nonempty(item["payload"].get("ticket"))})
+                      if ACCEPTANCE.is_nonempty(item["payload"].get("ticket"))})
     problems, evidence, entries = [], [], []
     if not tickets:
         problems.append("no accepted ticket to reconcile against the integration branch")
@@ -458,7 +423,7 @@ def _row_seven(facts, accepted):
         return _row(7, "unknown", {"reason": section.get("reason", "")})
     rows = _rows(section, "tickets")
     tickets = sorted({item["payload"].get("ticket") for item in accepted
-                      if _nonempty(item["payload"].get("ticket"))})
+                      if ACCEPTANCE.is_nonempty(item["payload"].get("ticket"))})
     problems, evidence, entries = [], [], []
     if not tickets:
         problems.append("no accepted ticket to read back from the tracker")
@@ -531,7 +496,7 @@ def _ticket_for_pr(accepted, pr):
 
 def _pending_checks(facts, item):
     """The four checks a pending one-way door is reconciled against."""
-    pr = _number(item.get("pr"))
+    pr = ACCEPTANCE.as_int(item.get("pr"))
     accepted_sha = item.get("accepted_sha")
     pr_section = _section(facts, "pr_host")
     git_section = _section(facts, "git")
@@ -539,16 +504,16 @@ def _pending_checks(facts, item):
     pr_row = None
     if pr_section.get("state") == "ok":
         pr_row = next((row for row in _rows(pr_section, "pull_requests")
-                       if _number(row.get("pr")) == pr), None)
+                       if ACCEPTANCE.as_int(row.get("pr")) == pr), None)
     merged = bool(pr_row and str(pr_row.get("state", "")).upper() == "MERGED")
-    merge_sha = bool(pr_row and _sha(pr_row.get("merge_sha")))
+    merge_sha = bool(pr_row and ACCEPTANCE.is_sha(pr_row.get("merge_sha")))
     main = git_section.get("main") if isinstance(git_section.get("main"), dict) else {}
     synced = bool(
         git_section.get("state") == "ok" and main.get("synced") is True
         and main.get("head") == main.get("local_head"))
     ticket = item.get("ticket")
     closed = False
-    if tracker_section.get("state") == "ok" and _nonempty(ticket):
+    if tracker_section.get("state") == "ok" and ACCEPTANCE.is_nonempty(ticket):
         tracker_row = next((row for row in _rows(tracker_section, "tickets")
                             if row.get("ticket") == ticket), None)
         closed = bool(tracker_row and tracker_row.get("state") == "closed")
@@ -567,12 +532,12 @@ def _row_ten(facts, accepted, observed_at):
     entries, evidence, open_items = [], [], []
     for item in _rows(section, "items"):
         record_id = item.get("record_id", "")
-        pr = _number(item.get("pr"))
+        pr = ACCEPTANCE.as_int(item.get("pr"))
         pending_type = item.get("pending_type") or "pending"
         resolved = bool(item.get("resolved")) or item.get("status") == "resolved"
         check_after = item.get("check_after")
         due = True
-        if _utc(check_after) and _utc(observed_at):
+        if ACCEPTANCE.is_utc_instant(check_after) and ACCEPTANCE.is_utc_instant(observed_at):
             due = check_after <= observed_at
         entry = {
             "record_id": record_id,
@@ -611,7 +576,7 @@ def _apply_observations(rows, accepted, observations):
     accepted_prs = {_pr_number(item["payload"]) for item in accepted}
     for observation in observations:
         level = observation.get("level")
-        pr = _number(observation.get("pr"))
+        pr = ACCEPTANCE.as_int(observation.get("pr"))
         tag = observation.get("observation")
         if tag not in OBSERVATIONS or level not in LEVEL_ROWS:
             continue
@@ -672,9 +637,9 @@ def _release_verification(facts):
     unknown = sorted(set(verification) - set(RELEASE_VERIFICATION_KEYS))
     if unknown:
         _invalid("facts.release.verification has unknown fields: " + ", ".join(unknown))
-    if not _nonempty(verification.get("source")):
+    if not ACCEPTANCE.is_nonempty(verification.get("source")):
         _invalid("facts.release.verification.source must name the verification source")
-    if not _utc(verification.get("at")):
+    if not ACCEPTANCE.is_utc_instant(verification.get("at")):
         _invalid("facts.release.verification.at must be an RFC3339 UTC instant")
     if not isinstance(verification.get("version_scope"), str):
         _invalid("facts.release.verification.version_scope must be a string")
@@ -700,11 +665,11 @@ def validated_facts(facts):
         _invalid("unknown facts fields: " + ", ".join(unknown))
     if facts.get("schema_version") != SCHEMA_VERSION:
         _invalid("facts.schema_version must be 1")
-    if not _nonempty(facts.get("run_id")):
+    if not ACCEPTANCE.is_nonempty(facts.get("run_id")):
         _invalid("facts.run_id must be a non-empty string")
-    if not _utc(facts.get("observed_at")):
+    if not ACCEPTANCE.is_utc_instant(facts.get("observed_at")):
         _invalid("facts.observed_at must be an RFC3339 UTC instant")
-    if not _nonempty(facts.get("answer_location")):
+    if not ACCEPTANCE.is_nonempty(facts.get("answer_location")):
         _invalid("facts.answer_location must name where the Answer lives")
     normalized = dict(facts)
     for name in FACTS_SECTIONS:
@@ -839,8 +804,8 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
         return decision
 
     verification = record.get("release_verification")
-    if not isinstance(verification, dict) or not _nonempty(verification.get("source")) \
-            or not _utc(verification.get("at")):
+    if not isinstance(verification, dict) or not ACCEPTANCE.is_nonempty(verification.get("source")) \
+            or not ACCEPTANCE.is_utc_instant(verification.get("at")):
         decision["reason"] = (
             "the closeout record carries no release verification source and timestamp")
         return decision
@@ -866,7 +831,7 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
                 "worktree mapping before release")
             return decision
     else:
-        if not _nonempty(record.get("classification")):
+        if not ACCEPTANCE.is_nonempty(record.get("classification")):
             decision["reason"] = (
                 "a failure closeout needs its classification and evidence references")
             return decision
@@ -899,11 +864,11 @@ def _valid_mapping(mapping):
             return False
         if any(key not in entry for key in MAPPING_KEYS):
             return False
-        if not _nonempty(entry.get("dispatch_id")) or not _nonempty(entry.get("task_id")):
+        if not ACCEPTANCE.is_nonempty(entry.get("dispatch_id")) or not ACCEPTANCE.is_nonempty(entry.get("task_id")):
             return False
         if type(entry.get("attempt")) is not int or entry["attempt"] < 1:
             return False
-        if not _nonempty(entry.get("worktree")):
+        if not ACCEPTANCE.is_nonempty(entry.get("worktree")):
             return False
     return True
 
@@ -946,7 +911,7 @@ def _resolution_index(records):
         if not isinstance(detail, dict) or detail.get("status") != "resolved":
             continue
         pending_id = detail.get("pending_record_id")
-        if _nonempty(pending_id):
+        if ACCEPTANCE.is_nonempty(pending_id):
             resolved[pending_id] = detail
     return resolved
 
@@ -959,7 +924,7 @@ def _pending_section(records, acceptance):
             continue
         detail = record.get("detail") if isinstance(record.get("detail"), dict) else {}
         subject = record.get("subject") if isinstance(record.get("subject"), dict) else {}
-        pr = _number(detail.get("pr", subject.get("pr")))
+        pr = ACCEPTANCE.as_int(detail.get("pr", subject.get("pr")))
         acceptance_detail = next(
             (item for item in acceptance
              if _pr_number(item) == pr), {})
@@ -1026,7 +991,7 @@ def _mapping(workers):
         return []
     mapping = []
     for row in _rows(workers, "rows"):
-        if not _nonempty(row.get("dispatch_id")) or not _nonempty(row.get("task_id")):
+        if not ACCEPTANCE.is_nonempty(row.get("dispatch_id")) or not ACCEPTANCE.is_nonempty(row.get("task_id")):
             continue
         attempt = row.get("attempt")
         mapping.append({
@@ -1048,13 +1013,13 @@ def _resolution_record(run_id, item, checks, observed_at):
         "observed_at": observed_at,
     }
     key = "orca-closeout-resolution:" + "|".join(
-        (run_id, item["record_id"], _canonical(checks)))
+        (run_id, item["record_id"], LEDGER.canonical_json(checks)))
     record = {
         "schema_version": LEDGER.SCHEMA_VERSION,
         "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, key)),
         "kind": "observation",
         "run_id": run_id,
-        "subject": {"ticket": item.get("ticket")} if _nonempty(item.get("ticket")) else {},
+        "subject": {"ticket": item.get("ticket")} if ACCEPTANCE.is_nonempty(item.get("ticket")) else {},
         "action": "closeout",
         "request_id": "",
         "idempotency": "none",
@@ -1078,7 +1043,7 @@ def _digest(facts, records, answer_location, verification):
         "answer_location": answer_location,
         "release_verification": verification,
     }
-    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(LEDGER.canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _bounded_detail(detail):
@@ -1088,7 +1053,7 @@ def _bounded_detail(detail):
     the classification and the evidence references survive a truncation, and the record
     says it was truncated rather than failing to write at all.
     """
-    if len(_canonical(detail)) <= LEDGER.MAX_RECORD_BYTES - 4096:
+    if len(LEDGER.canonical_json(detail)) <= LEDGER.MAX_RECORD_BYTES - 4096:
         return detail
     trimmed = dict(detail)
     trimmed["checklist"] = {
@@ -1097,7 +1062,7 @@ def _bounded_detail(detail):
                    "classification", "merge_blocked", "non_repeatable", "answer_location")
     }
     trimmed["truncated"] = True
-    if len(_canonical(trimmed)) <= LEDGER.MAX_RECORD_BYTES - 4096:
+    if len(LEDGER.canonical_json(trimmed)) <= LEDGER.MAX_RECORD_BYTES - 4096:
         return trimmed
     trimmed["evidence_refs"] = trimmed["evidence_refs"][:64]
     trimmed["mapping"] = trimmed["mapping"][:64]
@@ -1176,7 +1141,7 @@ def reconcile(run_id, authority, home=None, answer_location=""):
     and resolves the pending items whose own checks are all true. A revert/reopen
     observation is consumed, never appended again.
     """
-    if not _nonempty(answer_location):
+    if not ACCEPTANCE.is_nonempty(answer_location):
         _invalid("reconcile needs the Answer location for the closeout record")
     observed_at = _now()
     records = LEDGER.read(run_id, home=home)
@@ -1220,8 +1185,9 @@ def reconcile(run_id, authority, home=None, answer_location=""):
     try:
         LEDGER.append(record, home=home)
     except (OSError, TypeError, ValueError) as error:
-        path = _pending_path(home, run_id, record["record_id"])
-        ACCEPTANCE._write_pending(path, record)
+        path = ACCEPTANCE.pending_path(
+            LEDGER.home_path(home), run_id, record["record_id"], PENDING_DIRNAME)
+        ACCEPTANCE.write_pending(path, record)
         result["closeout"] = _summary(
             record, False, False, str(path))
         result["retry_path"] = str(path)
@@ -1233,14 +1199,6 @@ def reconcile(run_id, authority, home=None, answer_location=""):
     result["declared"] = checklist["ready"]
     result["closeout"] = _summary(record, True, True)
     return result
-
-
-def _pending_path(home, run_id, record_id):
-    """Where an undurable closeout record waits, mirroring the acceptance retry dir."""
-    directory = LEDGER.home_path(home) / "runs" / run_id / PENDING_DIRNAME
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    return directory / (record_id + ".json")
 
 
 # ---------------------------------------------------------------------------
@@ -1341,7 +1299,7 @@ def main(argv=None):
             return command_plan(args)
         # One cross-module call point: the acceptance CLI already resolves the ledger
         # home under ledger.py's path policy plus the target-repository guard.
-        home = ACCEPTANCE._home()
+        home = ACCEPTANCE.home()
         if args.command == "reconcile":
             return command_reconcile(args, home)
         return command_show(args, home)

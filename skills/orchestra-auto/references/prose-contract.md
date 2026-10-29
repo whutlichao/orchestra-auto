@@ -6,7 +6,7 @@ two documents appear to disagree about what may be concluded from a signal.
 The rest of this skill is procedure. These six clauses are the load-bearing claims the procedure
 rests on: each one names a conclusion the documents refuse, because a plausible alternative would
 break a Run. They are repeated here so a reviewer — or a coordinator mid-run — can check all six
-against a single page instead of reconstructing them from sixteen references.
+against a single page instead of reconstructing them from the reference files.
 
 ## The six clauses
 

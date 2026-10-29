@@ -8,6 +8,24 @@
 记录——必须在动作执行前落盘。append 失败会非零退出且绝不报告记录已写入，所以不要在失败的
 写入上认定动作已获授权或门禁已通过。
 
+## 目录
+
+- [位置与权限](#位置与权限)
+- [Schema v1](#schema-v1)
+- [CLI](#cli)
+- [持久性与并发](#持久性与并发)
+- [保留策略](#保留策略)
+- [记录失败语义](#记录失败语义)
+- [崩溃窗口与分类](#崩溃窗口与分类)
+- [固定派发顺序](#固定派发顺序)
+- [动作矩阵](#动作矩阵)
+- [两条硬规则](#两条硬规则)
+- [进度投影](#进度投影)
+- [权威快照](#权威快照)
+- [对账报告](#对账报告)
+- [对账并发](#对账并发)
+- [模块缝](#模块缝)
+
 ## 位置与权限
 
 - `$ORCA_LEDGER_HOME` 指定台账根目录，缺省为调用者主目录下的 `~/.orca/ledger`，绝不在项目内。
@@ -191,7 +209,9 @@ Task ID 可以作 join key：临时进度任务（`orca_task_id: null`）永远�
 检查点用同一 `event_id` 重试，并从台账回填缺失的 worker 行（dispatch id、attempt、worktree）。
 
 对账与回填写入携带 `bookkeeping: true`，不刷新 `last_observed` 或 `last_effective_progress`；
-只有真正的新事实才刷新它们。progress Run 携带 `orca_run_id`，与台账 Run 不一致即 `divergent`。
+只有真正的新事实才刷新它们。progress Run 携带 `orca_run_id`；对账会与台账 Run 比较，可读且非
+空的绑定不一致时产生一条 Run 级 `divergent` 结果（W2，action `progress`），带
+`divergent_marker` 修复与 `run_binding_mismatch` 决策。
 临时 progress 任务（`provisional: true`、`orca_task_id: null`）永远不是 join key；回执之后
 只有 Orca Task ID 是 join key。`turnStart: observed` 一步写为 `observed`；`unsupported` 或缺失
 写为 `unknown`，而 `unobserved`（已检查但未观察到）与 `unknown` 不同。`state: ready` 不是已开始
@@ -218,6 +238,7 @@ snake_case，并在 `detail.raw_receipt` 保留原始回执；设计未验证的
 | `pr_host` | `{state, reason, pull_requests}`，行含 `pr`、`head`、`merged` |
 | `tracker` | `{state, reason, tickets}`，行含 `ticket`、`state` |
 | `git` | `{state, reason, ancestry}`，行含 `commit`、`merged_into` |
+| `progress` | 可选 `{state, reason, orca_run_id}`；缺失表示 progress Run 绑定未知 |
 
 顶层或来源内出现未知字段即非法，打字错误不会静默丢掉权威。`LiveAuthority` 负责构建快照：
 Orca 读命令经 `ORCA_CLI_COMMAND` 解析；`worker-list` 带 `--include-remote`，它与 `task-list`
@@ -251,11 +272,14 @@ observation、标记分歧的 `observation`、读不到来源的 `gap`、待决�
 # stdout 输出 JSON 报告；--human 输出可读渲染。
 python3 "$LEDGER" reconcile --run-id "$RUN"
 python3 "$LEDGER" reconcile --run-id "$RUN" --authority recorded.json --human
+# 对照 progress 投影的 Run 绑定与台账 Run。
+python3 "$LEDGER" reconcile --run-id "$RUN" --progress progress.json
 # 绝不重放 pending 的可 join 动作；改为记录决策。
 python3 "$LEDGER" reconcile --run-id "$RUN" --no-replay
 ```
 
-`--authority FILE` 只提供 `pr_host`、`tracker` 与 `git` 段；Orca 始终经 CLI 读取。重放是唯一
+`--authority FILE` 只提供 `pr_host`、`tracker` 与 `git` 段（也可携带 `progress` 段）；Orca
+始终经 CLI 读取。`--progress FILE` 读取 progress 快照的 `run.orca_run_id`。重放是唯一
 获准的变更：用同一个 `--retry-request` id 重跑 intent 上记录的命令。对账绝不 merge、关闭
 ticket，也绝不 stop、release 或重试 worker。
 

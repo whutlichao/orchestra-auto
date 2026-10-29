@@ -109,7 +109,7 @@ WINDOWS = ("W1", "W2", "W3")
 SOURCE_STATES = ("ok", "unknown")
 
 #: The authority snapshot's top-level sources.
-AUTHORITY_SOURCES = ("orca", "pr_host", "tracker", "git")
+AUTHORITY_SOURCES = ("orca", "pr_host", "tracker", "git", "progress")
 
 #: The receipt states ``request-show`` may report for one request id.
 RECEIPT_STATES = ("completed", "pending", "absent", "unknown")
@@ -156,7 +156,7 @@ def _invalid(message):
     raise ValueError(message)
 
 
-def _canonical(record):
+def canonical_json(record):
     return json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -262,7 +262,7 @@ def validated(record):
         _invalid("evidence_ref must be a string of at most 2048 characters")
     if not isinstance(record["detail"], dict):
         _invalid("detail must be an object")
-    if len(_canonical(normalized)) > MAX_RECORD_BYTES:
+    if len(canonical_json(normalized)) > MAX_RECORD_BYTES:
         _invalid("record exceeds 64 KiB")
     return normalized
 
@@ -274,7 +274,7 @@ def validate_record(record):
 
 def normalize(record):
     """Return the canonical JSON text used to compare re-appended records."""
-    return _canonical(validated(record))
+    return canonical_json(validated(record))
 
 
 def _repository_root(path):
@@ -434,7 +434,7 @@ def _write_archive(run_dir, stem, data):
     """Create an archive file, fsync it and the archive directory, return its path."""
     directory = run_dir / ARCHIVE_DIR
     _ensure_directory(directory)
-    stamp = _now().strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = _now_instant().strftime("%Y%m%dT%H%M%S%fZ")
     for index in range(1000):
         path = directory / f"{stem}-{stamp}-{index}.jsonl"
         try:
@@ -485,10 +485,10 @@ def _retain(run_dir, now=None):
     records, corrupt, partial = _scan(active)
     days = _env_int(RETENTION_DAYS_ENV, RETENTION_DAYS)
     limit = _env_int(RETENTION_BYTES_ENV, RETENTION_BYTES)
-    cutoff = (now or _now()) - timedelta(days=days)
+    cutoff = (now or _now_instant()) - timedelta(days=days)
 
     archived = {record["record_id"] for record in records if _observed_at(record) < cutoff}
-    sizes = {record["record_id"]: len(_canonical(record).encode("utf-8")) + 1
+    sizes = {record["record_id"]: len(canonical_json(record).encode("utf-8")) + 1
              for record in records}
     kept_bytes = sum(size for key, size in sizes.items() if key not in archived)
     for record in records:  # oldest first, matching file order
@@ -505,14 +505,14 @@ def _retain(run_dir, now=None):
     kept = [record for record in records if record["record_id"] not in archived]
     _write_archive(
         run_dir, "ledger",
-        b"".join((_canonical(record) + "\n").encode("utf-8") for record in moved),
+        b"".join((canonical_json(record) + "\n").encode("utf-8") for record in moved),
     )
     if corrupt or partial:
         _write_archive(
             run_dir, "corrupt",
             b"".join(item["raw"] + b"\n" for item in corrupt) + partial,
         )
-    _replace_active(active, b"".join((_canonical(record) + "\n").encode("utf-8") for record in kept))
+    _replace_active(active, b"".join((canonical_json(record) + "\n").encode("utf-8") for record in kept))
 
 
 def _append(record, home=None, target_repo=None, now=None):
@@ -532,11 +532,11 @@ def _append(record, home=None, target_repo=None, now=None):
                     candidate = archived_record
                     break
         if candidate is not None:
-            if _canonical(candidate) == _canonical(normalized):
+            if canonical_json(candidate) == canonical_json(normalized):
                 return normalized["record_id"], False
             _invalid("record_id already recorded with a different payload")
 
-        line = (_canonical(normalized) + "\n").encode("utf-8")
+        line = (canonical_json(normalized) + "\n").encode("utf-8")
         fd = os.open(
             active, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, FILE_MODE
         )
@@ -859,6 +859,19 @@ def validated_authority(snapshot):
         snapshot.get("git", _unknown_source("git authority not provided")),
         "git", "ancestry")
 
+    progress_value = snapshot.get("progress")
+    if progress_value is None:
+        progress = _source("unknown", "progress binding not provided",
+                           orca_run_id=None)
+    else:
+        progress_state, progress_reason = _source_state(progress_value, "progress")
+        progress_run_id = progress_value.get("orca_run_id")
+        if progress_run_id is not None:
+            progress_run_id = _portable_identifier(
+                progress_run_id, "progress.orca_run_id")
+        progress = _source(progress_state, progress_reason,
+                           orca_run_id=progress_run_id)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -881,6 +894,7 @@ def validated_authority(snapshot):
                            tickets=_validated_ticket_rows(tracker_rows, "tracker")),
         "git": _source(git_state, git_reason,
                        ancestry=_validated_ancestry_rows(ancestry_rows, "git")),
+        "progress": progress,
     }
 
 
@@ -1074,18 +1088,44 @@ def _probe(snapshot, intent):
             result["rows"] = rows
             result["effect"] = bool(rows)
         else:
-            result["observable"] = orca["workers"]["state"] == "ok"
-            result["rows"] = [item for item in rows if item[0] == "worker"]
-            matching = [row for _kind, row in result["rows"]]
             action = intent["action"]
+            matching = [row for kind, row in rows if kind == "worker"]
+            proof = list(matching)
+            worker_show_ok = False
+            if action in ("stop", "abandon", "retain", "release"):
+                dispatch_id = intent["subject"].get("dispatch_id")
+                if not dispatch_id:
+                    dispatch_id = next(
+                        (row.get("dispatch_id") for row in matching
+                         if row.get("dispatch_id")), None)
+                entry = orca["worker_show"].get(dispatch_id) if dispatch_id else None
+                if entry is not None and entry["state"] == "ok":
+                    worker = entry["worker"]
+                    worker_show_ok = True
+                    proof.append(worker)
+                    result["evidence"].append(
+                        _worker_evidence(worker, "orca.worker-show"))
+                elif entry is not None:
+                    result["evidence"].append(_evidence(
+                        "orca.worker-show", "orca:worker-show:" + str(dispatch_id),
+                        "unknown"))
+            workers_ok = orca["workers"]["state"] == "ok"
+            if action in ("stop", "abandon", "release"):
+                result["observable"] = workers_ok or worker_show_ok
+                result["rows"] = [("worker", row) for row in proof]
+            else:
+                result["observable"] = workers_ok
+                result["rows"] = [("worker", row) for row in matching]
             if action in ("stop", "abandon"):
-                # The effect of a stop is a terminal or vanished worker, not a row.
-                result["effect"] = result["observable"] and (
-                    not matching or all(_terminal_worker(row) for row in matching))
+                # A stop proves its effect only through a proof row: a vanished row is
+                # absence of proof, not proof that the worker stopped.
+                result["effect"] = result["observable"] and bool(proof) and all(
+                    _terminal_worker(row) for row in proof)
             elif action == "release":
-                result["effect"] = result["observable"] and (
-                    not matching or all(_terminal_worker(row) or row.get("settled") is True
-                                        for row in matching))
+                # worker-show and worker-list are both allowed proof sources; the union
+                # is safe because every proof row must be terminal or settled.
+                result["effect"] = result["observable"] and bool(proof) and all(
+                    _terminal_worker(row) or row.get("settled") is True for row in proof)
             elif action == "retain":
                 result["effect"] = bool(matching) and not all(
                     _terminal_worker(row) for row in matching)
@@ -1227,10 +1267,10 @@ def _matching_result(intent, results_by_request, no_key_results, claimed):
             if result["record_id"] not in claimed:
                 return result
         return None
-    subject = _canonical(intent["subject"])
+    subject = canonical_json(intent["subject"])
     for result in no_key_results:
         if (result["record_id"] not in claimed and result["action"] == intent["action"]
-                and _canonical(result["subject"]) == subject):
+                and canonical_json(result["subject"]) == subject):
             return result
     return None
 
@@ -1547,6 +1587,38 @@ def _classify_orphan_effect(snapshot, effect):
                     subject=effect["subject"], evidence=evidence, repairs=[repair])
 
 
+def _classify_run_binding(snapshot):
+    """One run-level outcome when the progress binding names a different Run.
+
+    A progress projection is not authority for progress facts, but its ``orca_run_id``
+    is a recorded binding: when it is readable and non-null it must name the ledger's
+    Run. An absent or null id is unbound, not a disagreement.
+    """
+    progress = snapshot["progress"]
+    authority_run_id = progress.get("orca_run_id")
+    if progress["state"] != "ok" or authority_run_id is None:
+        return None
+    ledger_run_id = snapshot["run_id"]
+    if authority_run_id == ledger_run_id:
+        return None
+    conflict = {"field": "orca_run_id", "ledger": ledger_run_id,
+                "authority": authority_run_id}
+    evidence = [
+        _evidence("progress", "progress:orca_run_id:" + authority_run_id, "ok"),
+        _evidence("ledger", "ledger:run:" + ledger_run_id, "present"),
+    ]
+    repair = _repair(
+        "divergent_marker", action="progress", request_id="", subject={},
+        state="divergent", evidence=evidence, conflicts=[conflict])
+    decision = _decision(
+        "run_binding_mismatch",
+        "the ledger Run " + ledger_run_id + " and the progress binding "
+        + authority_run_id + " name different Runs; the coordinator decides",
+        action="progress", request_id="", subject={}, evidence=evidence)
+    return _outcome("divergent", "W2", None, action="progress", evidence=evidence,
+                    repairs=[repair], decision=decision, conflicts=[conflict])
+
+
 def _unreadable_sources(snapshot, request_unknowns):
     """Every source that could not be read, deduplicated and in a stable order."""
     found = []
@@ -1629,6 +1701,10 @@ def classify(records, authority_snapshot):
         if _effect_claimed(effect, normalized):
             continue
         outcomes.append(_classify_orphan_effect(snapshot, effect))
+
+    run_binding = _classify_run_binding(snapshot)
+    if run_binding is not None:
+        outcomes.append(run_binding)
 
     cited = set()
     for outcome in outcomes:
@@ -1744,7 +1820,7 @@ def _stable_id(*parts):
     taken from the intent or the snapshot), which makes re-appending a no-op.
     """
     key = "orca-ledger:" + "|".join(
-        _canonical(part) if isinstance(part, (dict, list)) else str(part)
+        canonical_json(part) if isinstance(part, (dict, list)) else str(part)
         for part in parts)
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
@@ -1769,7 +1845,7 @@ def _source_digest(snapshot, records):
         key=lambda record: record["record_id"])
     facts = {key: value for key, value in snapshot.items() if key != "observed_at"}
     payload = {"snapshot": facts, "records": source}
-    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _write_report_file(run_dir, report, digest):
@@ -1958,7 +2034,7 @@ def _closeout_detail(report, report_path):
         "report_path": str(report_path),
         "replays": report.get("replays", []),
     }
-    if len(_canonical(detail)) <= MAX_RECORD_BYTES - 2048:
+    if len(canonical_json(detail)) <= MAX_RECORD_BYTES - 2048:
         return detail
     for item in detail["classifications"]:
         item.pop("evidence_refs", None)
@@ -1966,7 +2042,7 @@ def _closeout_detail(report, report_path):
         {key: replay.get(key) for key in ("request_id", "action", "state")}
         for replay in detail["replays"]
     ]
-    if len(_canonical(detail)) <= MAX_RECORD_BYTES - 2048:
+    if len(canonical_json(detail)) <= MAX_RECORD_BYTES - 2048:
         return detail
     detail["classifications"] = [
         {"classification": item["classification"], "action": item["action"]}
@@ -2324,10 +2400,11 @@ class LiveAuthority:
     """
 
     def __init__(self, orca_cli=None, pr_host=None, tracker=None, git=None,
-                 timeout=CLI_TIMEOUT_SECONDS):
+                 timeout=CLI_TIMEOUT_SECONDS, progress=None):
         self.orca_cli = orca_cli
         self.hosts = {"pr_host": pr_host, "tracker": tracker, "git": git}
         self.timeout = timeout
+        self.progress = progress
 
     def _call(self, argv):
         command = _orca_command(self.orca_cli)
@@ -2474,12 +2551,12 @@ class LiveAuthority:
         return section
 
     def snapshot(self, run_id, records):
-        observed_at = _now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        observed_at = _now_instant().replace(microsecond=0).isoformat().replace("+00:00", "Z")
         request_show = self._request_show(records)
         workers = self._worker_list(run_id)
         worker_show = self._worker_show(records, workers)
         tasks = self._task_list(run_id)
-        return {
+        snapshot = {
             "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "observed_at": observed_at,
@@ -2493,6 +2570,9 @@ class LiveAuthority:
             "tracker": self._host("tracker", run_id, records),
             "git": self._host("git", run_id, records),
         }
+        if self.progress is not None:
+            snapshot["progress"] = copy.deepcopy(self.progress)
+        return snapshot
 
     def replay(self, request_id, action, subject, command):
         argv = list(command or [])
@@ -2533,14 +2613,40 @@ def _load_authority_file(path):
         _invalid("authority file is not valid JSON: " + str(error))
     if not isinstance(data, dict):
         _invalid("authority file must hold a JSON object")
-    unknown = sorted(set(data) - {"schema_version", "pr_host", "tracker", "git"})
+    unknown = sorted(set(data) - {"schema_version", "pr_host", "tracker", "git",
+                                  "progress"})
     if unknown:
-        _invalid("authority file may only supply pr_host, tracker and git; unknown: "
-                 + ", ".join(unknown))
+        _invalid("authority file may only supply pr_host, tracker, git and progress; "
+                 "unknown: " + ", ".join(unknown))
     return data
 
 
-def _now():
+def _load_progress_file(path):
+    """Read the progress snapshot's Run binding for ``ledger reconcile``.
+
+    Only the binding is consumed, but an unreadable file is an unreadable source, not an
+    empty successful read: it becomes ``unknown`` with the reason and proves nothing.
+    """
+    try:
+        run = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        return {"state": "unknown",
+                "reason": "cannot read progress snapshot: " + str(error),
+                "orca_run_id": None}
+    if not isinstance(run, dict):
+        return {"state": "unknown",
+                "reason": "progress snapshot must hold a JSON object",
+                "orca_run_id": None}
+    progress_run = run.get("run")
+    if not isinstance(progress_run, dict):
+        return {"state": "unknown",
+                "reason": "progress snapshot carries no run object",
+                "orca_run_id": None}
+    return {"state": "ok", "reason": "",
+            "orca_run_id": progress_run.get("orca_run_id")}
+
+
+def _now_instant():
     return datetime.now(timezone.utc)
 
 
@@ -2589,6 +2695,9 @@ def main(argv=None):
         "--authority", metavar="FILE",
         help="recorded authority file supplying pr_host, tracker and git sections")
     reconcile_parser.add_argument(
+        "--progress", metavar="FILE",
+        help="progress snapshot supplying the Run binding")
+    reconcile_parser.add_argument(
         "--no-replay", action="store_true",
         help="never repeat a pending joinable action; record a decision instead")
     reconcile_parser.add_argument(
@@ -2627,6 +2736,8 @@ def main(argv=None):
             print(json.dumps(_summarize(args.run_id, records, corrupt), ensure_ascii=False))
         else:
             recorded = _load_authority_file(args.authority) if args.authority else {}
+            progress = (_load_progress_file(args.progress) if args.progress
+                        else recorded.get("progress"))
             adapter = LiveAuthority(
                 pr_host=RecordedSource(recorded["pr_host"])
                 if "pr_host" in recorded else None,
@@ -2634,6 +2745,7 @@ def main(argv=None):
                 if "tracker" in recorded else None,
                 git=RecordedSource(recorded["git"])
                 if "git" in recorded else None,
+                progress=progress,
             )
             _records, corrupt = read_report(args.run_id, home=home)
             _report_corrupt(args.run_id, corrupt)
