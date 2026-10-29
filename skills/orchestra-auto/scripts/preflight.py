@@ -37,6 +37,7 @@ import uuid
 SCHEMA_VERSION = 1
 LEDGER_KIND = "preflight"
 LEDGER_ACTION = "preflight"
+#: The two item classes and the three item results the receipt may carry.
 ITEM_CLASSES = ("mechanical", "judgment")
 ITEM_RESULTS = ("pass", "fail", "waived")
 TICKET_FIELDS = ("id", "type", "gate", "origin")
@@ -103,11 +104,11 @@ JUDGMENT_ITEMS = tuple(
     for item_id in line["items"]
 )
 
-ITEM_ORDER = ("live-settings",) + tuple(
+ITEM_ORDER = INDEPENDENT_ITEMS + tuple(
     item_id for line in CHECKLIST for item_id in line["items"]
 )
 
-#: The two post-receipt checklist observations. Both are ledger observations, never
+#: The three post-receipt checklist observations. All are ledger observations, never
 #: pre-dispatch gates; a failed dashboard write records a gap and never blocks a dispatch.
 OBSERVATIONS = ("review-exemption-recheck", "dashboard-backfill", "inbox-health")
 
@@ -237,6 +238,8 @@ def _run(runner, argv):
 
 
 def _item(item_id, result, command="", observed=None, note="", evidence_ref=""):
+    if result not in ITEM_RESULTS:
+        _invalid(f"unknown item result for {item_id}: {result}")
     return {
         "id": item_id,
         "class": ITEM_CLASS[item_id],
@@ -673,6 +676,10 @@ def _validated_context(context):
         value = context.get(field)
         if value is not None and not isinstance(value, dict):
             _invalid(f"context.{field} must be an object")
+    judgments = context.get("judgments") or {}
+    unknown = sorted(set(judgments) - set(JUDGMENT_ITEMS))
+    if unknown:
+        _invalid("unknown judgment items: " + ", ".join(unknown))
     for field in ("overrides", "baselines"):
         value = context.get(field)
         if value is not None and not isinstance(value, list):
@@ -681,6 +688,12 @@ def _validated_context(context):
         context.get("base_commit"), str
     ):
         _invalid("context.base_commit must be a string")
+    record_id = context.get("record_id")
+    if record_id is not None:
+        try:
+            uuid.UUID(str(record_id))
+        except (TypeError, ValueError):
+            _invalid("context.record_id must be a UUID")
     return context
 
 
@@ -807,11 +820,19 @@ def _review_recheck(ticket, context, runner, checked_at):
 
     This is a post-dispatch observation: it can revoke the exemption and call for a
     review or a send-back, but it never edits the preflight receipt and never blocks a
-    dispatch that already happened.
+    dispatch that already happened. A run with no exemption still records the observation
+    as ``none``, so the post-receipt checklist and the ledger always name the same three
+    observations.
     """
     value = context.get("review_exemption")
     if not value:
-        return {"status": "none"}, None
+        return {
+            "observation": "review-exemption-recheck",
+            "status": "none",
+            "command": "",
+            "observed": {},
+            "reason": "no review exemption was declared",
+        }
     provisional = _provisional_exemption({"review_exemption": value}, checked_at)
     worktree = context.get("worktree")
     if not isinstance(worktree, str) or not worktree.strip():
@@ -840,7 +861,7 @@ def _review_recheck(ticket, context, runner, checked_at):
         detail["reason"] = _failure_note(
             "the real worktree diff could not be read", result)
         detail["observed"]["stderr"] = (result["stderr"] or "").strip()
-        return {"status": "revoked", "reason": detail["reason"], "detail": detail}, detail
+        return detail
     entries, problems = _numstat_entries(result["stdout"])
     total_added = sum(int(entry["added"]) for entry in entries if entry["added"] != "-")
     total_deleted = sum(int(entry["deleted"]) for entry in entries if entry["deleted"] != "-")
@@ -861,22 +882,22 @@ def _review_recheck(ticket, context, runner, checked_at):
     })
     if problems:
         detail["reason"] = "the real worktree diff contained unreadable lines"
-        return {"status": "revoked", "reason": detail["reason"], "detail": detail}, detail
+        return detail
     if unexpected:
         detail["reason"] = (
             "the real diff changed unexpected files: " + ", ".join(unexpected)
         )
-        return {"status": "revoked", "reason": detail["reason"], "detail": detail}, detail
+        return detail
     limit = provisional.get("max_changed_lines")
     if limit is not None and total_added + total_deleted > limit:
         detail["reason"] = (
             f"the real diff is {total_added + total_deleted} changed lines, above the "
             f"{limit}-line bound"
         )
-        return {"status": "revoked", "reason": detail["reason"], "detail": detail}, detail
+        return detail
     detail["status"] = "confirmed"
     detail["reason"] = "the real worktree diff stays inside the provisional exemption"
-    return {"status": "confirmed", "reason": detail["reason"], "detail": detail}, detail
+    return detail
 
 
 def _dashboard_observation(context):
@@ -968,20 +989,19 @@ def post_dispatch(ticket, context, runner=None):
 
     observations = []
     writes = []
-    review, review_detail = _review_recheck(ticket, context, runner, checked_at)
-    if review_detail is not None:
-        record = _append_observation(
-            "observation", ticket, context, checked_at, review_detail,
-            context.get("worktree") if isinstance(context.get("worktree"), str) else "",
-        )
-        writes.append(record)
-        observations.append({
-            "id": "review-exemption-recheck",
-            "outcome": review["status"],
-            "note": review["reason"],
-            "detail": review_detail,
-            "record": record,
-        })
+    review_detail = _review_recheck(ticket, context, runner, checked_at)
+    review_record = _append_observation(
+        "observation", ticket, context, checked_at, review_detail,
+        context.get("worktree") if isinstance(context.get("worktree"), str) else "",
+    )
+    writes.append(review_record)
+    observations.append({
+        "id": "review-exemption-recheck",
+        "outcome": review_detail["status"],
+        "note": review_detail["reason"],
+        "detail": review_detail,
+        "record": review_record,
+    })
 
     dashboard_detail = _dashboard_observation(context)
     dashboard_record = _append_observation(
@@ -1028,6 +1048,7 @@ def post_dispatch(ticket, context, runner=None):
         "schema_version": SCHEMA_VERSION,
         "ticket": ticket,
         "checked_at": checked_at,
+        "observations_expected": list(OBSERVATIONS),
         "review_exemption": review_detail or {"status": "none"},
         "observations": observations,
         "records": {

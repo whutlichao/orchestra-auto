@@ -30,7 +30,6 @@ import sys
 import tempfile
 import unittest
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,10 +43,6 @@ RUN_ID = "run_alpha"
 BASE_COMMIT = "44a427a9662c38a76419589e4149193b8adf1688"
 ROUND_START = "2026-10-29T10:00:00Z"
 CHECKED_AT = "2026-10-29T10:05:00Z"
-
-
-def utc_now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_script(skill_dir, relative, module_name):
@@ -335,7 +330,7 @@ class ReceiptTests(PreflightTestCase):
         self.assertTrue(receipt["blocking"]["allowed"])
         self.assertFalse(receipt["blocking"]["blocked"])
         self.assertTrue(receipt["record"]["written"])
-        self.assertTrue(receipt["post_dispatch"]["review_exemption"]["status"], "none")
+        self.assertEqual(receipt["post_dispatch"]["review_exemption"]["status"], "none")
         self.assertEqual(self.item(receipt, "live-settings")["class"], "mechanical")
         self.assertEqual(self.item(receipt, "channel-decided")["class"], "judgment")
         self.assertEqual(self.item(receipt, "channel-decided")["result"], "pass")
@@ -398,6 +393,32 @@ class ReceiptTests(PreflightTestCase):
             any(call[:2] == ["orca", "worker-start"] for call in runner.calls),
             "a failed receipt must never be followed by worker-start",
         )
+
+    def test_a_supplied_record_id_makes_the_receipt_append_idempotent(self):
+        record_id = str(uuid.uuid4())
+        first = self.check(record_id=record_id)
+        second = self.check(record_id=record_id)
+        self.assertTrue(first["record"]["written"])
+        self.assertEqual(first["record"]["record_id"], second["record"]["record_id"])
+        self.assertEqual(len(self.ledger_records(kind="preflight")), 1)
+
+        with self.assertRaises(ValueError):
+            self.check(record_id="not-a-uuid")
+
+    def test_an_unknown_judgment_item_is_not_silently_ignored(self):
+        judgments = {item_id: {"result": "pass", "note": "recorded"}
+                     for item_id in JUDGMENT_IDS}
+        judgments["not-a-check"] = {"result": "pass", "note": "typo"}
+        with self.assertRaises(ValueError):
+            self.check(judgments=judgments)
+
+    def test_ticket_identity_is_required(self):
+        for missing in ("id", "type", "gate", "origin"):
+            with self.subTest(field=missing):
+                ticket = make_ticket()
+                ticket.pop(missing)
+                with self.assertRaises(ValueError):
+                    self.check(ticket=ticket)
 
 
 class MechanicalItemTests(PreflightTestCase):
@@ -776,8 +797,10 @@ class PostReceiptObservationTests(PreflightTestCase):
         report = self.preflight.post_dispatch(make_ticket(), context, runner=runner)
         self.assertEqual(
             [observation["id"] for observation in report["observations"]],
-            ["dashboard-backfill", "inbox-health"],
+            list(self.preflight.OBSERVATIONS),
         )
+        self.assertEqual(report["observations_expected"],
+                         list(self.preflight.OBSERVATIONS))
         receipt = self.ledger_records(kind="preflight")[0]
         item_ids = [item["id"] for item in receipt["detail"]["items"]]
         self.assertNotIn("dashboard-backfill", item_ids)
