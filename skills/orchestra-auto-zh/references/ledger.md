@@ -101,11 +101,17 @@ fsync，之后才替换活动文件，因此绝不会删除未归档的记录。
 
 ## 记录失败语义
 
-| 记录 | 动作前失败 | 动作后失败 |
-| --- | --- | --- |
-| intent | 不执行动作；报告并升级 | 不适用 |
-| result / observation | 不适用 | 重试记录；绝不重放动作；必要时记 gap |
-| acceptance / closeout / preflight | 不 release、不关闭、不派发 | 重试至持久；门禁保持打开 |
+| 记录 | 动作前失败 | 动作后失败 | 对编排的影响 |
+| --- | --- | --- | --- |
+| 台账 intent | 不执行动作；报告并停止或升级 | 不适用 | 阻止动作 |
+| 台账 result | 不适用 | 重试；在证据目录保留原始回执；记录 gap；绝不重放动作 | 不阻塞；稍后对账 |
+| 台账 acceptance / closeout | 不 release，不宣称门禁通过 | 重试；release 等待记录持久 | 阻止 release 与门禁关闭 |
+| progress 写入 | 不适用 | 记录 gap；下一个检查点用同一 `event_id` 重试 | 不阻塞 |
+| ack 回执 | 不适用 | 不假设 ack 已落地；用同一 `request_id` 重试 ack；保留 delivery 文件 | 不阻塞；状态显示未 ack |
+| health 记录 | 不适用 | 保留内存中的评估并重试；看板投影不是权威 | 不阻塞 |
+| preflight 回执 | 不派发 | 不适用 | 阻止派发 |
+| registry 描述符 / `server.json` | 回退到 `serve --state`；记录 gap | 看板不可用；记录 gap | 不阻塞 |
+| 权威读取（Orca、PR host、tracker、git） | 不推断效果 | 重试读取；仍不可读则记 `unknown`；破坏性动作依赖它时升级 | 破坏性动作依赖时升级 |
 
 规则是：**闸住副作用的记录会阻止副作用；描述结果的记录永远不阻塞编排，稍后修复。** 不要从
 失败命令“没有报错”推断持久性，也不要在记录尚未持久时宣称门禁通过。
@@ -130,27 +136,71 @@ intent 记录在动作执行前落盘。崩溃会把 Run 留在三个窗口之�
 Task ID 可以作 join key：临时进度任务（`orca_task_id: null`）永远不是 join key，所以只有
 权威给出非空 Task ID 或 dispatch 身份后才会写投影。
 
+## 固定派发顺序
+
+每次派发遵循同一顺序，绝不跳过尚未持久的前置记录：
+
+1. 写 preflight 回执（preflight 失败阻止派发）；
+2. 写台账 intent（intent 写失败阻止调用）；
+3. 执行 `worker-start --retry-request <request_id>`；
+4. 写带 raw receipt 摘要和证据引用的 result（result 写失败时保留原始回执、记录 gap、绝不重放）；
+5. 尽力写 progress；失败记录 gap，派发继续，下一检查点用同一 `event_id` 重试；
+6. 执行回执后检查（`turnStart`、隔离、inbox）并记录 observation。回执后检查失败是证据，不是
+   再次派发的理由。
+
+丢失的 `worker-start` 响应从权威对账，绝不重新派发。缺少 intent 阻止第二次派发；`absent`
+不是“没发生”的证明。send、reply、ack、stop、abandon、retain、release 遵循同样的 request-id
+纪律。
+
 ## 动作矩阵
 
-`probe` 是能证明效果的权威；`pending` 是 `pending` 回执允许做的事。
+`幂等` 是动作前键类别；`回读` 是能证明效果的权威；`不确定时` 是 pending 或不可读回执允许做的事。
 
-| 动作 | 探测 | pending 回执 |
-| --- | --- | --- |
-| worker-start、stop、abandon | worker-list 与 task-list | 同键重放可 join |
-| send、reply | 消息权威 | 同键重放可 join |
-| ack | 消息权威 | 重复是 replay-safe |
-| retain、release | worker-list | 仅在结算之后重放 |
-| merge | PR host 加 git ancestry | 永不重放；转决策 |
-| pr-create | PR host | 先查找再创建 |
-| tracker-close | tracker | 永不重放；转决策 |
-| progress、health | 仅 request-show | 重复是 replay-safe |
-| preflight、acceptance、closeout | 无 | 本地门禁永不重放 |
+| 动作 | 幂等 | 动作前键 | 回读 | 不确定时 |
+| --- | --- | --- | --- | --- |
+| dispatch / `worker-start` | `joinable` | `request_id` | 回执 `state`/`stage`/`turnStart`/`dispatchId`；按 task/spec/worktree 查 worker 列表 | `request-show`；`completed` → 采纳已记录结果；`pending` → 同键重放；`absent` → 先盘点 Orca 与 git worktree，绝不再次派发 |
+| `send`、`reply` | `joinable` | `request_id` | 消息 id/state 与线程可见性 | `request-show`；绝不因为没收到回复就自动重发 |
+| `ack` | `replay_safe` | `request_id` | ack 回执 | 同键重放 |
+| `stop`、`abandon` | `joinable` | `request_id` | `worker-show`/`worker-list` 终态 | `request-show` 加盘点；没有证明绝不重试 |
+| `retain`、`release` | 结算后 `replay_safe` | `request_id` | 回执加 `worker-show` | `release_unknown` 以回执为准；绝不 release 未结算 worker |
+| `merge` | `readback_only` | 无 | PR host `MERGED`、merge SHA、ancestry | 只读；绝不自动重放 |
+| `pr-create` | `lookup_then_create` | head 分支 | PR 号与 head SHA | 按 head 查找；找到就采纳 |
+| `tracker-close` | `readback_only` | 无 | tracker 回读 | 只读；关闭遵循仓库与人工规则 |
+| `progress` | `replay_safe` | `event_id` | 快照/回执 | 同一 `event_id`；失败记录 gap，绝不阻塞派发 |
+| `preflight` | 预写（`none`） | `record_id` | 台账回执 | 重跑检查；回执不可读绝不派发 |
+| `health` | `replay_safe` | `record_id` | 台账回执 | 同一 `record_id` |
+| `acceptance`、`closeout` | `none` | `record_id` | 台账记录 | 重试至持久；绝不提前 release 或关闭门禁 |
 
 四类结果绝不自动重放，一律成为 `decision`：merge（`merge_replay`）、tracker 关闭
 （`tracker_close_replay`）、失败未经证明的重试（`unproven_retry`；记录结果为未知时是
 `unknown_outcome`），以及 worker 结算未获证明的 release 或 retain（`unsettled_release`）。
 没有回复是 `send_reply_no_resend`：没有回复不等于失败。worker 仍在运行时 stop 或 abandon 是
 `stop_abandon_no_retry`。
+
+## 两条硬规则
+
+1. **动作前写 intent。** intent 至少包含 `request_id`、action、`run_id`、已知的
+   task/dispatch/attempt、目标、预期效果、时间戳与 actor。
+2. **不确定时先读权威。** `request-show` 的 `absent` 不是“没发生”；只有权威侧的正面缺失
+   （该 Task 没有 Dispatch、该 head 没有 PR）才允许判定“未执行”。
+
+## 进度投影
+
+台账是派发记录；`progress.json` 是尽力而为的投影，绝不能成为派发的唯一记录。progress 写入按
+`event_id` 是 `replay_safe`；失败记录一条 action 为 `progress` 的 `gap`，绝不阻塞派发。下一个
+检查点用同一 `event_id` 重试，并从台账回填缺失的 worker 行（dispatch id、attempt、worktree）。
+
+对账与回填写入携带 `bookkeeping: true`，不刷新 `last_observed` 或 `last_effective_progress`；
+只有真正的新事实才刷新它们。progress Run 携带 `orca_run_id`，与台账 Run 不一致即 `divergent`。
+临时 progress 任务（`provisional: true`、`orca_task_id: null`）永远不是 join key；回执之后
+只有 Orca Task ID 是 join key。`turnStart: observed` 一步写为 `observed`；`unsupported` 或缺失
+写为 `unknown`，而 `unobserved`（已检查但未观察到）与 `unknown` 不同。`state: ready` 不是已开始
+的 turn。仅当 spec 明确携带 PROGRESS/STATE 路径时才启用 worker 自报；`source=worker` 写入永远
+不是验收证据。
+
+attempt 映射：派发结果优先使用 Orca 回执的 `attempt`；回执没有已验证的 attempt 时，记录
+`detail.attempt_source: local`，该本地计数不参与权威对账。写入时把回执 camelCase 字段转成
+snake_case，并在 `detail.raw_receipt` 保留原始回执；设计未验证的回执字段绝不当作稳定契约断言。
 
 ## 权威快照
 
