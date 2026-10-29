@@ -1337,6 +1337,10 @@ def status_report(directory):
         # Watch disabled is a documented degradation, never healthy: nothing observes a
         # worker changing state without sending a message.
         reasons.append("watch_off")
+    elif payload["watch"] != "on":
+        # An installed loop always records the switch. A state without it leaves the one
+        # signal that says whether a worker is watched unreadable, so it is never healthy.
+        reasons.append("watch_unknown")
     if payload["loop"] == "dead" and payload["phase"] in (
             "waiting", "checking", "backoff", "reconciling", "starting"):
         # A loop with an active phase that no longer holds the lock died without writing a

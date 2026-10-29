@@ -470,14 +470,16 @@ class ReferenceIntegrityTests(unittest.TestCase):
         README's claim that every relative link resolves actually true.
         """
         def heading_slugs(path):
-            # GitHub-style anchor for a heading: lowercase, punctuation dropped, spaces hyphens.
+            # GitHub-style anchor for a heading: lowercase, punctuation dropped, then each
+            # whitespace character becomes one hyphen. Removing punctuation can leave two
+            # spaces, and GitHub does not collapse them, so an em dash yields two hyphens.
             slugs = set()
             for line in path.read_text().splitlines():
                 if not line.startswith("#"):
                     continue
                 heading = re.sub(r"^#+\s*", "", line).strip().lower()
                 heading = re.sub(r"[^\w\s-]", "", heading, flags=re.UNICODE)
-                slugs.add(re.sub(r"\s+", "-", heading))
+                slugs.add(re.sub(r"\s", "-", heading))
             return slugs
 
         offenders = []
@@ -549,6 +551,24 @@ class ReferenceIntegrityTests(unittest.TestCase):
                 self.assertTrue(
                     any(marker in head for marker in markers),
                     f"{name}/{filename}: no trigger statement near the top",
+                )
+
+    def test_long_references_carry_a_contents_list(self):
+        """CONTRIBUTING.md: a long reference gets a short table of contents.
+
+        A reference is read on demand, not end to end, so a file that runs past a couple of
+        screens needs a list of its own headings. The threshold keeps the rule to the files
+        where the list earns its lines.
+        """
+        headings = {"orchestra-auto": "## Contents", "orchestra-auto-zh": "## 目录"}
+        for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
+            for path in sorted((directory / "references").glob("*.md")):
+                lines = path.read_text().splitlines()
+                if len(lines) < 200:
+                    continue
+                self.assertIn(
+                    headings[name], lines,
+                    f"{name}/{path.name}: a reference this long needs {headings[name]!r}",
                 )
 
 

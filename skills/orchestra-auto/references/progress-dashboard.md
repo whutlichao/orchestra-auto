@@ -3,9 +3,15 @@
 **When to read**: before the first dispatch of every actual orchestration Run, and whenever you
 need to view progress or the reproducible offline demonstration.
 
-Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v2](#protocol-v2),
-[Singleton registry](#singleton-dashboard-registry), [Workflow ownership](#workflow-ownership),
-[Recovery and boundaries](#recovery-and-boundaries).
+## Contents
+
+- [Operation](#operation)
+- [Reading the visual dashboard](#reading-the-visual-dashboard)
+- [Protocol v2](#protocol-v2)
+- [Singleton dashboard registry](#singleton-dashboard-registry)
+- [Fixed dispatch order and record failures](#fixed-dispatch-order-and-record-failures)
+- [Workflow ownership](#workflow-ownership)
+- [Recovery and boundaries](#recovery-and-boundaries)
 
 ## Operation
 

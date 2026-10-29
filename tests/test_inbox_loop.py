@@ -1581,7 +1581,7 @@ class StatusJsonContractTests(unittest.TestCase):
         module = load_inbox_module(SKILL_DIRS[0])
         module.append_receipt(self.state, "delivery_resting", "success")
         seed_state(self.state, {"phase": "wake", "reason": "delivery",
-                                "deliveryId": "delivery_resting"})
+                                "deliveryId": "delivery_resting", "watch": "on"})
 
         result, payload = self.status()
 
@@ -1593,7 +1593,8 @@ class StatusJsonContractTests(unittest.TestCase):
         self.assertTrue(delivery.exists())
 
     def test_fatal_phase_error_exits_1(self):
-        seed_state(self.state, {"phase": "error", "error": "simulated CLI failure"})
+        seed_state(self.state, {"phase": "error", "error": "simulated CLI failure",
+                                "watch": "on"})
         (self.state / "watch.log").write_text(
             "2026-10-29T00:00:00Z ERROR simulated CLI failure\n")
 
@@ -1608,7 +1609,7 @@ class StatusJsonContractTests(unittest.TestCase):
     def test_unacknowledged_fifo_head_exits_3_and_names_the_delivery(self):
         seed_delivery(self.state, "delivery_head", [normal()], mtime=1_700_000_000)
         seed_delivery(self.state, "delivery_later", [normal()], mtime=1_700_000_100)
-        seed_state(self.state, {"phase": "backoff"})
+        seed_state(self.state, {"phase": "backoff", "watch": "on"})
 
         result, payload = self.status()
 
@@ -1627,7 +1628,8 @@ class StatusJsonContractTests(unittest.TestCase):
         module.append_receipt(self.state, "delivery_done", "pending")
         module.append_receipt(self.state, "delivery_done", "failed")
         module.append_receipt(self.state, "delivery_done", "success")
-        seed_state(self.state, {"phase": "backoff"}, mtime=1_700_000_300)
+        seed_state(self.state, {"phase": "backoff", "watch": "on"},
+                   mtime=1_700_000_300)
         (self.state / "watch.log").write_text("old\n")
         os.utime(self.state / "watch.log", (1_700_000_050, 1_700_000_050))
         os.utime(self.state / "deliveries", (1_700_000_200, 1_700_000_200))
@@ -1655,7 +1657,7 @@ class StatusJsonContractTests(unittest.TestCase):
         fake_orca = load_fake_orca()
         fake = fake_orca.FakeOrca(self.tmp / "fake-status", check=[{"messages": []}]).write()
         seed_delivery(self.state, "delivery_local", [normal()])
-        seed_state(self.state, {"phase": "backoff"})
+        seed_state(self.state, {"phase": "backoff", "watch": "on"})
 
         result = run_status(self.state, env_extra={"ORCA_CLI_COMMAND": str(fake.path)})
 
@@ -1666,7 +1668,8 @@ class StatusJsonContractTests(unittest.TestCase):
     def test_status_json_changes_nothing_on_disk(self):
         """A status read is a read: it must not add, rewrite or touch a file."""
         seed_delivery(self.state, "delivery_quiet", [normal()], mtime=1_700_000_000)
-        seed_state(self.state, {"phase": "backoff"}, mtime=1_700_000_100)
+        seed_state(self.state, {"phase": "backoff", "watch": "on"},
+                   mtime=1_700_000_100)
         before = owner_state_snapshot(self.state)
 
         result = run_status(self.state)
@@ -1678,7 +1681,7 @@ class StatusJsonContractTests(unittest.TestCase):
 
     def test_a_loop_that_stopped_with_an_active_phase_is_degraded(self):
         """A busy phase with no lock holder is total silence, not a resting wake."""
-        seed_state(self.state, {"phase": "waiting"})
+        seed_state(self.state, {"phase": "waiting", "watch": "on"})
 
         result, payload = self.status()
 
@@ -1688,7 +1691,8 @@ class StatusJsonContractTests(unittest.TestCase):
 
     def test_an_error_log_line_the_state_missed_is_fatal(self):
         """A kill between the ERROR log line and the state write is still a fatal stop."""
-        seed_state(self.state, {"phase": "waiting"}, mtime=1_700_000_000)
+        seed_state(self.state, {"phase": "waiting", "watch": "on"},
+                   mtime=1_700_000_000)
         log_path = self.state / "watch.log"
         log_path.write_text("2026-10-29T00:00:00Z ERROR CLI exit=1: runtime_unavailable\n")
         os.utime(log_path, (1_700_000_100, 1_700_000_100))
@@ -1723,6 +1727,25 @@ class StatusJsonContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(payload["watch"], "off")
         self.assertIn("watch_off", payload["reasons"])
+
+    def test_a_state_without_the_watch_switch_is_degraded(self):
+        """A missing field is unknown, never healthy: an installed loop writes it."""
+        seed_state(self.state, {"phase": "wake", "reason": "delivery"})
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(payload["watch"], "unknown")
+        self.assertIn("watch_unknown", payload["reasons"])
+        self.assertTrue(payload["degraded"])
+
+    def test_an_empty_state_directory_is_degraded_not_healthy(self):
+        """No state at all is unreadable, not a resting healthy loop."""
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("watch_unknown", payload["reasons"])
+        self.assertTrue(payload["degraded"])
 
     def test_a_live_loop_reports_alive_with_the_binding(self):
         process, _ = start_loop(self.tmp, [batch("empty", [])], SKILL_DIRS[0], self.state)
@@ -1765,7 +1788,8 @@ class LegacyStatusCompatibilityTests(unittest.TestCase):
         self.state.mkdir()
 
     def test_plain_status_keeps_one_for_a_resting_wake_and_warns_on_stderr(self):
-        seed_state(self.state, {"phase": "wake", "reason": "delivery"})
+        seed_state(self.state, {"phase": "wake", "reason": "delivery",
+                                "watch": "on"})
 
         result = run_status(self.state, json_mode=False)
 
@@ -1788,7 +1812,7 @@ class LegacyStatusCompatibilityTests(unittest.TestCase):
             stop_loop(process)
 
     def test_plain_status_keeps_one_for_a_fatal_error(self):
-        seed_state(self.state, {"phase": "error", "error": "boom"})
+        seed_state(self.state, {"phase": "error", "error": "boom", "watch": "on"})
 
         result = run_status(self.state, json_mode=False)
 

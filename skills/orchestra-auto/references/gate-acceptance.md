@@ -3,6 +3,16 @@
 **When to read this**: when a ticket is closing, to pick and run the gate its type calls for; and
 again when merging a project PR or settling a worker's lifecycle.
 
+## Contents
+
+- [Choosing gates by ticket type](#choosing-gates-by-ticket-type)
+- [G-impl — implementation tickets](#g-impl--implementation-tickets)
+- [G-merge — door-aware merge gate for project PRs](#g-merge--door-aware-merge-gate-for-project-prs)
+- [§6.5 Merge execution and teardown](#65-merge-execution-and-teardown)
+- [§6.6 Acceptance records and the four levels](#66-acceptance-records-and-the-four-levels)
+- [§6.7 Closeout: the checklist, pending one-way doors and the release gate](#67-closeout-the-checklist-pending-one-way-doors-and-the-release-gate)
+- [Worker lifecycle and send-backs](#worker-lifecycle-and-send-backs)
+
 ## 6. Gate acceptance
 
 The coordinator verifies observable results and evidence itself, and on failure lists what is

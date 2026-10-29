@@ -125,11 +125,7 @@ def _load_ledger():
 LEDGER = _load_ledger()
 
 
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-
-
-def _utc(value):
+def is_utc_instant(value):
     """True for an RFC3339 instant explicitly in UTC (``Z`` or ``+00:00``)."""
     if not isinstance(value, str):
         return False
@@ -142,11 +138,11 @@ def _utc(value):
     return True
 
 
-def _nonempty(value):
+def is_nonempty(value):
     return isinstance(value, str) and bool(value.strip())
 
 
-def _sha(value):
+def is_sha(value):
     return isinstance(value, str) and bool(_SHA_TEXT.fullmatch(value))
 
 
@@ -170,9 +166,9 @@ def _validate_pr(pr, errors):
     if type(number) is not int or number < 1:
         errors.append("pr.number must be a positive integer")
     head = pr.get("head_at_acceptance")
-    if not _sha(head):
+    if not is_sha(head):
         errors.append("pr.head_at_acceptance must be a commit SHA")
-    if not _nonempty(pr.get("base")):
+    if not is_nonempty(pr.get("base")):
         errors.append("pr.base must be a non-empty branch name")
 
 
@@ -182,10 +178,10 @@ def _validate_check(index, check, errors):
         errors.append(path + " must be an object")
         return
     _unknown_keys(check, CHECK_KEYS, path, errors)
-    if not _nonempty(check.get("name")):
+    if not is_nonempty(check.get("name")):
         errors.append(path + ".name must be a non-empty string")
     command = check.get("command")
-    if not _nonempty(command):
+    if not is_nonempty(command):
         errors.append(path + ".command must be a non-empty string")
     else:
         tokens = command.split()
@@ -197,7 +193,7 @@ def _validate_check(index, check, errors):
                 "does not prove the command ran")
     if check.get("result") not in CHECK_RESULTS:
         errors.append(path + ".result must be 'pass' or 'fail'")
-    if not _nonempty(check.get("evidence_ref")):
+    if not is_nonempty(check.get("evidence_ref")):
         errors.append(path + ".evidence_ref must name the log that was captured")
 
 
@@ -211,7 +207,7 @@ def _validate_review(review, errors):
     if not isinstance(axis, list) or sorted(axis) != sorted(REVIEW_AXES):
         errors.append(
             path + ".axis must name both axes exactly once: " + " and ".join(REVIEW_AXES))
-    if not _nonempty(review.get("evidence_ref")) and review.get("result") != "waiver":
+    if not is_nonempty(review.get("evidence_ref")) and review.get("result") != "waiver":
         errors.append(path + ".evidence_ref must name the review report")
     result = review.get("result")
     if result not in REVIEW_RESULTS:
@@ -222,10 +218,10 @@ def _validate_review(review, errors):
             errors.append(path + ".waiver must record why both axes were waived")
             return
         _unknown_keys(waiver, WAIVER_KEYS, path + ".waiver", errors)
-        if not _nonempty(waiver.get("reason")):
+        if not is_nonempty(waiver.get("reason")):
             errors.append(path + ".waiver.reason must record the waiver reason")
         for key in ("spec_evidence_ref", "answer_evidence_ref"):
-            if not _nonempty(waiver.get(key)):
+            if not is_nonempty(waiver.get(key)):
                 errors.append(
                     path + ".waiver." + key
                     + " must show the reason is in both the spec and the Answer")
@@ -244,7 +240,7 @@ def _validate_start(level, errors):
         errors.append(
             path + ": worker_done proves settlement only and never a start or acceptance")
         return
-    if source in START_SOURCES[1:] and _nonempty(start.get("evidence_ref")):
+    if source in START_SOURCES[1:] and is_nonempty(start.get("evidence_ref")):
         return
     errors.append(
         path + " must be turnStart: observed or the attempt's artifact / "
@@ -261,7 +257,7 @@ def _validate_level(name, level, record, errors):
     if not isinstance(value, bool):
         errors.append(path + ".value must be a boolean")
         return
-    if not _utc(level.get("at")):
+    if not is_utc_instant(level.get("at")):
         errors.append(path + ".at must be an RFC3339 UTC instant")
 
     terminal = level.get("terminal")
@@ -273,13 +269,13 @@ def _validate_level(name, level, record, errors):
             errors.append(path + ".terminal contradicts value: a terminal level is false")
         if level.get("decided_by") != "human":
             errors.append(path + ".terminal needs decided_by: human")
-        if not _nonempty(level.get("reason")):
+        if not is_nonempty(level.get("reason")):
             errors.append(path + ".terminal must record the human's reason")
     elif level.get("decided_by") is not None and name != "merged":
         errors.append(path + ".decided_by is only defined for the merged level")
 
     if value or terminal is not None:
-        if not _nonempty(level.get("evidence_ref")):
+        if not is_nonempty(level.get("evidence_ref")):
             errors.append(
                 path + " is claimed without evidence_ref; a level needs an evidence "
                 "reference")
@@ -289,7 +285,7 @@ def _validate_level(name, level, record, errors):
     if name == "implemented":
         _validate_start(level, errors)
     elif name == "merged":
-        if not _sha(level.get("merge_sha")):
+        if not is_sha(level.get("merge_sha")):
             errors.append("levels.merged.merge_sha must be the merge commit SHA")
         if level.get("pr_state") != "MERGED":
             errors.append("levels.merged.pr_state must be MERGED as reported by the PR host")
@@ -317,7 +313,7 @@ def _validate_level(name, level, record, errors):
             if read_back.get("state") != "closed":
                 errors.append(
                     "levels.tracker_closed.read_back.state must be 'closed' from the tracker")
-            if not _utc(read_back.get("at")):
+            if not is_utc_instant(read_back.get("at")):
                 errors.append(
                     "levels.tracker_closed.read_back.at must be the read-back time")
 
@@ -337,7 +333,7 @@ def validate(record):
     errors = []
     _unknown_keys(record, RECORD_KEYS, "record", errors)
 
-    if not _nonempty(record.get("ticket")):
+    if not is_nonempty(record.get("ticket")):
         errors.append("ticket must be a non-empty string")
     gate = record.get("gate")
     if not isinstance(gate, list) or not gate:
@@ -349,9 +345,9 @@ def validate(record):
     attempt = record.get("attempt")
     if type(attempt) is not int or attempt < 1:
         errors.append("attempt must be a positive integer")
-    if not _sha(record.get("accepted_sha")):
+    if not is_sha(record.get("accepted_sha")):
         errors.append("accepted_sha must be the accepted commit SHA")
-    if not _utc(record.get("accepted_at")):
+    if not is_utc_instant(record.get("accepted_at")):
         errors.append("accepted_at must be an RFC3339 UTC instant")
 
     _validate_pr(record.get("pr"), errors)
@@ -378,9 +374,9 @@ def validate(record):
 
     if record.get("decided_by") not in DECIDERS:
         errors.append("decided_by must be 'coordinator' or 'human'")
-    if not _utc(record.get("decided_at")):
+    if not is_utc_instant(record.get("decided_at")):
         errors.append("decided_at must be an RFC3339 UTC instant")
-    if not _nonempty(record.get("answer_location")):
+    if not is_nonempty(record.get("answer_location")):
         errors.append("answer_location must name where the Answer lives")
 
     return errors
@@ -392,7 +388,7 @@ def validate_observation(observation):
         return ["observation must be a JSON object"]
     errors = []
     _unknown_keys(observation, OBSERVATION_KEYS, "observation", errors)
-    if not _nonempty(observation.get("ticket")):
+    if not is_nonempty(observation.get("ticket")):
         errors.append("observation.ticket must be a non-empty string")
     pr = observation.get("pr")
     if type(pr) is not int or pr < 1:
@@ -401,11 +397,11 @@ def validate_observation(observation):
         errors.append("observation.level must be one of " + ", ".join(LEVEL_NAMES))
     if observation.get("observation") not in OBSERVATIONS:
         errors.append("observation.observation must be 'revert' or 'reopen'")
-    if not _nonempty(observation.get("reason")):
+    if not is_nonempty(observation.get("reason")):
         errors.append("observation.reason must record why the level changed")
-    if not _nonempty(observation.get("evidence_ref")):
+    if not is_nonempty(observation.get("evidence_ref")):
         errors.append("observation.evidence_ref must name the read-back evidence")
-    if not _utc(observation.get("observed_at")):
+    if not is_utc_instant(observation.get("observed_at")):
         errors.append("observation.observed_at must be an RFC3339 UTC instant")
     return errors
 
@@ -426,14 +422,14 @@ def _section(snapshot, name, rows_key):
         return "unknown", name + " authority not provided", []
     if section.get("state") != "ok":
         reason = section.get("reason")
-        return "unknown", name + ": " + (reason if _nonempty(reason) else "unreadable"), []
+        return "unknown", name + ": " + (reason if is_nonempty(reason) else "unreadable"), []
     rows = section.get(rows_key)
     if not isinstance(rows, list):
         return "unknown", name + ": the section carries no rows", []
     return "ok", "", [row for row in rows if isinstance(row, dict)]
 
 
-def _number(value):
+def as_int(value):
     if type(value) is int:
         return value
     if isinstance(value, str) and value.isdigit():
@@ -461,8 +457,8 @@ def verify(record, authority):
         if state != "ok":
             errors.append("PR host is unreadable, so the merge cannot be proven: " + reason)
         else:
-            number = _number(pr.get("number"))
-            row = next((item for item in rows if _number(item.get("pr")) == number), None)
+            number = as_int(pr.get("number"))
+            row = next((item for item in rows if as_int(item.get("pr")) == number), None)
             if row is None:
                 errors.append(
                     "PR host has no record for PR " + str(pr.get("number")))
@@ -521,18 +517,18 @@ def _detail(record):
 
 def _ticket_of(record):
     detail = _detail(record)
-    if _nonempty(detail.get("ticket")):
+    if is_nonempty(detail.get("ticket")):
         return detail["ticket"]
     subject = record.get("subject") if isinstance(record, dict) else None
-    if isinstance(subject, dict) and _nonempty(subject.get("ticket")):
+    if isinstance(subject, dict) and is_nonempty(subject.get("ticket")):
         return subject["ticket"]
     return None
 
 
 def _pr_number(value):
     if isinstance(value, dict):
-        return _number(value.get("number"))
-    return _number(value)
+        return as_int(value.get("number"))
+    return as_int(value)
 
 
 def aggregate(ticket, records):
@@ -579,7 +575,7 @@ def aggregate(ticket, records):
                        if type(_detail(record).get("attempt")) is int), default=1)
         current = [record for record in group
                    if _detail(record).get("attempt") == attempt]
-        signatures = {_canonical({
+        signatures = {LEDGER.canonical_json({
             "accepted_sha": _detail(record).get("accepted_sha"),
             "levels": [
                 (_level_name, _detail(record).get("levels", {}).get(_level_name, {}).get(
@@ -670,7 +666,7 @@ def aggregate(ticket, records):
 def _record_id(payload):
     """A deterministic id: an identical record re-appended is a no-op, a changed one is new."""
     key = "orca-acceptance:" + hashlib.sha256(
-        _canonical(payload).encode("utf-8")).hexdigest()
+        LEDGER.canonical_json(payload).encode("utf-8")).hexdigest()
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
@@ -731,24 +727,24 @@ def _target_repository():
     return None
 
 
-def _home():
+def home():
     """The ledger home, under ledger.py's own path policy and target-repository guard."""
     return LEDGER.home_path(target_repo=_target_repository())
 
 
-def _pending_path(home, run_id, record_id):
-    directory = home / "runs" / run_id / PENDING_DIRNAME
+def pending_path(home, run_id, record_id, dirname=PENDING_DIRNAME):
+    directory = home / "runs" / run_id / dirname
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     return directory / (record_id + ".json")
 
 
-def _write_pending(path, record):
+def write_pending(path, record):
     """Persist a record whose append failed, so the retry writes the same record id."""
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(descriptor, (_canonical(record) + "\n").encode("utf-8"))
+        os.write(descriptor, (LEDGER.canonical_json(record) + "\n").encode("utf-8"))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -788,8 +784,8 @@ def command_record(args, home):
     try:
         record_id = LEDGER.append(record, home=home)
     except (OSError, ValueError, TypeError) as error:
-        path = _pending_path(home, args.run_id, record["record_id"])
-        _write_pending(path, record)
+        path = pending_path(home, args.run_id, record["record_id"])
+        write_pending(path, record)
         _emit({
             "recorded": False,
             "gate_passed": False,
@@ -852,7 +848,7 @@ def _question_items(run_id, home):
     for record in records:
         detail = _detail(record)
         question_id = detail.get("question_id")
-        if not _nonempty(question_id):
+        if not is_nonempty(question_id):
             continue
         if record.get("kind") == "pending":
             existing[question_id] = record
@@ -923,7 +919,7 @@ def command_resolve_question(args, home):
         _emit({"status": "refused", "errors": [
             "unknown question id: " + str(args.question_id)]})
         return 1
-    if not _nonempty(args.reason) or not _nonempty(args.evidence_ref):
+    if not is_nonempty(args.reason) or not is_nonempty(args.evidence_ref):
         _emit({"status": "refused", "errors": [
             "a resolution needs --reason and --evidence-ref"]})
         return 1
@@ -1035,20 +1031,20 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     try:
-        home = _home()
+        ledger_home = home()
         if args.command == "record":
             if args.record == "-":
                 args.record = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
-            return command_record(args, home)
+            return command_record(args, ledger_home)
         if args.command == "observe":
-            return command_observe(args, home)
+            return command_observe(args, ledger_home)
         if args.command == "show":
-            return command_show(args, home)
+            return command_show(args, ledger_home)
         if args.command == "open-questions":
-            return command_open_questions(args, home)
+            return command_open_questions(args, ledger_home)
         if args.command == "resolve-question":
-            return command_resolve_question(args, home)
-        return command_retry(args, home)
+            return command_resolve_question(args, ledger_home)
+        return command_retry(args, ledger_home)
     except (OSError, TypeError, ValueError) as error:
         _emit({"recorded": False, "gate_passed": False, "errors": [str(error)]})
         print("Acceptance error: " + str(error), file=sys.stderr)

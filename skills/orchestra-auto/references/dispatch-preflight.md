@@ -11,6 +11,14 @@ and the second kind of fact does not exist before the Dispatch does. Each line b
 at the moment it becomes observable. Only §4.0.1 can block a dispatch; §4.0.2 stops a wait that has
 already started, and §4.0.3 stops a gate, not a dispatch.
 
+## Contents
+
+- [Preflight receipt](#preflight-receipt)
+- [Live worker settings lookup](#live-worker-settings-lookup)
+- [4.0.1 Before dispatch — the tick sheet (tick every line; do not dispatch until all are green)](#401-before-dispatch--the-tick-sheet-tick-every-line-do-not-dispatch-until-all-are-green)
+- [4.0.2 Right after dispatch — start evidence and the isolation report](#402-right-after-dispatch--start-evidence-and-the-isolation-report)
+- [4.0.3 At teardown, before a gate is declared passed: formatter noise](#403-at-teardown-before-a-gate-is-declared-passed-formatter-noise)
+
 ### Preflight receipt
 
 Every dispatch writes a ledger `kind: preflight` receipt **before** the dispatch. The receipt
