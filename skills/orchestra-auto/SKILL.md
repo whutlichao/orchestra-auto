@@ -222,11 +222,12 @@ and the `Not run this ticket` line. A worker sees only the spec, so anything lef
 Read [communication and recovery](references/inbox-and-waiting.md) before dispatching: one inbox
 consumer per Run, a ledger outside the repository, dedupe by message ID with ack only after the
 whole batch, and the part that keeps it alive — the consumer **ends on a wake event**, so its end
-is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never as
-`nohup`, and after every wake handle the batch and install the next wait: a wake with no new wait
-behind it is a silent stall. Without a job-completion channel, keep the turn in ≤60-second waits
-with evidence-based recovery after three no-progress rounds.
-Detail: [dispatch loop](references/dispatch-loop.md).
+is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never
+`nohup`; after every wake handle the batch, install the next wait (a wake with no new wait behind
+it is a silent stall), and read the inbox with `--status --json` (§1.1 there): `0` healthy/resting,
+`1` fatal, `2` missing, `3` degraded/blocked, while legacy plain `--status` keeps `0`/`1` for one
+minor version. Without a job-completion channel, keep the turn in ≤60-second waits and recover on
+evidence after three no-progress rounds. Detail: [dispatch loop](references/dispatch-loop.md).
 
 ## 5. Reply protocol: decisions go to the human, details are answered for them
 

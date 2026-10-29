@@ -10,6 +10,7 @@
 ## 目录
 
 - [1. 身份和收件器](#1-身份和收件器)
+  - [1.1 状态契约](#11-状态契约)
 - [2. 收件与确认](#2-收件与确认)
 - [3. 协调者持续运行与唤醒](#3-协调者持续运行与唤醒)
   - [3.1 契约：唤醒就是「一条会结束的命令」](#31-契约唤醒就是一条会结束的命令)
@@ -38,19 +39,58 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
 
 按 §3 的方式运行它——作为 harness 能呈现结果的阻塞调用——**不要**用 `nohup … &`。
 脚本把每批投递原子落盘，并在重命名后 fsync 父目录，自动 ack 纯心跳批次，在出现需要你处理的
-事件时**结束进程**：这个结束就是你的唤醒。`--status` 只查看目录，不消费队列：
+事件时**结束进程**：这个结束就是你的唤醒。`--status --json` 只查看目录，不消费队列，
+也是新自动化必须使用的接口：
 
 ```bash
-<SKILL_DIR>/scripts/inbox-loop.sh --status /tmp/orch-<repo>-<run_id>
+<SKILL_DIR>/scripts/inbox-loop.sh --status --json /tmp/orch-<repo>-<run_id>
 ```
 
 脚本依赖 Python 3 标准库（POSIX 文件锁，适用 macOS/Linux/WSL）。启动时用文件锁排除同目录
 双实例，目录绑定 Run/terminal/CLI 后禁止复用；Orca 的 waiter 槽仍是跨目录的最终约束。
 不要迁入旧脚本运行目录：先确认并停止旧 loop 及其 waiter，保留旧消息，使用新的 Run 专属目录。
 
-`--status` 只查看该目录的锁与状态，不扫描其他 Run 的进程，不消费队列。唤醒后 `loop: DEAD`
-是正常静止状态——loop 是刻意退出的——此时 `state.json` 带 `phase=wake`、原因与 `deliveryId`。
-`phase=error` 或 `watch.log` 里的 `ERROR` 行是另一回事：那次停止本身就是一次唤醒，重启前
+`--status` 只查看该目录的锁与状态，不扫描其他 Run 的进程，不消费队列。
+
+### 1.1 状态契约
+
+`--status --json` 在 stdout 打印一个 JSON 对象，退出码为 `0`/`1`/`2`/`3`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `loop` | 有 loop 持有该目录的锁时为 `alive`，否则 `dead`；锁无法探测时为 `unknown`——绝不只凭 pid 文件判断 |
+| `phase` | `state.json` 记录的 `phase`（`starting`、`waiting`、`checking`、`backoff`、`reconciling`、`wake`、`error`），或 `null` |
+| `saved` | `deliveries/*.json` 文件数——耐久记录，不代表已处理 |
+| `unacked` | `saved` 减去有**成功**本地 receipt 的 delivery id；`pending` 与 `failed` 只是证据，不是 ack |
+| `blocked` | FIFO 头部未 ack 时为 `{"deliveryId", "reason": "unacknowledged"}`，否则 `null` |
+| `last_activity_at` | `state.json`、`watch.log` 与 `deliveries/` 中最新的 mtime，UTC ISO-8601，或 `null`；死掉的 loop 唯一可信的时间戳 |
+| `watch` | 本次安装记录的 `WORKER_WATCH`：`on`/`off`；没有安装记录时为 `unknown` |
+| `run`、`terminal` | 该目录所属绑定，或 `null` |
+| `reasons` | 发现的降级原因：`blocked`、`watch_off`、`loop_not_running`，或 `fatal` / `unreadable_delivery` / `missing_state_directory` |
+| `degraded` | `reasons` 非空即 `true`，调用方不必自己比较退出码 |
+| `error` | loop 记录下的致命文本 |
+
+退出码只有这四种含义：
+
+- `0`——唤醒后的正常静止（`phase=wake` 且头部已 ack），或健康的在跑 loop：持有锁或状态干净、
+  无未 ack 头部、watch 开启；
+- `1`——致命错误：`phase=error`、`watch.log` 最后一条 `ERROR` 行，或 delivery 文件不可读
+  （绝不当作空队列）；
+- `2`——状态目录不存在；
+- `3`——降级或阻塞：FIFO 头部未 ack（`blocked`）、关闭了 worker watch（`watch_off`），或 loop
+  在活跃 phase 上停止且既没写唤醒也没写错误（`loop_not_running`）。
+
+计算完全是**本地**的：delivery 文件、`receipts.jsonl`、`state.json`、`watch.log` 与目录锁。
+`--status --json` 既不调用 `check` 也不调用 `check --peek`，所以它从不消费队列，也从不改变任何
+批次的命运。
+
+旧式纯文本 `--status`（不带 `--json`）保留当前的 `0`（有 loop 持有目录）/ `1`（其他一切）退出码，
+保留一个 minor 版本，并在 stderr 打印弃用提示；它以文本形式展示同样的本地事实。新的 `2`/`3`
+只属于 `--json`。安装命令自己的 exit `2`——「另一个实例占用该目录 / 目录已绑定到别的 Run、
+terminal 或 CLI」——是另一份契约，不变；被拒绝的安装让 owner 的状态目录逐字节保持原样。
+
+唤醒后 `loop: DEAD` 是正常静止状态——loop 是刻意退出的——此时 `state.json` 带 `phase=wake`、
+原因与 `deliveryId`。`phase=error` 或 `watch.log` 里的 `ERROR` 行是另一回事：那次停止本身就是一次唤醒，重启前
 必须先查清。绑定、权限或 waiter 问题解决前不自动重启，不杀其他 Run 的进程。
 
 **判活绝不能只看 pid 文件。** 收件器退出时会 unlink `inbox-loop.pid`，所以「pid 文件不存在」
@@ -175,14 +215,29 @@ stdout 打印恰好一行。这才是正确的分工，写全了就是：**收�
    服务端，下次安装立刻取回。**绝不能为了迁就唤醒契约把错误退出改写成正常退出**：退出本身就是
    唤醒，而吞掉失败的退出恰好会掩盖你正需要看的那次事故。
 3. **worker 结算状态**——每 `WORKER_POLL_SECONDS`（默认 15 秒），脚本用只读
-   `worker-list --run <run_id> --json` 把本 Run 的 worker 归约成一个
-   `dispatchId:workerState:dispatchStatus:stage` 签名；与安装时取的签名不一致即唤醒。
-   这一条负责抓住**没有发消息就变了状态**的 worker——崩溃、被重排、没报完成就结算——
+   `worker-list --run <run_id> --include-remote --cursor <cursor> --limit <n>` 把本 Run 的
+   worker 归约成签名。它沿 `page.nextCursor` 一直读到 `page.hasMore` 为假，所以落在后续页上的
+   remote worker 也属于签名；一页声称还有行却没有可用且未出现过的 cursor——或整个 `page`
+   对象缺失——就是**截断**读取，按错误上报，绝不当作完整签名比较。与安装时取的签名不一致即
+   唤醒。这一条负责抓住**没有发消息就变了状态**的 worker——崩溃、被重排、没报完成就结算——
    这样你不必干等一个可能永远不来的 `worker_done`。
+
+   每行是 `dispatchId:workerState:dispatchStatus:stage.detail`，再延伸到实际存在的标量字段：
+   `liveness.verdict`（现行 CLI 的字段）、`liveness.state`（spec 的字段名，缺失时为 `unknown`
+   ——这处偏离是刻意的并已记录，而不是悄悄换名）、`attention.requiresAction`、
+   `nextAction.kind` 与 `stage.detail`，另外只有 `liveness.reason` 存在时才附带末尾段
+   `liveness.reason=<值>`。缺失字段一律序列化为 `unknown`，对象值字段归约为 `unknown`
+   而不是整块嵌入，绝不用计数当签名。
 
 比较要比较**整行签名，绝不要比个数**。个数看不出「一个 worker 被另一个替换」，而在事件之后
 才取快照正是真实漏唤醒的成因：那次提问落在快照之前，没有触发任何东西，直到改成内容级指纹
 才可靠。同理，不要让单一信号（文件出现、`NEW-MESSAGE` 标记、心跳）替代「这里有东西」。
+
+**`WORKER_WATCH=0` 关掉第 3 条腿，是降级，绝不是健康。** 安装会把 `watch: off` 记进
+`state.json`；`--status --json` 报 `watch: "off"`、`reasons: ["watch_off"]`、退出 `3`。文档化的
+替代做法是协调者自己装一个周期读取——`worker-list --run <run_id> --include-remote --json`，
+读遍每一页，间隔沿用 `WORKER_POLL_SECONDS`——并把带时间戳的观察记进台账。第 3 条腿是唯一能
+看见「worker 没发消息就改了状态」的唤醒，关掉它只是把这份职责移回协调者，不是取消它。
 
 ### 3.2 本机形态：pi 与 omp
 
@@ -229,7 +284,7 @@ heartbeat 消息无关。脚本把该子进程的流放在自己的文件里，k
 | `BACKOFF_SECONDS` | `5.0` | 超时或 ack 掉纯心跳批次后、装下一次等待前的停顿，防止瞬间返回的 CLI 被打爆 |
 | `PENDING_BACKOFF_SECONDS` | `30.0` | FIFO 头部是你已落盘但尚未 ack 的批次时的暂停间隔。取值较长，因为服务端此时没有变化 |
 | `WORKER_POLL_SECONDS` | `15.0` | 第三条腿在等待中与暂停中重读 worker 签名的间隔。短到能在两次 30 秒等待之间发现变化 |
-| `WORKER_WATCH` | 开（`1`） | 第三条腿本身的开关；`0`（或 `false`/`off`/`no`）关闭。默认开：每个间隔只有一次只读列表调用，且它是唯一能看见「worker 变了状态却没发消息」的那条腿；若某 Run 的 worker stage 细节频繁抖动，或本机 CLI 无法应答 `worker-list --run`，就关掉它 |
+| `WORKER_WATCH` | 开（`1`） | 第三条腿本身的开关；`0`（或 `false`/`off`/`no`）关闭。默认开：每个间隔只有一次只读列表调用，且它是唯一能看见「worker 变了状态却没发消息」的那条腿；若某 Run 的 worker stage 细节频繁抖动，或本机 CLI 无法应答 `worker-list --run`，就关掉它。关掉是文档化的降级（`watch: off`、退出 `3`），并接管上面的替代职责：自己轮询 `worker-list --include-remote` |
 
 ## 4. worker 必须执行的通信契约
 
@@ -263,7 +318,9 @@ heartbeat 消息无关。脚本把该子进程的流放在自己的文件里，k
 
 报告缺失或 worker 像失联时，把这三处一起读；任何单独一处都可能显得空，或在并不健康时显得健康：
 
-1. **本地**：`--status` 看 `loop`/`phase`；枚举**全部** `deliveries/*.json`，而不是只信
+1. **本地**：`--status --json` 看 `loop`、`phase`、`saved`、`unacked`、`blocked`、
+   `last_activity_at`、`watch` 与 `reasons`（§1.1）——一次本地读取，绝不消费队列；枚举**全部**
+   `deliveries/*.json`，而不是只信
    `NEW-MESSAGE`（它只提示最近落盘的批次，不是待办清单）；把它们与 `receipts.jsonl` 里的成功
    receipt 对比（未 ack 的头部即 `blocked`）；读 `watch.log` 的 `ERROR` 行、`state.json` 里
    最近一次对账观察，以及 `phase=wake` 的原因——那是上一次安装结束的缘由。

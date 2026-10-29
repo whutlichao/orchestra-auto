@@ -69,14 +69,21 @@ the tests exist, and a change that weakens one needs a very good argument:
 - a CLI child never outlives the call that owns it: an exception, a wake or a signal reaps every
   process the loop started. A survivor keeps its CLI waiter slot, so the next install fails while
   the Run still looks watched — which is why cleanup walks every child rather than only the
-  innermost one, and why nothing outside the loop's own children is ever signalled.
+  innermost one, and why nothing outside the loop's own children is ever signalled;
+- `--status --json` is a purely local read — delivery files, receipts, `state.json`, `watch.log`
+  and the directory lock — so it never calls `check` or `check --peek` and never consumes the
+  queue; its exit codes (`0` healthy/resting, `1` fatal, `2` no state directory, `3`
+  degraded/blocked) and the install command's separate `2` are different contracts;
+- the worker signature is compared as whole lines read to the end of `worker-list` pagination
+  with `--include-remote`, never as a count; a truncated page is an error, and a missing field
+  reads `unknown`, never healthy.
 
 The script also owns the wake contract, because a file on disk cannot start a coordinator turn:
 it **ends the process** and prints one machine-readable line on stdout when a newly persisted
 non-heartbeat batch arrives, when this Run's worker signature changes, or when the loop itself
 fails (a non-zero exit is the third leg). That line's fields and the exit codes are a published
-contract — `references/inbox-and-waiting.md` §3 defines them and the tests assert them — so
-changing either is the same kind of change as weakening the list above. A batch that is already on
+contract — `references/inbox-and-waiting.md` §1.1 and §3 define them and the tests assert
+them — so changing either is the same kind of change as weakening the list above. A batch that is already on
 disk **and already announced** is deliberately **not** a wake: it is the coordinator's outstanding
 duty, and waking for it on every install would spin instead of waiting for the next message. The
 one install-time exception is a saved batch that was never announced: reconciliation wakes for the
