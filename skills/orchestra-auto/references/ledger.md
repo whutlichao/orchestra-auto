@@ -126,11 +126,131 @@ an outcome never blocks orchestration and is repaired later.** Never infer durab
 failed command's absence of an error, and never claim a gate passed while its record is not
 durable.
 
-## Module seam for reconciliation
+## Crash windows and classification
 
-`ledger.py` is importable by path, independent of the CLI. Stable functions for later
-workstreams: `validate_record(record)`, `normalize(record)`, `append(record)`,
-`read(run_id, filters)`, `read_report(run_id, filters)` (records plus corrupt lines),
-`summary(run_id)` and `home_path(raw, target_repo)`. `classify` and `reconcile` are a later
-workstream and are deliberately not implemented here; they should consume these functions
-rather than re-open the file format.
+An intent record is durable before its action runs. A crash leaves the Run in one of three
+windows, and every classification carries it:
+
+| Window | Where the crash left the Run | Classifications |
+| --- | --- | --- |
+| W1 | before the action: intent durable, no receipt, no authority effect | `orphan_intent` |
+| W2 | after the action: a receipt or a visible authority effect exists | `matched`, `divergent`, `orphan_effect` |
+| W3 | undecidable: a receipt or an authority source is unreadable | `unknown` |
+
+The five classifications are `matched` (record and authority agree), `orphan_intent` (an
+intent with no provable effect), `orphan_effect` (an authority effect no record claims),
+`divergent` (record and authority disagree) and `unknown` (authority could not be read).
+Every outcome names its `evidence`: a source, a reference and that source's `ok` or
+`unknown` state.
+
+A `request-show` receipt is `completed`, `pending`, `absent` or `unknown`. **`absent` is
+not proof that the action did not happen** — it only says the request key is unknown to the
+authority, so the effect probe still decides. An Orca Task ID is the only join key: a
+provisional progress task (`orca_task_id: null`) is never a join key, so a projection is
+only written once the authority supplies a non-empty Task ID or a dispatch identity.
+
+## Action matrix
+
+`probe` is the authority that can prove the effect; `pending` is what a `pending` receipt
+permits.
+
+| Action | Probe | Pending receipt |
+| --- | --- | --- |
+| worker-start, stop, abandon | worker-list and task-list | same-key replay is joinable |
+| send, reply | message authority | same-key replay is joinable |
+| ack | message authority | repeat is replay-safe |
+| retain, release | worker-list | replay only after settlement |
+| merge | PR host plus git ancestry | never replayed; a decision |
+| pr-create | PR host | look up before creating |
+| tracker-close | tracker | never replayed; a decision |
+| progress, health | request-show only | repeat is replay-safe |
+| preflight, acceptance, closeout | none | local gates are never replayed |
+
+Four outcomes are never replayed automatically, each a `decision`: a merge
+(`merge_replay`), a tracker close (`tracker_close_replay`), a retry after an unproven
+failure (`unproven_retry`, and `unknown_outcome` when the recorded outcome is unknown), and
+a release or retain of a worker whose settlement is not proven (`unsettled_release`). A
+missing reply is `send_reply_no_resend`: no reply is not proof of failure. A stop or
+abandon with a running worker is `stop_abandon_no_retry`.
+
+## Authority snapshot
+
+`reconcile` reads the current state into one snapshot. Every source is either `ok` with
+rows, or `unknown` with a reason — a missing adapter is never an empty success.
+
+| Field | Content |
+| --- | --- |
+| `schema_version` | `1` |
+| `run_id`, `observed_at` | portable Run id and RFC3339 UTC read time |
+| `orca.request_show` | map: request id → `{state: completed/pending/absent/unknown, reason, receipt}` |
+| `orca.workers`, `orca.tasks` | `{state, reason, rows}`; worker rows carry `task_id`, `dispatch_id`, `attempt`, `worker_state`, `worktree` |
+| `orca.worker_show` | map: dispatch id → the worker row |
+| `orca.messages` | optional `{state, reason, rows}`; absent means the message authority is unknown |
+| `pr_host` | `{state, reason, pull_requests}` with `pr`, `head`, `merged` |
+| `tracker` | `{state, reason, tickets}` with `ticket`, `state` |
+| `git` | `{state, reason, ancestry}` with `commit`, `merged_into` |
+
+Unknown top-level or per-source fields are rejected, so a typo cannot silently drop
+authority. `LiveAuthority` builds the snapshot: Orca read commands resolve through
+`ORCA_CLI_COMMAND`; `worker-list` is called with `--include-remote` and both it and
+`task-list` follow `page.hasMore` / `page.nextCursor`. A missing or repeated cursor, a
+non-zero exit or a non-JSON reply is `unknown` with the reason, never an empty result.
+
+## Reconciliation report
+
+`classify(records, snapshot)` is pure and returns the report `reconcile` acts on:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version`, `run_id`, `observed_at` | report identity |
+| `classifications` | one outcome per intent and per unclaimed effect: `classification`, `window`, `action`, `request_id`, `subject`, `evidence`, `repairs`, `decision`, `conflicts` |
+| `repairs` | the allowed repairs gathered from every outcome |
+| `decisions` | the items a coordinator must decide; never auto-executed |
+| `unreadable` | sources that could not be read, with reasons |
+| `counts` | one count per classification |
+| `authority_sources` | `orca`, `pr_host`, `tracker`, `git` → `ok` or `unknown` |
+| `replays` | added by `reconcile`: every same-key replay it ran and its outcome |
+| `closeout` | added by `reconcile`: the closeout `record_id` and the report path |
+
+`reconcile` writes the machine report to
+`runs/<run_id>/reports/reconcile-<digest>.json` (mode `0600`, atomic) and appends at most
+these records: a `result` for a late receipt, an `observation` for a late effect, a
+`progress` observation for a projection update, an `observation` marking a divergence, a
+`gap` for an unreadable source, a `pending` record for a pending decision, and one
+`closeout`. Generated ids are deterministic (`uuid5` over the Run and the source digest),
+so a repeated reconciliation over the same authority appends nothing, replays nothing and
+returns the stored report. The digest excludes `observed_at` and the reconcile-generated
+records; `detail.repair` names the repair on every generated record.
+
+```bash
+# JSON report on stdout; --human prints the readable rendering.
+python3 "$LEDGER" reconcile --run-id "$RUN"
+python3 "$LEDGER" reconcile --run-id "$RUN" --authority recorded.json --human
+# Never repeat a pending joinable action; record a decision instead.
+python3 "$LEDGER" reconcile --run-id "$RUN" --no-replay
+```
+
+`--authority FILE` supplies only the `pr_host`, `tracker` and `git` sections; Orca is always
+read through the CLI. A replay is the one sanctioned mutation: it repeats the command
+recorded on the intent with the same `--retry-request` id. Reconciliation never merges,
+closes a ticket, or stops, releases or retries a worker.
+
+## Reconciliation concurrency
+
+The ledger is read once as a consistent prefix **without** its lock, so appends from other
+processes continue. No Orca or host adapter is called while the per-Run lock is held; every
+authority call and replay returns first, and each append then takes the lock briefly. This
+is deliberate: it avoids a lock ordering between the ledger lock and Orca, the PR host or
+the tracker. A record appended after the read is not lost — the next reconciliation sees it.
+
+## Module seam
+
+`ledger.py` is importable by path, independent of the CLI. Stable functions:
+`validate_record(record)`, `normalize(record)`, `append(record)`, `read(run_id, filters)`,
+`read_report(run_id, filters)` (records plus corrupt lines), `summary(run_id)`,
+`home_path(raw, target_repo)`, `validated_authority(snapshot)`, `classify(records,
+snapshot)`, `validate_report(report)`, `reconcile(run_id, authority, home, replay)`,
+`render_report(report)`, and the `LiveAuthority` / `RecordedSource` adapters. Module callers
+inject an authority object with `snapshot(run_id, records)` and, only if replay may run,
+`replay(request_id, action, subject, command)`; tests use the shared fake in
+`tests/fake_orca.py` and never touch a live Orca or the network.
