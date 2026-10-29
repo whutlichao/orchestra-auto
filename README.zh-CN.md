@@ -332,8 +332,10 @@ implemented、integrated、merged、tracker_closed 四项独立，初始为未�
 unknown/lost/stale，不估算百分比。记录错误只警告，页面服务关闭也不阻断编排。
 
 **何时启动**：每个实际编排 Run 首次派活前，coordinator 在仓库外的新目录初始化 REAL 进度记录并执行
-`open`。`open` 自动选择空闲端口、后台启动只读服务、尝试打开默认浏览器，并以 JSON 输出 URL 与 PID。
-浏览器无法打开时给出警告，用户按输出的 URL 手动访问。启动或记录失败也只警告，Run 继续：看板从不阻断
+`open`。每用户只有一个只读看板服务，位于 `$ORCA_PROGRESS_HOME`（默认 `~/.orca/progress`）：`open`
+把 Run 注册到该单例，仅在无服务或记录中的服务连接被拒绝时启动它，尝试打开默认浏览器，并以 JSON 输出
+`{url, pid, degraded, reason, browser_opened}`。浏览器无法打开时给出警告，用户按输出的 URL 手动访问；
+降级结果（旧版或卡死服务、启动锁冲突）同样只警告，绝不阻断派发。启动或记录失败也只警告，Run 继续：看板从不阻断
 派活、问答、验收或唯一 inbox 接收器。纯问答和编辑本 skill 不启动。下方 DEMO 改用显式 `serve`，只打印
 地址、不打开浏览器。
 
@@ -369,7 +371,8 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-`open` 输出 `{"url": ..., "pid": ..., "browser_opened": ...}`：把 URL 告知用户。`browser_opened`
+`open` 输出 `{"url": ..., "pid": ..., "degraded": false, "reason": "", "browser_opened": ...}`：
+把 URL 告知用户。`browser_opened`
 为 false 时提示用户手动访问该 URL。稍后停止后台看板用输出的 PID 执行 `kill PID`，快照保留。另一终端
 执行更新命令，服务未运行也可写入。`show` 不启动服务即可输出快照；`serve --port 8765` 仍是按需查看的
 显式前台服务。

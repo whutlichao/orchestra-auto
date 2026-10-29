@@ -11,6 +11,7 @@ uses `<ORCA>` for the executable chosen this round; the script receives that pat
 ## Contents
 
 - [1. Identity and the inbox consumer](#1-identity-and-the-inbox-consumer)
+  - [1.1 The status contract](#11-the-status-contract)
 - [2. Collecting and acknowledging](#2-collecting-and-acknowledging)
 - [3. Coordinator liveness and wakeups](#3-coordinator-liveness-and-wakeups)
   - [3.1 The contract: a wake is a command that ends](#31-the-contract-a-wake-is-a-command-that-ends)
@@ -42,10 +43,11 @@ ORCA_CLI_COMMAND=<confirmed executable path> <SKILL_DIR>/scripts/inbox-loop.sh \
 Run that command the way §3 describes — as a blocking call the harness surfaces — **not** as
 `nohup … &`. The script persists every batch atomically, fsyncs the parent directory after the
 rename, acknowledges heartbeat-only batches, and then **ends the process** when something needs
-you: that end is your wakeup. `--status` inspects a directory without consuming its queue:
+you: that end is your wakeup. `--status --json` inspects a directory without consuming its queue,
+and it is the interface new automation must use:
 
 ```bash
-<SKILL_DIR>/scripts/inbox-loop.sh --status /tmp/orch-<repo>-<run_id>
+<SKILL_DIR>/scripts/inbox-loop.sh --status --json /tmp/orch-<repo>-<run_id>
 ```
 
 The script needs Python 3's standard library only (POSIX file locks; works on macOS/Linux/WSL). A
@@ -55,8 +57,50 @@ constraint. Do not migrate an old script's run directory: confirm and stop the o
 waiter first, keep the old messages, and use a fresh Run-specific directory.
 
 `--status` only inspects that directory's lock and state; it does not scan other Runs' processes
-and does not consume the queue. `loop: DEAD` is the normal resting state after a wake — the loop
-exited on purpose, and `state.json` then carries `phase=wake`, the reason and the `deliveryId`.
+and does not consume the queue.
+
+### 1.1 The status contract
+
+`--status --json` prints one JSON object on stdout and exits `0`/`1`/`2`/`3`:
+
+| Field | Meaning |
+| --- | --- |
+| `loop` | `alive` while a loop holds this directory's lock, `dead` otherwise, `unknown` when the lock cannot be probed — never judged from the pid file |
+| `phase` | the `phase` recorded in `state.json` (`starting`, `waiting`, `checking`, `backoff`, `reconciling`, `wake`, `error`), or `null` |
+| `saved` | number of `deliveries/*.json` files — durable records, not necessarily handled |
+| `unacked` | `saved` minus the delivery ids with a **successful** local receipt; `pending` and `failed` are evidence, not an ack |
+| `blocked` | `{"deliveryId", "reason": "unacknowledged"}` naming the FIFO head while it is unacknowledged, else `null` |
+| `last_activity_at` | the newest mtime among `state.json`, `watch.log` and `deliveries/`, in UTC ISO-8601, or `null`; the only timestamp to trust from a dead loop |
+| `watch` | `on`/`off`, the `WORKER_WATCH` this install recorded, `unknown` if no install recorded one |
+| `run`, `terminal` | the binding this directory belongs to, or `null` |
+| `reasons` | the degradations found: `blocked`, `watch_off`, `loop_not_running`, or `fatal` / `unreadable_delivery` / `missing_state_directory` |
+| `degraded` | `true` when `reasons` is non-empty, so a caller never has to compare codes |
+| `error` | the fatal text when the loop recorded one |
+
+Exit codes, and nothing else:
+
+- `0` — resting after a wake (the normal `phase=wake` death with the head acknowledged), or a
+  healthy live loop: the lock is held or the state is clean, no unacked head, watch on;
+- `1` — a fatal error: `phase=error`, the last `ERROR` line in `watch.log`, or an unreadable
+  delivery file (never read as an empty inbox);
+- `2` — the state directory does not exist;
+- `3` — degraded or blocked: an unacknowledged FIFO head (`blocked`), worker watching switched off
+  (`watch_off`), or a loop that stopped with an active phase and wrote neither a wake nor an
+  error (`loop_not_running`).
+
+The computation is **local**: delivery files, `receipts.jsonl`, `state.json`, `watch.log` and the
+directory lock. `--status --json` runs neither `check` nor `check --peek`, so it never consumes the
+queue and never changes a delivery's fate.
+
+Legacy plain `--status` (no `--json`) keeps its current `0` (a loop holds the directory) / `1`
+(everything else) exit codes for one minor version and prints a deprecation notice on stderr; it
+shows the same local facts in text form. The new `2`/`3` codes belong to `--json` alone. The
+install command's own exit `2` — "another instance holds this directory / the directory is bound to
+a different Run, terminal or CLI" — is a separate contract and does not change; a refused install
+leaves the owner's state directory byte for byte as it was.
+
+`loop: DEAD` is the normal resting state after a wake — the loop exited on purpose, and
+`state.json` then carries `phase=wake`, the reason and the `deliveryId`.
 `phase=error`, or an `ERROR` line in `watch.log`, is a different thing: that stop is a wake you
 must investigate before restarting. Do not auto-restart until the binding, permission or waiter
 issue is resolved, and do not kill another Run's process.
@@ -213,17 +257,36 @@ All three legs wake, and each one exists because the others cannot see it:
    satisfy this wake contract**: the exit is the wake, and an exit that swallows the failure hides
    exactly the incident you need to look at.
 3. **Worker settlement state** — every `WORKER_POLL_SECONDS` (default 15 s) the loop reads the
-   read-only `worker-list --run <run_id> --json` and reduces this Run's workers to a signature of
-   `dispatchId:workerState:dispatchStatus:stage`. When the signature no longer matches the one
-   taken at install time, it wakes. This is what catches a worker that changed state *without
-   sending a message* — crashed, requeued, settled without a report — so you do not have to wait
-   for a `worker_done` that may never come.
+   read-only `worker-list --run <run_id> --include-remote --cursor <cursor> --limit <n>` and
+   reduces this Run's workers to a signature. It follows `page.nextCursor` until `page.hasMore`
+   is false, so a remote worker on a later page is part of the signature; a page that claims
+   more rows but carries no usable, unseen cursor — or no `page` object at all — is a
+   **truncated** read and is reported as an error, never compared as if it were complete. When
+   the signature no longer matches the one taken at install time, the loop wakes. This is what
+   catches a worker that changed state *without* sending a message — crashed, requeued, settled
+   without a report — so you do not have to wait for a `worker_done` that may never come.
+
+   Each line is `dispatchId:workerState:dispatchStatus:stage.detail`, extended with the scalar
+   fields that actually exist: `liveness.verdict` (the live CLI's field), `liveness.state` (the
+   spec's name for it, and `unknown` when absent — the deviation is deliberate and recorded
+   rather than silently swapped for the observed one), `attention.requiresAction`,
+   `nextAction.kind` and `stage.detail`, plus a trailing `liveness.reason=<value>` segment only
+   when that field is present. A missing field serializes as `unknown`, an object-valued field
+   is reduced to `unknown` rather than embedded whole, and a count is never the signature.
 
 Compare **whole signature lines, never a count**. A count cannot see one worker replace another,
 and a snapshot taken after the event is how a real wakeup was missed once already: a question that
 landed before the snapshot never triggered it, and only a content-level fingerprint fixed it. For
 the same reason, never let a single signal (a file appearing, a `NEW-MESSAGE` marker, a heartbeat)
 stand in for "there is something here".
+
+**`WORKER_WATCH=0` switches leg 3 off and is a degradation, never healthy.** The install records
+`watch: off` in `state.json`; `--status --json` reports `watch: "off"`, `reasons: ["watch_off"]`
+and exit `3`. The documented replacement is a periodic read the coordinator installs itself —
+`worker-list --run <run_id> --include-remote --json`, every page, at the interval
+`WORKER_POLL_SECONDS` would have used — recorded in the ledger as an observation with its
+timestamp. Leg 3 is the only wake that sees a worker change state without sending anything, so
+switching it off moves that duty to the coordinator; it does not remove it.
 
 ### 3.2 This machine: pi and omp
 
@@ -277,7 +340,7 @@ files, so keepalive lines never contaminate the wake line on stdout.
 | `BACKOFF_SECONDS` | `5.0` | pause before installing the next wait after a timeout or an acknowledged heartbeat batch, so a CLI that answers instantly cannot be hammered |
 | `PENDING_BACKOFF_SECONDS` | `30.0` | pause while the FIFO head is a batch you have already saved and not acked. Long, because nothing changed on the server side yet |
 | `WORKER_POLL_SECONDS` | `15.0` | how often leg 3 re-reads the worker signature, during a wait and during a pause. Short enough to notice a change between two 30-second waits |
-| `WORKER_WATCH` | on (`1`) | leg 3 itself; `0` (or `false`/`off`/`no`) switches it off. On by default because it reads one read-only list per interval and it is the only leg that sees a worker change state without sending anything; switch it off for a Run whose workers churn their stage detail, or when the installed CLI cannot answer `worker-list --run` |
+| `WORKER_WATCH` | on (`1`) | leg 3 itself; `0` (or `false`/`off`/`no`) switches it off. On by default because it reads one read-only list per interval and it is the only leg that sees a worker change state without sending anything; switch it off for a Run whose workers churn their stage detail, or when the installed CLI cannot answer `worker-list --run`. Off is a documented degradation (`watch: off`, exit `3`) and carries the replacement duty above: poll `worker-list --include-remote` yourself |
 
 ## 4. The communication contract workers must follow
 
@@ -320,11 +383,13 @@ order; the first two account for nearly every case.
 When a report is missing or a worker looks gone, read these together; each one on its own can look
 empty, or healthy when it is not:
 
-1. **Local**: `--status` for `loop`/`phase`; enumerate **every** `deliveries/*.json` instead of
-   trusting `NEW-MESSAGE`, which hints at the newest saved batch and is not a to-do list; compare
-   them with the successful receipts in `receipts.jsonl` (an unacked head is `blocked`); read the
-   `ERROR` lines in `watch.log`, `state.json`'s last reconciliation observation, and its
-   `phase=wake` reason for whatever ended the last install.
+1. **Local**: `--status --json` for `loop`, `phase`, `saved`, `unacked`, `blocked`,
+   `last_activity_at`, `watch` and `reasons` (§1.1) — it is one local read and it never consumes the
+   queue; enumerate **every** `deliveries/*.json` instead of trusting `NEW-MESSAGE`, which hints at
+   the newest saved batch and is not a to-do list; compare them with the successful receipts in
+   `receipts.jsonl` (an unacked head is `blocked`); read the `ERROR` lines in `watch.log`,
+   `state.json`'s last reconciliation observation, and its `phase=wake` reason for whatever ended
+   the last install.
 2. **Server queue**: the read-only `check --run <run_id> --terminal <handle> --all --json`.
 3. **Worker state**: `worker-list --include-remote --json` (read every page), then `worker-show`
    and `worker-read` for the Dispatches in question — `projection.attention.requiresAction`, the

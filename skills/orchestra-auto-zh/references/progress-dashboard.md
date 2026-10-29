@@ -2,7 +2,7 @@
 
 **何时读取**：每个实际编排 Run 首次派活前，以及需要查看进度或离线演示时。
 
-目录：[使用](#使用)、[可视化看板](#阅读可视化看板)、[协议 v2](#协议-v2)、[流程写入责任](#流程写入责任)、[恢复与边界](#恢复与边界)。
+目录：[使用](#使用)、[可视化看板](#阅读可视化看板)、[协议 v2](#协议-v2)、[单例注册表](#单例看板注册表)、[流程写入责任](#流程写入责任)、[恢复与边界](#恢复与边界)。
 
 ## 使用
 
@@ -26,7 +26,7 @@ python3 "$PROGRESS" --state "$STATE" init --event-id init-1 --effective --data \
 python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-将 `PROGRESS` 换为当前安装的本 skill 目录下的绝对路径。首次派活前使用真实 Run ID、新的仓库外审计子目录及实际目标仓库执行上述 init 和 open；不要使用示例 ID 或路径。`open` 自动选择空闲端口、后台启动服务并尝试打开默认浏览器，输出 JSON 中的 URL 和 PID；把 URL 告知用户。浏览器无法打开时告知用户手动访问该 URL。服务每三秒刷新，后续节点按下表记录；服务关闭也可写入。看板保持可用以便查看最终状态；需要停止时对本次输出的 PID 执行 `kill PID`，快照保留。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
+将 `PROGRESS` 换为当前安装的本 skill 目录下的绝对路径。首次派活前使用真实 Run ID、新的仓库外审计子目录及实际目标仓库执行上述 init 和 open；不要使用示例 ID 或路径。`open` 把该 Run 注册到每用户唯一的看板服务，必要时启动这个唯一服务，并尝试打开默认浏览器，以 JSON 输出 `{url, pid, degraded, reason, browser_opened}`；把 URL 告知用户。浏览器无法打开时告知用户手动访问该 URL。服务每三秒刷新，后续节点按下表记录；服务关闭也可写入。看板保持可用以便查看最终状态；需要停止时对该单例 PID 执行 `kill PID`，所有快照保留；下一次 `open` 会重启服务并重新注册。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
 `--stale-seconds 300` 控制观察过期阈值；缺少时间显示 unknown，旧观察显示 stale，coordinator
 明确记录的 lost 生命周期独立显示。新活动不代表有效进展。
 
@@ -178,6 +178,58 @@ progress_record worker --event-id report-1 --source worker --data '{"id":"w1-a1"
 progress_record delivery --event-id accept-1 --effective --data '{"task_id":"t1","implemented":true,"evidence":["acceptance-report.txt"]}'
 progress_record end --event-id end-1 --data '{"status":"paused","phase":"waiting","summary":"Awaiting integration"}'
 ```
+
+## 单例看板注册表
+
+每用户只有一个只读看板服务，只有 `open` 会启动或采纳它。`$ORCA_PROGRESS_HOME`
+（默认 `~/.orca/progress`，目录权限 `0700`，位于所有仓库之外，可用 `--registry` 覆盖）包含：
+
+```text
+$ORCA_PROGRESS_HOME
+├── server.json          # {pid, port, protocol_version, started_at, binary_version}
+├── startup.lock         # 仅在启动期间持有的 flock
+├── starting.json        # {pid, port}：启动崩溃窗口
+└── runs/
+    └── run_xxx.json     # {run_id, state_path, registered_at, label}
+```
+
+`progress.json` 仍是持久事实来源；服务无状态，其丢失只是一个 gap，从不是 Run 事件。注册描述符
+只含 Run ID、状态路径、注册时间与可选标签：不含凭证，也不含消息或终端内容。`$ORCA_PROGRESS_HOME`
+不得位于任何仓库内；记录器与注册表共用同一个状态路径校验器（两者都拒绝符号链接与仓库路径）。
+
+**启动算法。** 在 10 秒超时的 `flock(startup.lock)`（`--startup-timeout`）内：
+
+1. 读取 `server.json`，以 500 毫秒超时探测 `GET /health`。
+2. 健康且协议兼容：向该服务注册本 Run 并打开 `/?run=<id>`。对已注册 Run 的第二次 `open` 只更新
+   其描述符，不重复创建。
+3. 旧版服务（无 `/health`）或协议不兼容（`protocol_version` 低于客户端最低版本）：绝不 kill、绝不
+   删除；回退并记录 gap，提示用户自行停止旧服务。
+4. 超时或 5xx：视为卡死，绝不 kill 或删除；回退并记录 gap。
+5. 连接被拒绝：只能证明记录中的服务确已消失，此时才删除 `server.json` 并启动新服务。
+6. 否则启动 `serve --registry $ORCA_PROGRESS_HOME --port 0`，先写带子进程 pid 与端口的
+   `starting.json`，最多等待 5 秒的 `/health`；随后原子写入 `server.json`（临时文件、fsync、
+   rename、目录 fsync），注册本 Run 并删除 `starting.json`。
+
+后续调用者若发现 `starting.json` 会探测它：采纳健康的子进程并写入 `server.json`，仅在记录的子进程
+确已死亡时删除 `starting.json`。未能就绪的崩溃窗口子进程由启动它的调用者停止。启动锁超时视为降级：
+绝不启动第二个服务。
+
+**接口。** 脚本暴露 `registry.register(run)`、`registry.discover()`、`registry.probe()` 与
+`registry.open(run) -> {url, pid, degraded, reason}`；HTTP 层只渲染只读快照。`GET /health` 返回
+`{ok, protocol_version, pid, started_at, runs}`；`protocol_version` 从 `1` 开始。
+`GET /?run=<id>` 渲染页面，`GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不
+返回其他 Run 的数据。
+
+**兼容与回退。** 无 `/health` 的旧服务是 legacy：不向它注册，也绝不 kill。任何 `serve --state`
+回退（启动锁超时、legacy/不兼容/卡死服务、查看器启动失败、DEMO）都不注册、返回
+`degraded: true` 与 `reason`，并豁免单例不变量。`serve --state` 仍用于 DEMO、测试与单 Run 查看，
+且从不写 `server.json`。
+
+**退出码与预算。** 使用 `--json` 时，`open` 在成功与有意降级（包括查看器无法启动）时退出 `0`，
+在调用方输入错误时退出 `1`；不使用 `--json` 时沿用旧退出码，查看器无法启动仍退出 `1`。`open`
+不在派发关键路径上：在派发决策之后或作为尽力而为的后置步骤调用，预算 15 秒，超时即继续。任何
+注册表或启动失败都记录台账 gap，绝不阻断派发；任何路径都不会在等待 Orca 调用时持有启动锁，
+且 `open` 完全不调用 Orca。
 
 ## 固定派发顺序与记录失败
 

@@ -74,7 +74,12 @@ if argv[:2] == ["orchestration", "worker-list"]:
     if isinstance(entry, dict) and "fail" in entry:
         sys.stderr.write(entry["fail"])
         sys.exit(1)
-    sys.stdout.write(json.dumps({"ok": True, "result": {"workers": entry}}))
+    if isinstance(entry, dict) and "workers" in entry:
+        result = {"workers": entry["workers"],
+                  "page": entry.get("page", {"hasMore": False, "nextCursor": None})}
+    else:
+        result = {"workers": entry, "page": {"hasMore": False, "nextCursor": None}}
+    sys.stdout.write(json.dumps({"ok": True, "result": result}))
     sys.exit(0)
 
 if argv[:3] != __CHECK_PREFIX__:
@@ -148,7 +153,8 @@ with open(CALLS, "a") as out:
 if argv[:2] == ["orchestration", "worker-list"]:
     if os.path.exists(MARKER):
         time.sleep(__WORKER_SLEEP__)
-    sys.stdout.write(json.dumps({"ok": True, "result": {"workers": []}}))
+    sys.stdout.write(json.dumps({"ok": True, "result": {
+        "workers": [], "page": {"hasMore": False, "nextCursor": None}}}))
     sys.exit(0)
 
 if argv[:3] != __CHECK_PREFIX__:
@@ -318,6 +324,76 @@ def read_state(state):
 def seed_binding(state, run_id="run_test", terminal="term_coordinator"):
     """The binding an installed loop leaves behind; the ack entry reads it back."""
     (state / "binding.json").write_text(json.dumps({"run": run_id, "terminal": terminal}))
+
+
+def seed_state(state, payload, mtime=None):
+    """Write a ``state.json`` fixture and optionally pin its mtime."""
+    path = state / "state.json"
+    path.write_text(json.dumps(payload))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def iso_utc(epoch):
+    """The timestamp shape the status contract publishes for ``last_activity_at``."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def run_status(state, json_mode=True, env_extra=None, skill_dir=None):
+    """Run the product's status entry point as a subprocess, as a coordinator would."""
+    command = [sys.executable, str((skill_dir or SKILL_DIRS[0]) / SCRIPT_RELATIVE), "--status"]
+    if json_mode:
+        command.append("--json")
+    command.append(str(state))
+    env = dict(os.environ)
+    env.update(env_extra or {})
+    return subprocess.run(
+        command, env=env, capture_output=True, text=True, timeout=20,
+        cwd=str(Path(state).resolve().parent),
+    )
+
+
+def status_report(state, env_extra=None):
+    """Run ``--status --json`` and return ``(completed process, parsed payload)``."""
+    result = run_status(state, env_extra=env_extra)
+    return result, json.loads(result.stdout)
+
+
+#: The files that carry the owning loop's facts. ``watch.log`` is deliberately absent: a
+#: refusal appends its own evidence line there, by the rule that it never overwrites the
+#: state of the loop that owns the directory.
+OWNER_STATE_FILES = ("state.json", "binding.json", "run-id", "receipts.jsonl", "inbox-loop.pid")
+
+
+def owner_state_snapshot(state):
+    """The owner's durable state files, as bytes: what a refused install must not touch."""
+    names = OWNER_STATE_FILES
+    snapshot = {}
+    for name in names:
+        path = state / name
+        if path.is_file():
+            snapshot[name] = path.read_bytes()
+    for path in sorted((state / "deliveries").glob("*")):
+        snapshot["deliveries/" + path.name] = path.read_bytes()
+    return snapshot
+
+
+STATUS_FIELDS = {
+    "loop", "phase", "saved", "unacked", "blocked", "last_activity_at",
+    "watch", "run", "terminal",
+}
+
+
+def load_fake_orca():
+    """Import the shared fake Orca CLI by path, the way the ledger tests do."""
+    path = Path(__file__).resolve().parent / "fake_orca.py"
+    spec = importlib.util.spec_from_file_location("fake_orca", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_ack(skill_dir, state, delivery_id, orca_path):
@@ -962,6 +1038,8 @@ class WorkerStateTests(InboxLoopCase):
         self.assertEqual(payload["types"], [])
         self.assertEqual(payload["messageCount"], 0)
         self.assertIn("ctx_worker", payload["detail"])
+        # The wake detail names the changed fields; the extended signature keeps its own
+        # field order, so this asserts the values the fixture actually set.
         self.assertIn("ready:dispatched:input_accepted", payload["detail"])
         self.assertIn("working:dispatched:running tests", payload["detail"])
 
@@ -1128,7 +1206,469 @@ class BindingTests(InboxLoopCase):
         self.assertIn('"phase": "wake"', result.stdout)
 
 
-class SingleInstanceTests(InboxLoopCase):
+class StatusJsonContractTests(unittest.TestCase):
+    """``--status --json``: the machine contract #35 publishes.
+
+    The computation is local — delivery files, receipts, ``state.json`` and the directory
+    lock — so these tests drive the real entry point as a subprocess and assert the JSON
+    fields and the 0/1/2/3 exit codes. Nothing here starts a loop unless a test needs one.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+
+    def bind(self):
+        """Record the binding an installed loop would leave, for the local-only cases."""
+        seed_binding(self.state)
+
+    def status(self, env_extra=None):
+        return status_report(self.state, env_extra=env_extra)
+
+    def test_missing_state_directory_exits_2_with_the_contract_fields(self):
+        missing = self.tmp / "does-not-exist"
+        result = run_status(missing)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["loop"], "dead")
+        self.assertIsNone(payload["phase"])
+        self.assertEqual(payload["saved"], 0)
+        self.assertEqual(payload["unacked"], 0)
+        self.assertIsNone(payload["blocked"])
+        self.assertIsNone(payload["last_activity_at"])
+        self.assertIn("state directory missing", payload["error"])
+        self.assertEqual(payload["reasons"], ["missing_state_directory"])
+        self.assertTrue(payload["degraded"])
+
+    def test_a_resting_wake_with_a_cleared_head_exits_0(self):
+        delivery = seed_delivery(self.state, "delivery_resting", [normal()])
+        module = load_inbox_module(SKILL_DIRS[0])
+        module.append_receipt(self.state, "delivery_resting", "success")
+        seed_state(self.state, {"phase": "wake", "reason": "delivery",
+                                "deliveryId": "delivery_resting"})
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(payload["phase"], "wake")
+        self.assertEqual(payload["blocked"], None)
+        self.assertEqual(payload["unacked"], 0)
+        self.assertEqual(payload["saved"], 1)
+        self.assertTrue(delivery.exists())
+
+    def test_fatal_phase_error_exits_1(self):
+        seed_state(self.state, {"phase": "error", "error": "simulated CLI failure"})
+        (self.state / "watch.log").write_text(
+            "2026-10-29T00:00:00Z ERROR simulated CLI failure\n")
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(payload["loop"], "dead")
+        self.assertEqual(payload["phase"], "error")
+        self.assertEqual(payload["reasons"], ["fatal"])
+        self.assertIn("simulated CLI failure", payload["error"])
+
+    def test_unacknowledged_fifo_head_exits_3_and_names_the_delivery(self):
+        seed_delivery(self.state, "delivery_head", [normal()], mtime=1_700_000_000)
+        seed_delivery(self.state, "delivery_later", [normal()], mtime=1_700_000_100)
+        seed_state(self.state, {"phase": "backoff"})
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(payload["saved"], 2)
+        self.assertEqual(payload["unacked"], 2)
+        self.assertEqual(payload["blocked"],
+                         {"deliveryId": "delivery_head", "reason": "unacknowledged"})
+        self.assertIn("blocked", payload["reasons"])
+
+    def test_arithmetic_for_saved_unacked_blocked_and_last_activity(self):
+        """One receipt, one missing receipt, several mtimes — each value is independent."""
+        seed_delivery(self.state, "delivery_done", [normal()], mtime=1_700_000_000)
+        seed_delivery(self.state, "delivery_orphan", [normal()], mtime=1_700_000_100)
+        module = load_inbox_module(SKILL_DIRS[0])
+        module.append_receipt(self.state, "delivery_done", "pending")
+        module.append_receipt(self.state, "delivery_done", "failed")
+        module.append_receipt(self.state, "delivery_done", "success")
+        seed_state(self.state, {"phase": "backoff"}, mtime=1_700_000_300)
+        (self.state / "watch.log").write_text("old\n")
+        os.utime(self.state / "watch.log", (1_700_000_050, 1_700_000_050))
+        os.utime(self.state / "deliveries", (1_700_000_200, 1_700_000_200))
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(payload["saved"], 2)
+        self.assertEqual(payload["unacked"], 1, "only the successful receipt acknowledges")
+        self.assertEqual(payload["blocked"],
+                         {"deliveryId": "delivery_orphan", "reason": "unacknowledged"})
+        self.assertEqual(payload["last_activity_at"], iso_utc(1_700_000_300),
+                         "the newest mtime of state.json, watch.log and deliveries/ wins")
+
+    def test_last_activity_falls_back_to_the_deliveries_directory(self):
+        seed_delivery(self.state, "delivery_only", [normal()], mtime=1_700_000_000)
+        os.utime(self.state / "deliveries", (1_700_000_400, 1_700_000_400))
+
+        result, payload = self.status()
+
+        self.assertEqual(payload["last_activity_at"], iso_utc(1_700_000_400))
+
+    def test_status_json_never_calls_the_cli(self):
+        """The queue must not be consumed, and no CLI call is needed to answer locally."""
+        fake_orca = load_fake_orca()
+        fake = fake_orca.FakeOrca(self.tmp / "fake-status", check=[{"messages": []}]).write()
+        seed_delivery(self.state, "delivery_local", [normal()])
+        seed_state(self.state, {"phase": "backoff"})
+
+        result = run_status(self.state, env_extra={"ORCA_CLI_COMMAND": str(fake.path)})
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(fake.calls(), [], "status consumed or probed the queue")
+        self.assertEqual(fake.acks(), [])
+
+    def test_status_json_changes_nothing_on_disk(self):
+        """A status read is a read: it must not add, rewrite or touch a file."""
+        seed_delivery(self.state, "delivery_quiet", [normal()], mtime=1_700_000_000)
+        seed_state(self.state, {"phase": "backoff"}, mtime=1_700_000_100)
+        before = owner_state_snapshot(self.state)
+
+        result = run_status(self.state)
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(owner_state_snapshot(self.state), before)
+        self.assertFalse((self.state / "inbox.lock").exists(),
+                         "probing liveness must not create a lock file")
+
+    def test_a_loop_that_stopped_with_an_active_phase_is_degraded(self):
+        """A busy phase with no lock holder is total silence, not a resting wake."""
+        seed_state(self.state, {"phase": "waiting"})
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(payload["reasons"], ["loop_not_running"])
+        self.assertTrue(payload["degraded"])
+
+    def test_an_error_log_line_the_state_missed_is_fatal(self):
+        """A kill between the ERROR log line and the state write is still a fatal stop."""
+        seed_state(self.state, {"phase": "waiting"}, mtime=1_700_000_000)
+        log_path = self.state / "watch.log"
+        log_path.write_text("2026-10-29T00:00:00Z ERROR CLI exit=1: runtime_unavailable\n")
+        os.utime(log_path, (1_700_000_100, 1_700_000_100))
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(payload["reasons"], ["fatal"])
+        self.assertIn("runtime_unavailable", payload["error"])
+
+    def test_a_corrupt_delivery_is_reported_not_crashed(self):
+        broken = self.state / "deliveries" / "broken.json"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("{not json")
+
+        result, payload = self.status()
+
+        self.assertEqual(result.returncode, 1, "an unreadable delivery is fatal, not empty")
+        self.assertIn("unreadable delivery file", payload["error"])
+
+    def test_watch_off_is_degraded_and_reported(self):
+        """WORKER_WATCH=0 is recorded and never reads as healthy."""
+        process, _ = start_loop(self.tmp, [batch("empty", [])], SKILL_DIRS[0], self.state,
+                                env_extra={"WORKER_WATCH": "0"})
+        try:
+            self.wait_for_file(self.state / "state.json",
+                               lambda text: json.loads(text).get("watch") == "off")
+            result, payload = self.status()
+        finally:
+            stop_loop(process)
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(payload["watch"], "off")
+        self.assertIn("watch_off", payload["reasons"])
+
+    def test_a_live_loop_reports_alive_with_the_binding(self):
+        process, _ = start_loop(self.tmp, [batch("empty", [])], SKILL_DIRS[0], self.state)
+        try:
+            self.wait_for_file(self.state / "inbox-loop.pid", lambda _text: True)
+            result, payload = self.status()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(payload["loop"], "alive")
+            self.assertEqual(payload["run"], "run_test")
+            self.assertEqual(payload["terminal"], "term_coordinator")
+            self.assertEqual(payload["watch"], "on")
+            self.assertIsNone(payload["blocked"])
+            self.assertEqual(payload["blocked"], None)
+            self.assertIsNotNone(payload["last_activity_at"])
+        finally:
+            stop_loop(process)
+
+    def wait_for_file(self, path, predicate, timeout=15.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    if predicate(path.read_text()):
+                        return True
+            time.sleep(0.05)
+        self.fail(f"timed out waiting for {path.name}")
+
+
+class LegacyStatusCompatibilityTests(unittest.TestCase):
+    """Plain ``--status`` keeps its current 0/1 exit codes for one minor version.
+
+    ``0`` while a loop holds the directory, ``1`` otherwise — that is what callers and tests
+    were built on, and the new ``2``/``3`` codes belong to ``--json`` alone.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+
+    def test_plain_status_keeps_one_for_a_resting_wake_and_warns_on_stderr(self):
+        seed_state(self.state, {"phase": "wake", "reason": "delivery"})
+
+        result = run_status(self.state, json_mode=False)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("loop: DEAD", result.stdout)
+        self.assertIn("deprecat", result.stderr.lower(),
+                      "the legacy form must say it is deprecated on stderr")
+
+    def test_plain_status_zeroes_only_while_a_loop_is_alive(self):
+        process, _ = start_loop(self.tmp, [batch("empty", [])], SKILL_DIRS[0], self.state)
+        try:
+            deadline = time.time() + 15
+            while time.time() < deadline and not (self.state / "inbox-loop.pid").exists():
+                time.sleep(0.05)
+            result = run_status(self.state, json_mode=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("loop: ALIVE", result.stdout)
+            self.assertIn("deprecat", result.stderr.lower())
+        finally:
+            stop_loop(process)
+
+    def test_plain_status_keeps_one_for_a_fatal_error(self):
+        seed_state(self.state, {"phase": "error", "error": "boom"})
+
+        result = run_status(self.state, json_mode=False)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('"phase": "error"', result.stdout)
+        self.assertIn("deprecat", result.stderr.lower())
+
+
+class InstallRefusalInvariantTests(InboxLoopCase):
+    """The install command's exit 2 is a separate contract: a refusal changes nothing.
+
+    ``OWNER_STATE_FILES`` are the files that carry the owner's facts. A refused install must
+    leave every one of them byte for byte as it was; ``watch.log`` is deliberately excluded,
+    because the refusal's own evidence line is appended there by the documented rule that a
+    refusal never overwrites the state file of the loop that owns the directory.
+    """
+
+    def test_a_refused_second_install_leaves_the_owner_state_byte_identical(self):
+        process, fake = self.start([batch("delivery_owned", [heartbeat()])])
+        try:
+            self.wait_for(lambda: "delivery_owned" in fake.acks(), what="the heartbeat ack")
+            self.wait_for(lambda: (self.state / "receipts.jsonl").exists(),
+                          what="the receipt log")
+            before = owner_state_snapshot(self.state)
+            env = dict(os.environ)
+            env["ORCA_CLI_COMMAND"] = str(fake.path)
+            occupied = subprocess.run(
+                [sys.executable, str(self.skill_dir / self.script),
+                 "run_test", str(self.state), "term_coordinator"],
+                env=env, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(occupied.returncode, 2, occupied.stderr)
+            self.assertIn("already running", occupied.stderr)
+            self.assertEqual(owner_state_snapshot(self.state), before,
+                             "a refused install rewrote the owner's durable state")
+            # The only thing a refusal adds is its evidence, and it goes to the shared log —
+            # never over the state file that belongs to the loop already running here.
+            self.assertIn("already running", (self.state / "watch.log").read_text())
+        finally:
+            self.stop(process)
+
+    def test_a_binding_mismatch_refusal_changes_no_owner_file(self):
+        process, _ = self.start([batch("delivery_owned", [heartbeat()])])
+        try:
+            self.wait_for(lambda: (self.state / "binding.json").exists()
+                          and (self.state / "binding.json").read_text() != "",
+                          what="the binding")
+            before = owner_state_snapshot(self.state)
+            env = dict(os.environ)
+            env["ORCA_CLI_COMMAND"] = str(
+                FakeOrca(self.tmp / "fake-rebind-invariant", []).path)
+            refused = subprocess.run(
+                [sys.executable, str(self.skill_dir / self.script),
+                 "another_run", str(self.state), "term_other"],
+                env=env, capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(refused.returncode, 2, refused.stderr)
+            self.assertEqual(owner_state_snapshot(self.state), before,
+                             "a binding refusal rewrote the owner's durable state")
+        finally:
+            self.stop(process)
+
+
+class WorkerSignaturePaginationTests(unittest.TestCase):
+    """The signature reads every page, includes remote rows, and never trusts a stub."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+        self.fake_orca = load_fake_orca()
+
+    def signature(self, worker_pages):
+        fake = self.fake_orca.FakeOrca(self.tmp / "fake-workers",
+                                       worker_pages=worker_pages).write()
+        module = load_inbox_module_with_cli(SKILL_DIRS[0], fake.path)
+        return module.worker_signature(self.state, "run_test"), fake, module
+
+    def test_rows_on_later_pages_and_remote_rows_are_included(self):
+        signature, fake, _ = self.signature([
+            {"workers": [worker_row("ctx_first", state="ready")]},
+            {"workers": [worker_row("ctx_remote", state="working", remote=True)]},
+        ])
+
+        self.assertIn("ctx_first", signature)
+        self.assertIn("ctx_remote", signature)
+        self.assertEqual(len(signature.splitlines()), 2, "a page was dropped or duplicated")
+        calls = fake.call_argv()
+        worker_calls = [call for call in calls if call[:2] == ["orchestration", "worker-list"]]
+        self.assertEqual(len(worker_calls), 2, "the second page was never requested")
+        for call in worker_calls:
+            self.assertIn("--include-remote", call)
+            self.assertIn("--limit", call)
+            self.assertIn("--json", call)
+        self.assertIn("--cursor", worker_calls[1])
+        self.assertEqual(worker_calls[1][worker_calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_extended_scalar_fields_are_serialized(self):
+        row = worker_row(
+            "ctx_full", state="working", status="dispatched", detail="running tests",
+            liveness={"verdict": "alive", "reason": "heartbeat recent", "state": "working"},
+            attention={"requiresAction": False},
+            next_action={"kind": "worker_show"},
+        )
+
+        signature, _, _ = self.signature([{"workers": [row]}])
+
+        self.assertEqual(
+            signature,
+            "ctx_full:working:dispatched:running tests:alive:working:false:worker_show"
+            ":liveness.reason=heartbeat recent",
+        )
+
+    def test_missing_fields_read_unknown_never_healthy(self):
+        signature, _, _ = self.signature([{"workers": [{"dispatchId": "ctx_bare"}]}])
+
+        self.assertEqual(
+            signature,
+            "ctx_bare:unknown:unknown:unknown:unknown:unknown:unknown:unknown",
+            "an absent field must never serialize as a healthy-looking value",
+        )
+
+    def test_absent_liveness_state_reads_unknown_while_verdict_is_kept(self):
+        """The spec field is ``liveness.state``; the CLI was verified to return ``verdict``.
+
+        Both are reported as observed scalars, and the absent one is ``unknown`` — the
+        deviation is documented rather than silently renamed.
+        """
+        row = worker_row("ctx_verdict", liveness={"verdict": "alive"})
+
+        signature, _, _ = self.signature([{"workers": [row]}])
+
+        fields = signature.split(":")
+        self.assertEqual(fields[4], "alive", "the observed liveness.verdict is reported")
+        self.assertEqual(fields[5], "unknown", "the unobserved liveness.state is unknown")
+
+    def test_object_valued_fields_are_reduced_to_a_scalar(self):
+        row = worker_row("ctx_objects", next_action={"kind": "worker_show", "detail": "x"},
+                         attention={"requiresAction": {"value": True}})
+
+        signature, _, _ = self.signature([{"workers": [row]}])
+
+        self.assertIn("ctx_objects:", signature)
+        self.assertNotIn("{", signature, "an object was serialized whole into the signature")
+        fields = signature.split(":")
+        self.assertEqual(fields[6], "unknown", "an object is not a boolean")
+        self.assertEqual(fields[7], "worker_show")
+
+    def test_a_truncated_page_never_reads_as_a_complete_signature(self):
+        """``hasMore`` without a cursor is a broken read, not the end of the list."""
+        with self.assertRaises(RuntimeError) as raised:
+            self.signature([
+                {"workers": [worker_row("ctx_first")],
+                 "page": {"hasMore": True, "nextCursor": None}},
+            ])
+        self.assertIn("cursor", str(raised.exception).lower())
+
+    def test_a_repeated_cursor_is_never_a_complete_signature(self):
+        """A server that keeps handing back the same cursor can loop forever, not finish."""
+        pages = [
+            {"workers": [worker_row("ctx_first")],
+             "page": {"hasMore": True, "nextCursor": "cursor-1"}},
+            {"workers": [worker_row("ctx_second")],
+             "page": {"hasMore": True, "nextCursor": "cursor-1"}},
+        ]
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.signature(pages)
+
+        self.assertIn("cursor", str(raised.exception).lower())
+
+    def test_a_response_without_a_page_object_is_not_a_complete_signature(self):
+        """Without ``page`` the reader cannot know whether more rows exist."""
+        with self.assertRaises(RuntimeError) as raised:
+            self.signature([{"workers": [worker_row("ctx_x")], "page": None}])
+
+        self.assertIn("page object", str(raised.exception))
+
+    def test_counts_are_never_the_signature(self):
+        """One worker replacing another keeps the count and must still read as a change."""
+        module = load_inbox_module(SKILL_DIRS[0])
+        before = module.signature_lines([worker_row("ctx_a")])
+        after = module.signature_lines([worker_row("ctx_b")])
+        self.assertEqual(len(before), 1)
+        self.assertEqual(len(after), 1)
+        self.assertNotEqual(before, after)
+
+
+def worker_row(dispatch_id="ctx_worker", state="ready", status="dispatched", detail="input_accepted",
+               liveness=None, attention=None, next_action=None, remote=False):
+    """One verified ``worker-list`` row, with only the optional fields it is given."""
+    projection = {"stage": {"detail": detail}}
+    if liveness is not None:
+        projection["liveness"] = liveness
+    if attention is not None:
+        projection["attention"] = attention
+    if next_action is not None:
+        projection["nextAction"] = next_action
+    row = {
+        "dispatchId": dispatch_id,
+        "taskId": "task_worker",
+        "runId": "run_test",
+        "workerState": state,
+        "dispatchStatus": status,
+        "projection": projection,
+    }
+    if remote:
+        row["remote"] = True
+    return row
+
+
+
     def test_second_instance_for_the_same_directory_is_refused(self):
         """The directory lock keeps two consumers off one Run's queue."""
         process, fake = self.start([batch("delivery_lock", [heartbeat()])])
@@ -1342,7 +1882,8 @@ class BothLanguageVariantsTests(unittest.TestCase):
         for name in ("atomic", "batch_messages", "check", "cli_streams", "emit", "env_flag",
                      "env_number", "fatal", "idle", "locked", "main", "parse_cli_result",
                      "persist_batch", "status", "wake_event", "worker_changes",
-                     "worker_signature"):
+                     "worker_signature", "status_report", "signature_lines", "scalar",
+                     "directory_mtime", "loop_state", "status_arguments"):
             self.assertTrue(hasattr(english, name), f"missing {name}")
             self.assertTrue(hasattr(chinese, name), f"missing {name}")
 

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,14 +20,36 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import webbrowser
-from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request, urlopen
 
 VERSION = 2
 READABLE_VERSIONS = {1, 2}
 ASSET = Path(__file__).with_name('progress.html')
 BANNER = 'Read-only progress: '
 LOCK_TIMEOUT_SECONDS = 2.0
+
+#: The singleton registry protocol. ``protocol_version`` starts at 1; a service that
+#: does not answer ``/health`` with at least this version is legacy or incompatible.
+PROTOCOL_VERSION = 1
+REGISTRY_HOME_ENV = 'ORCA_PROGRESS_HOME'
+DEFAULT_REGISTRY_HOME = '~/.orca/progress'
+REGISTRY_DIRECTORY_MODE = 0o700
+STARTUP_LOCK_TIMEOUT_SECONDS = 10.0
+HEALTH_TIMEOUT_SECONDS = 0.5
+READINESS_TIMEOUT_SECONDS = 5.0
+#: ``open`` is never on the dispatch critical path; this is its whole budget.
+OPEN_BUDGET_SECONDS = 15.0
+SERVER_NAME = 'server.json'
+STARTING_NAME = 'starting.json'
+STARTUP_LOCK_NAME = 'startup.lock'
+REGISTRY_RUNS_DIR = 'runs'
+DESCRIPTOR_FIELDS = {'run_id', 'state_path', 'registered_at', 'label'}
+SERVER_FIELDS = {'pid', 'port', 'protocol_version', 'started_at', 'binary_version'}
+
 FIELDS = {
     'init': {'id', 'target_repo', 'mode', 'phase', 'status', 'title', 'orca_run_id',
              'health'},
@@ -200,14 +223,61 @@ def migrate_state(state):
 
 
 def save(directory, state):
-    fd, name = tempfile.mkstemp(prefix='.progress-', dir=directory)
+    # One atomic writer for the snapshot, server.json and every descriptor: temp file,
+    # fsync, rename, directory fsync.
+    atomic_write_json(directory / 'progress.json', state, directory,
+                      prefix='.progress-')
+
+
+def required(data, *fields):
+    if any(field not in data or data[field] == '' for field in fields):
+        raise ValueError('required fields: ' + ', '.join(fields))
+
+
+# --- singleton registry -----------------------------------------------------------
+#
+# One dashboard service per user. ``$ORCA_PROGRESS_HOME`` (default ``~/.orca/progress``,
+# mode 0700, outside every repository) holds ``server.json``, ``startup.lock`` and one
+# ``runs/<run_id>.json`` descriptor per registered Run. The startup lock serializes
+# starts; a later caller registers with the winner and never starts a second service.
+# The HTTP layer only renders read-only snapshots from these descriptors.
+
+def registry_home(raw=None, environ=None):
+    """Resolve ``$ORCA_PROGRESS_HOME`` (or the override); never create it here."""
+    source = os.environ if environ is None else environ
+    value = raw if raw is not None else source.get(REGISTRY_HOME_ENV, DEFAULT_REGISTRY_HOME)
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise Degraded('registry_home_invalid', 'progress home must not traverse a symlink')
+    path = path.resolve()
+    if repository_ancestor(path):
+        raise Degraded('registry_home_invalid',
+                       'the progress home must live outside every repository')
+    return path
+
+
+def ensure_private_directory(path):
+    if path.is_symlink():
+        raise Degraded('registry_home_invalid', 'progress home must not be a symlink')
+    path.mkdir(parents=True, exist_ok=True, mode=REGISTRY_DIRECTORY_MODE)
+    os.chmod(path, REGISTRY_DIRECTORY_MODE)
+
+
+def atomic_write_json(path, payload, directory=None, prefix=None):
+    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+    directory = Path(directory or path.parent)
+    prefix = prefix or '.' + Path(path).name + '-'
+    fd, name = tempfile.mkstemp(prefix=prefix, dir=directory)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            json.dump(state, output, ensure_ascii=False, indent=2)
+            json.dump(payload, output, ensure_ascii=False, indent=2)
             output.write('\n')
             output.flush()
             os.fsync(output.fileno())
-        os.replace(name, directory / 'progress.json')
+        os.chmod(name, 0o600)
+        os.replace(name, path)
         dfd = os.open(directory, os.O_RDONLY)
         try:
             os.fsync(dfd)
@@ -218,13 +288,409 @@ def save(directory, state):
             os.unlink(name)
 
 
-def required(data, *fields):
-    if any(field not in data or data[field] == '' for field in fields):
-        raise ValueError('required fields: ' + ', '.join(fields))
+def read_json_object(path, reason):
+    """Read one small JSON object; refuse symlinks and non-object payloads."""
+    if path.is_symlink():
+        raise Degraded(reason, str(path.name) + ' must not be a symlink')
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise Degraded(reason, str(path.name) + ' is unreadable: ' + type(error).__name__)
+    if not isinstance(data, dict):
+        raise Degraded(reason, str(path.name) + ' must be an object')
+    return data
+
+
+def validated_descriptor(raw):
+    if not isinstance(raw, dict):
+        raise ValueError('a Run descriptor must be an object')
+    unknown = sorted(set(raw) - DESCRIPTOR_FIELDS)
+    if unknown:
+        raise ValueError('unknown descriptor fields: ' + ', '.join(unknown))
+    run_id = raw.get('run_id')
+    if not isinstance(run_id, str) or not PORTABLE_ID.fullmatch(run_id):
+        raise ValueError('run_id must be a portable identifier')
+    label = raw.get('label', '')
+    if not isinstance(label, str) or len(label) > 4096:
+        raise ValueError('label must be a short string')
+    descriptor = {'run_id': run_id, 'state_path': str(state_path(raw.get('state_path'))),
+                  'label': label}
+    registered_at = raw.get('registered_at')
+    if registered_at is not None:
+        if not isinstance(registered_at, str) or not registered_at:
+            raise ValueError('registered_at must be a timestamp string')
+        descriptor['registered_at'] = registered_at
+    return descriptor
+
+
+def register(run, home=None):
+    """Register (or update) one Run descriptor atomically; return the descriptor."""
+    home = registry_home(home)
+    ensure_private_directory(home)
+    runs = home / REGISTRY_RUNS_DIR
+    ensure_private_directory(runs)
+    descriptor = validated_descriptor(run)
+    path = runs / (descriptor['run_id'] + '.json')
+    registered_at = now()
+    if path.exists():
+        try:
+            existing = validated_descriptor(read_json_object(path, 'descriptor_invalid'))
+            registered_at = existing.get('registered_at') or registered_at
+        except (Degraded, ValueError):
+            pass
+    descriptor['registered_at'] = registered_at
+    stored = {key: descriptor[key] for key in
+              ('run_id', 'state_path', 'registered_at', 'label')}
+    atomic_write_json(path, stored, runs)
+    return stored
+
+
+def discover(home=None):
+    """Every readable Run descriptor, sorted by Run ID; unreadable ones are kept, skipped."""
+    home = registry_home(home)
+    runs = home / REGISTRY_RUNS_DIR
+    if runs.is_symlink() or not runs.is_dir():
+        return []
+    descriptors = []
+    for path in sorted(runs.iterdir()):
+        if path.suffix != '.json' or not path.is_file() or path.is_symlink():
+            continue
+        try:
+            descriptors.append(validated_descriptor(read_json_object(path, 'descriptor_invalid')))
+        except (Degraded, ValueError):
+            continue
+    return descriptors
+
+
+def read_server(home):
+    path = home / SERVER_NAME
+    if path.is_symlink():
+        raise Degraded('server_record_invalid', 'server.json must not be a symlink')
+    if not path.exists():
+        return None
+    server = read_json_object(path, 'server_record_invalid')
+    unknown = sorted(set(server) - SERVER_FIELDS)
+    if unknown or type(server.get('pid')) is not int or type(server.get('port')) is not int:
+        raise Degraded('server_record_invalid', 'server.json is not a server record')
+    return server
+
+
+def probe_port(port, expected_pid=None):
+    """One 500 ms ``/health`` probe; returns a status, never kills or deletes anything."""
+    url = 'http://127.0.0.1:' + str(port) + '/health'
+    try:
+        with urlopen(Request(url, headers={'Cache-Control': 'no-store'}),
+                     timeout=HEALTH_TIMEOUT_SECONDS) as response:
+            body = response.read(65536)
+    except HTTPError as error:
+        status = 'legacy' if error.code in (400, 404) else 'unresponsive'
+        return {'status': status, 'port': port, 'pid': expected_pid, 'health': None}
+    except URLError as error:
+        refused = isinstance(getattr(error, 'reason', None), ConnectionRefusedError)
+        return {'status': 'refused' if refused else 'unresponsive',
+                'port': port, 'pid': expected_pid, 'health': None}
+    except (TimeoutError, OSError):
+        return {'status': 'unresponsive', 'port': port, 'pid': expected_pid, 'health': None}
+    try:
+        health = json.loads(body)
+    except ValueError:
+        return {'status': 'legacy', 'port': port, 'pid': expected_pid, 'health': None}
+    if not isinstance(health, dict) or health.get('ok') is not True:
+        return {'status': 'unresponsive', 'port': port, 'pid': expected_pid, 'health': None}
+    version = health.get('protocol_version')
+    if type(version) is not int or version < PROTOCOL_VERSION:
+        return {'status': 'incompatible', 'port': port, 'pid': expected_pid, 'health': health}
+    return {'status': 'healthy', 'port': port, 'pid': health.get('pid', expected_pid),
+            'health': health}
+
+
+def probe(home=None):
+    """Probe the registered service: absent, healthy, legacy, incompatible, unresponsive."""
+    home = registry_home(home)
+    server = read_server(home)
+    if server is None:
+        return {'status': 'absent', 'port': None, 'pid': None, 'health': None}
+    return probe_port(server['port'], server['pid'])
+
+
+@contextmanager
+def startup_lock(directory, timeout=STARTUP_LOCK_TIMEOUT_SECONDS):
+    """The 10 s startup flock; holding it means one start path at a time per user."""
+    if timeout < 0:
+        raise ValueError('startup-timeout must be nonnegative')
+    fd = os.open(directory / STARTUP_LOCK_NAME, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a') as lock:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Degraded(
+                        'startup_lock_timeout',
+                        'another dashboard start is in progress; using a local viewer')
+                time.sleep(0.025)
+        yield
+
+
+def load_ledger(script_dir=None):
+    """Import the sibling ``ledger.py`` by path; storage rules live there, not here."""
+    directory = Path(script_dir) if script_dir else Path(__file__).resolve().parent
+    path = directory / 'ledger.py'
+    name = 'orchestra_progress_ledger_' + str(abs(hash(str(path))))
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ValueError('cannot import the ledger module from ' + str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def record_gap(run_id, reason, ledger_home=None):
+    """Best-effort ledger gap; a registry or startup failure never blocks dispatch."""
+    try:
+        if not isinstance(run_id, str) or not PORTABLE_ID.fullmatch(run_id):
+            return ''
+        record = {
+            'schema_version': 1, 'record_id': str(uuid.uuid4()), 'kind': 'gap',
+            'run_id': run_id, 'subject': {}, 'action': 'progress', 'request_id': '',
+            'idempotency': 'none', 'state': 'observed',
+            'evidence_ref': 'progress-dashboard', 'observed_at': now(), 'actor': 'rule',
+            'detail': {'repair': 'gap', 'source': 'progress-dashboard', 'reason': reason},
+        }
+        return load_ledger().append(record, home=ledger_home)
+    except Exception:
+        return ''
+
+
+def _alive(pid):
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _unlink(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_starting(home):
+    """The startup crash-window record; an unparseable one is cleaned, not adopted."""
+    path = home / STARTING_NAME
+    if not path.exists():
+        return None
+    try:
+        starting = read_json_object(path, 'starting_record_invalid')
+    except Degraded:
+        _unlink(path)
+        return None
+    if type(starting.get('pid')) is not int or type(starting.get('port')) is not int:
+        _unlink(path)
+        return None
+    return starting
+
+
+def _server_payload(pid, port, health=None):
+    return {'pid': pid, 'port': port, 'protocol_version': PROTOCOL_VERSION,
+            'started_at': (health or {}).get('started_at') or now(),
+            'binary_version': str(VERSION)}
+
+
+def _info(port, pid, run_id, degraded=False, reason=''):
+    return {'url': 'http://127.0.0.1:' + str(port) + '/?run=' + run_id,
+            'pid': pid, 'degraded': degraded, 'reason': reason, 'browser_opened': False}
+
+
+def _spawn_viewer(executable, arguments):
+    """Start a detached viewer and read its printed address within 5 s."""
+    child = subprocess.Popen(
+        [sys.executable, str(executable), *arguments],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        start_new_session=True)
+    ready, _, _ = select.select([child.stdout], [], [], READINESS_TIMEOUT_SECONDS)
+    line = child.stdout.readline().strip() if ready else ''
+    child.stdout.close()
+    if not line.startswith(BANNER):
+        _stop(child)
+        return None
+    port = urlsplit(line[len(BANNER):]).port
+    return child, port
+
+
+def _stop(child):
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+    else:
+        child.wait()
+
+
+def _start_registry_server(home, executable, deadline=None):
+    """Start ``serve --registry <home> --port 0`` and wait up to 5 s for ``/health``."""
+    spawned = _spawn_viewer(executable, ['--registry', str(home), 'serve', '--port', '0'])
+    if spawned is None:
+        return None
+    child, port = spawned
+    # The crash-window record exists before readiness and before server.json is durable.
+    atomic_write_json(home / STARTING_NAME, {'pid': child.pid, 'port': port}, home)
+    readiness = READINESS_TIMEOUT_SECONDS
+    if deadline is not None:
+        readiness = max(0.0, min(readiness, deadline - time.monotonic()))
+    deadline = time.monotonic() + readiness
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            break
+        found = probe_port(port, child.pid)
+        if found['status'] == 'healthy':
+            return child, port, found['health']
+        time.sleep(0.05)
+    # This child is ours and never became ready; the pre-existing-service rule does not
+    # apply, but no second registry server may be left behind.
+    _stop(child)
+    _unlink(home / STARTING_NAME)
+    return None
+
+
+def _fallback(directory, run_id, reason, executable, opener):
+    """Unregistered ``serve --state`` fallback: degraded result, never writes server.json."""
+    spawned = _spawn_viewer(executable, ['--state', str(directory), 'serve', '--port', '0'])
+    if spawned is None:
+        raise Degraded('viewer_unavailable', 'dashboard server failed to start')
+    child, port = spawned
+    info = _info(port, child.pid, run_id, degraded=True, reason=reason)
+    info['browser_opened'] = _open_browser(info['url'], opener)
+    return info
+
+
+def _open_browser(url, opener=None):
+    try:
+        return bool((opener or webbrowser.open)(url))
+    except Exception:
+        return False
+
+
+def _open_registered(run_id, directory, home, executable, startup_timeout, opener,
+                     label='', deadline=None):
+    try:
+        home = registry_home(home)
+    except Degraded as error:
+        return _fallback(directory, run_id, error.reason, executable, opener)
+    try:
+        ensure_private_directory(home)
+        ensure_private_directory(home / REGISTRY_RUNS_DIR)
+    except OSError:
+        return _fallback(directory, run_id, 'registry_unavailable', executable, opener)
+    if deadline is not None:
+        startup_timeout = max(0.0, min(startup_timeout, deadline - time.monotonic()))
+    try:
+        with startup_lock(home, startup_timeout):
+            return _open_locked(run_id, directory, home, executable, opener, label,
+                                deadline)
+    except Degraded as error:
+        # Every registry or startup failure degrades to an unregistered local viewer;
+        # none of them may block dispatch, and none may kill a pre-existing service.
+        return _fallback(directory, run_id, error.reason, executable, opener)
+
+
+def _open_locked(run_id, directory, home, executable, opener, label='', deadline=None):
+    found = probe(home)
+    status = found['status']
+    if status == 'healthy':
+        register({'run_id': run_id, 'state_path': str(directory), 'label': label}, home=home)
+        info = _info(found['port'], found['pid'], run_id)
+        info['browser_opened'] = _open_browser(info['url'], opener)
+        return info
+    if status in {'legacy', 'incompatible'}:
+        raise Degraded('service_' + status,
+                       'an old dashboard service is running; stop it manually and retry')
+    if status == 'unresponsive':
+        raise Degraded('service_unresponsive',
+                       'the dashboard service did not answer /health; inspect it manually')
+    if status == 'refused':
+        # Only a refused connection proves the recorded service is gone; never a timeout.
+        _unlink(home / SERVER_NAME)
+    starting = read_starting(home)
+    if starting is not None:
+        adopted = probe_port(starting['port'], starting['pid'])
+        healthy_child = (adopted['status'] == 'healthy'
+                         and adopted['pid'] in (None, starting['pid']))
+        if healthy_child:
+            atomic_write_json(home / SERVER_NAME,
+                              _server_payload(starting['pid'], starting['port'],
+                                              adopted['health']), home)
+            _unlink(home / STARTING_NAME)
+            register({'run_id': run_id, 'state_path': str(directory), 'label': label},
+                     home=home)
+            info = _info(starting['port'], starting['pid'], run_id)
+            info['browser_opened'] = _open_browser(info['url'], opener)
+            return info
+        if not _alive(starting['pid']):
+            _unlink(home / STARTING_NAME)
+        else:
+            raise Degraded('startup_child_unresponsive',
+                           'a previous dashboard start is still running but not healthy')
+    started = _start_registry_server(home, executable, deadline)
+    if started is None:
+        return _fallback(directory, run_id, 'viewer_unavailable', executable, opener)
+    child, port, health = started
+    atomic_write_json(home / SERVER_NAME, _server_payload(child.pid, port, health), home)
+    _unlink(home / STARTING_NAME)
+    register({'run_id': run_id, 'state_path': str(directory), 'label': label}, home=home)
+    info = _info(port, child.pid, run_id)
+    info['browser_opened'] = _open_browser(info['url'], opener)
+    return info
+
+
+def open(run, executable=None, home=None, startup_timeout=STARTUP_LOCK_TIMEOUT_SECONDS,
+         opener=None):
+    """Open (or adopt) the per-user dashboard for one Run.
+
+    Returns ``{url, pid, degraded, reason, browser_opened}``. Registry and startup
+    failures are degradations: they record a ledger gap, fall back to ``serve --state``
+    and never block dispatch. ``open`` never calls Orca and has a 15 s budget.
+    """
+    if not isinstance(run, dict):
+        raise ValueError('open needs a Run object')
+    run_id = run.get('run_id')
+    if not isinstance(run_id, str) or not PORTABLE_ID.fullmatch(run_id):
+        raise ValueError('run_id must be a portable identifier')
+    directory = state_path(run.get('state_path'))
+    mode = run.get('mode')
+    if mode == 'DEMO':
+        raise Degraded('demo_not_registered',
+                       'a DEMO run uses serve --state and never joins the singleton registry')
+    executable = executable or Path(__file__).resolve()
+    deadline = time.monotonic() + OPEN_BUDGET_SECONDS
+    try:
+        info = _open_registered(run_id, directory, home, executable, startup_timeout,
+                                opener, run.get('label', ''), deadline)
+    except Degraded as error:
+        record_gap(run_id, error.reason)
+        raise
+    if info['degraded']:
+        record_gap(run_id, info['reason'])
+    return info
 
 
 def mutate(directory, command, data, event_id, source, effective=False,
            bookkeeping=False, timeout=LOCK_TIMEOUT_SECONDS):
+    directory = state_path(str(directory))
     validate_data(command, data, source)
     # The fingerprint is the caller's exact input, so an identical retry stays a
     # no-op across the v1 -> v2 migration; `bookkeeping` is added only when set so
@@ -369,7 +835,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
 
 
 def view(directory, stale_seconds):
-    state = read_state(directory)
+    state = read_state(state_path(str(directory)))
     current = datetime.now(timezone.utc).timestamp()
     for entity in [state['run'], *state['workers'].values()]:
         observed = entity.get('last_observed')
@@ -380,19 +846,44 @@ def view(directory, stale_seconds):
     return state
 
 
-def serve(directory, port, stale_seconds):
+def serve(directory, port, stale_seconds, registry=None):
+    """Serve one Run (``serve --state``) or the registered Runs (``serve --registry``).
+
+    The HTTP layer is read-only: it renders ``progress.json`` snapshots and the local
+    registry descriptors and never writes, schedules, or reads any file content.
+    """
     page = ASSET.read_bytes()
+    started_at = now()
+
+    def health_payload():
+        runs = [descriptor['run_id'] for descriptor in discover(registry)] if registry else []
+        return {'ok': True, 'protocol_version': PROTOCOL_VERSION, 'pid': os.getpid(),
+                'started_at': started_at, 'runs': runs}
+
+    def selected_directory(query):
+        if registry is None:
+            return directory
+        wanted = (parse_qs(query).get('run') or [''])[0]
+        for descriptor in discover(registry):
+            if descriptor['run_id'] == wanted:
+                return Path(descriptor['state_path'])
+        raise ValueError('unknown or missing run')
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            route = urlsplit(self.path).path
+            parts = urlsplit(self.path)
+            route = parts.path
             status, mime = 200, 'text/html; charset=utf-8'
             if route == '/':
                 body = page
+            elif route == '/health':
+                mime = 'application/json; charset=utf-8'
+                body = json.dumps(health_payload()).encode()
             elif route == '/snapshot':
                 mime = 'application/json; charset=utf-8'
                 try:
-                    body = json.dumps(view(directory, stale_seconds)).encode()
+                    body = json.dumps(view(selected_directory(parts.query),
+                                           stale_seconds)).encode()
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     status = 503
                     body = json.dumps({'error': 'Snapshot unavailable: ' + type(error).__name__}).encode()
@@ -417,9 +908,17 @@ def serve(directory, port, stale_seconds):
         server.server_close()
 
 
+def _state_required(value):
+    return value is not None and value != ''
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--state', required=True, help='external audit directory, separate per run')
+    parser.add_argument('--state', help='external audit directory, separate per run')
+    parser.add_argument('--registry', help='the singleton progress home (overrides $ORCA_PROGRESS_HOME)')
+    parser.add_argument('--label', default='', help='optional human label for this Run descriptor')
+    parser.add_argument('--startup-timeout', type=float, default=STARTUP_LOCK_TIMEOUT_SECONDS,
+                        help='seconds to wait for the dashboard startup lock (default 10)')
     parser.add_argument('--json', action='store_true',
                         help='machine mode: degraded results exit 0 with degraded/reason')
     parser.add_argument('--lock-timeout', type=float, default=LOCK_TIMEOUT_SECONDS,
@@ -434,41 +933,48 @@ def main():
         item.add_argument('--source', choices=('coordinator', 'worker'), default='coordinator')
         item.add_argument('--effective', action='store_true', help='coordinator observed meaningful progress')
     sub.add_parser('show')
-    sub.add_parser('open', help='start a localhost viewer and open it in the browser')
+    sub.add_parser('open', help='start or adopt the per-user localhost viewer and open it in the browser')
     viewer = sub.add_parser('serve')
+    viewer.add_argument('--registry', dest='serve_registry',
+                        help='serve every registered Run from this progress home')
     viewer.add_argument('--port', type=int, default=8765)
     viewer.add_argument('--stale-seconds', type=int, default=300)
     args = parser.parse_args()
+    # ``serve --registry DIR`` is the documented spelling; the global flag is equivalent.
+    if getattr(args, 'serve_registry', None):
+        if args.registry and args.registry != args.serve_registry:
+            parser.error('--registry given twice with different values')
+        args.registry = args.serve_registry
     try:
         if args.lock_timeout < 0:
             raise ValueError('lock-timeout must be nonnegative')
+        if args.startup_timeout < 0:
+            raise ValueError('startup-timeout must be nonnegative')
+        if args.command == 'serve' and args.registry and args.state:
+            raise ValueError('serve takes either --state or --registry, not both')
+        if args.command == 'serve' and args.registry:
+            if args.stale_seconds < 0:
+                raise ValueError('stale-seconds must be nonnegative')
+            registry = registry_home(args.registry)
+            ensure_private_directory(registry)
+            ensure_private_directory(registry / REGISTRY_RUNS_DIR)
+            serve(None, args.port, args.stale_seconds, registry)
+            return 0
+        if not _state_required(args.state):
+            raise ValueError('--state is required for this command')
         directory = state_path(args.state)
         if args.command == 'show':
             print(json.dumps(view(directory, 300), ensure_ascii=False))
         elif args.command == 'open':
-            read_state(directory)
-            child = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), '--state', str(directory),
-                 'serve', '--port', '0'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, start_new_session=True)
-            ready, _, _ = select.select([child.stdout], [], [], 5)
-            line = child.stdout.readline().strip() if ready else ''
-            child.stdout.close()
-            if not line.startswith(BANNER):
-                child.terminate()
-                try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-                raise Degraded('viewer_unavailable', 'dashboard server failed to start')
-            url = line[len(BANNER):]
-            try:
-                opened = webbrowser.open(url)
-            except Exception:
-                opened = False
-            print(json.dumps({'url': url, 'pid': child.pid, 'browser_opened': opened}))
-            if not opened:
+            state = read_state(directory)
+            run = {'run_id': state['run']['id'], 'state_path': str(directory),
+                   'mode': state['run'].get('mode')}
+            if args.label:
+                run['label'] = args.label
+            info = open(run, executable=Path(__file__).resolve(), home=args.registry,
+                        startup_timeout=args.startup_timeout)
+            print(json.dumps(info))
+            if not info['browser_opened']:
                 print('Progress warning: open the printed URL manually', file=sys.stderr)
         elif args.command == 'serve':
             if args.stale_seconds < 0:

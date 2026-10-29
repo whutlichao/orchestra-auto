@@ -1276,6 +1276,8 @@
       };
 
       let snapshot = null;
+      // A singleton dashboard serves many Runs; the opened URL names the selected one.
+      const selectedRun = new URLSearchParams(location.search).get("run") || "";
       let lastLoaded = null;
       let filter = null;
       let language = "zh";
@@ -2604,7 +2606,11 @@
         if (busy) return;
         busy = true;
         try {
-          const response = await fetch("/snapshot", { cache: "no-store" });
+          const response = await fetch(
+            "/snapshot" +
+              (selectedRun ? "?run=" + encodeURIComponent(selectedRun) : ""),
+            { cache: "no-store" },
+          );
           let data;
           try {
             data = await response.json();
