@@ -181,12 +181,15 @@ class Wake(Exception):
     ``markers`` names what the wake observed that counts as effective progress, in the
     shared progress vocabulary (a delivered non-heartbeat message, a stage change). It is not
     part of the published wake line; it decides the stall counter the observation carries.
+    ``progress`` is the empty-wait update the cycle already computed, so the wake writes the
+    counters once instead of rewriting ``state.json`` twice in a row.
     """
 
-    def __init__(self, payload, markers=()):
+    def __init__(self, payload, markers=(), progress=None):
         super().__init__(payload.get("detail", "wake"))
         self.payload = payload
         self.markers = list(markers)
+        self.progress = progress
 
 
 def env_number(name, default, cast):
@@ -829,19 +832,27 @@ def progress_block(directory):
     }
 
 
-def note_empty_wait(directory, empty):
-    """Record that a wait returned an empty batch, or that a real batch ended the streak.
+def empty_wait_progress(directory, empty):
+    """The stall counters after this cycle's wait, without writing anything.
 
     An empty wait is invisible to a consumer — nothing arrives, so nothing is written — which
-    is exactly why it is counted here and published in the observation instead of being read
-    as "no news". A batch that did arrive resets the streak. Nothing is written when the value
-    would not change, so the steady state does not churn ``state.json`` for a status read.
+    is exactly why it is counted and published in the observation instead of being read as
+    "no news". A batch that did arrive resets the streak. Returning the block instead of
+    writing it lets the caller fold the update into the state write it was already making,
+    so counting an empty wait costs no extra ``state.json`` rewrite.
     """
     progress = progress_block(directory)
     waits = 0 if not empty else progress["empty_waits"] + 1
     if waits == progress["empty_waits"]:
-        return progress
-    progress = {**progress, "empty_waits": waits}
+        return None
+    return {**progress, "empty_waits": waits}
+
+
+def note_empty_wait(directory, empty):
+    """Persist the empty-wait count; the one-off form of ``empty_wait_progress``."""
+    progress = empty_wait_progress(directory, empty)
+    if progress is None:
+        return progress_block(directory)
     write_local(directory, {PROGRESS_KEY: progress})
     return progress
 
@@ -883,7 +894,7 @@ def record_binding_loss(directory, outcome, evidence):
 
 
 def wake_observation(directory, payload, markers=(), phase="wake", error=None, kind=None,
-                     extra=None, advance=True):
+                     extra=None, advance=True, progress=None, persist=True):
     """Build and persist the one lightweight observation a wake carries.
 
     Each wake is one round, so this advances the progress counter: a round whose ``markers``
@@ -897,9 +908,13 @@ def wake_observation(directory, payload, markers=(), phase="wake", error=None, k
     ``health evaluate``. The consumer never writes the ledger. A state directory whose
     deliveries cannot be read still produces an observation — the arithmetic is then absent,
     which reads as ``unknown`` rather than as a healthy empty inbox.
+
+    ``progress`` is an empty-wait update the cycle already computed, and ``persist=False`` lets
+    the wake path fold the observation into the state write it makes anyway: recording
+    evidence costs one rewrite, not a burst of them.
     """
     stored = read_json(directory / "state.json")
-    progress = progress_block(directory)
+    progress = progress or progress_block(directory)
     reported = list(markers or [])
     effective = [item for item in reported if item in CONSUMER_MARKERS]
     ignored = [item for item in reported if item not in CONSUMER_MARKERS]
@@ -945,7 +960,9 @@ def wake_observation(directory, payload, markers=(), phase="wake", error=None, k
         progress["unacked"] = counts["unacked"]
     if isinstance(extra, dict):
         observation.update(extra)
-    write_local(directory, {PROGRESS_KEY: progress, WAKE_OBSERVATION_KEY: observation})
+    if persist:
+        write_local(directory, {PROGRESS_KEY: progress,
+                                WAKE_OBSERVATION_KEY: observation})
     return observation
 
 
@@ -1482,7 +1499,7 @@ def main():
                     woken = watch_probe()
                     markers = probe_markers[0]
                 if messages:
-                    note_empty_wait(directory, False)
+                    wait_progress = empty_wait_progress(directory, False)
                     # A batch already on disk is the coordinator's outstanding duty: it
                     # must not wake again, and it must not busy-loop either, so pause and
                     # re-check rather than block behind it. A batch we just acknowledged
@@ -1500,43 +1517,51 @@ def main():
                         probe_markers[0] = []
                         woken = watch_probe()
                         markers = probe_markers[0]
-                    if not messages:
-                        note_empty_wait(directory, True)
-                    else:
-                        note_empty_wait(directory, False)
+                    # A timed-out wait returns an empty batch. It is counted here rather
+                    # than read as "no news", and the count is written with the state this
+                    # cycle was going to write anyway.
+                    wait_progress = empty_wait_progress(directory, not messages)
                     # An empty batch means the CLI timed out: back off and install the next
                     # wait, which is where the reinstall/backoff semantics live.
                     pause = backoff
                 if woken is not None:
-                    raise Wake(woken, markers)
+                    raise Wake(woken, markers, wait_progress)
                 if pause > 0:
                     probe_markers[0] = []
                     woken = idle(pause, worker_poll if watch else None,
                                  watch_probe if watch else None)
                     if woken is not None:
-                        raise Wake(woken, probe_markers[0])
+                        raise Wake(woken, probe_markers[0], wait_progress)
                 # The marker is not cleared: an empty queue does not prove that the
                 # batches already on disk have been handled.
-                write_state(directory, {**binding, "loopPid": os.getpid(),
-                                        "phase": "backoff", "updatedAt": time.time()})
+                state = {**binding, "loopPid": os.getpid(),
+                         "phase": "backoff", "updatedAt": time.time()}
+                if wait_progress is not None:
+                    state[PROGRESS_KEY] = wait_progress
+                write_state(directory, state)
             except (OSError, ValueError, RuntimeError) as error:
                 # Permission, binding and waiter errors stop explicitly. Retrying
                 # forever or borrowing another identity is forbidden.
                 return fatal(directory, binding, run_id, terminal, error)
     except Wake as wake:
         payload = wake.payload
-        write_state(directory, {**binding, "loopPid": os.getpid(),
-                                "phase": "wake", "reason": payload["reason"],
-                                "detail": payload["detail"],
-                                "deliveryId": payload["deliveryId"],
-                                "updatedAt": time.time()})
-        # Exactly one observation per wake, written before the line that carries it, so a
-        # coordinator that reads the wake finds the same facts in ``state.json`` and a
-        # recovery turn can rebuild the record from the ledger.
+        # Exactly one observation per wake, written in the same state rewrite that records
+        # the wake, so a coordinator that reads the line finds the same facts in
+        # ``state.json`` and a recovery turn can rebuild the record from the ledger.
+        observation = wake_observation(directory, payload, markers=wake.markers,
+                                       progress=wake.progress, persist=False)
+        state = {**binding, "loopPid": os.getpid(),
+                 "phase": "wake", "reason": payload["reason"],
+                 "detail": payload["detail"],
+                 "deliveryId": payload["deliveryId"],
+                 "updatedAt": time.time(),
+                 PROGRESS_KEY: observation["last_effective_progress"],
+                 WAKE_OBSERVATION_KEY: observation}
+        write_state(directory, state)
         emitted = wake_event(
             payload["reason"], payload["run"], payload["terminal"], payload["detail"],
             delivery_id=payload["deliveryId"], types=payload["types"], saved=payload["saved"],
-            observation=wake_observation(directory, payload, markers=wake.markers))
+            observation=observation)
         log(directory, "WAKE " + json.dumps(emitted, ensure_ascii=False))
         emit(emitted)
         return 0
