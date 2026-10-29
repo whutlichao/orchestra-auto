@@ -21,7 +21,8 @@ language-specific (a quoted idle banner, a CLI flag name). Concretely:
 
 - The same reference files exist in both, with the same trigger conditions.
 - The same eval scenarios exist in both, in the same order, with the same assertion counts.
-- All shipped scripts and static assets (`acceptance.py`, `inbox-loop.py`, `inbox-loop.sh`,
+- All shipped scripts and static assets (`acceptance.py`, `closeout.py`, `inbox-loop.py`,
+  `inbox-loop.sh`,
   `ledger.py`, `progress.py`, `progress-demo.py`, `progress.html`) are **byte-identical**
   between the variants. The tests assert this; a divergence is a test failure, not a style
   preference.
@@ -45,6 +46,7 @@ python3 -m py_compile skills/*/scripts/*.py     # Python compiles
 bash -n skills/*/scripts/inbox-loop.sh                    # shell wrapper parses
 python3 -m unittest tests.test_package_content -v         # package + disclosure scan
 python3 -m unittest tests.test_acceptance -v           # acceptance records + four levels
+python3 -m unittest tests.test_closeout -v             # closeout checklist + release gate
 python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
 python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 ```
