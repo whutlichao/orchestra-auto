@@ -14,6 +14,7 @@ profile: the CLI is a shim generated per-test in a temporary directory.
 """
 
 import contextlib
+import hashlib
 import importlib.util
 import json
 import os
@@ -26,6 +27,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIRS = (
@@ -43,8 +45,10 @@ import json, sys
 
 RESPONSES = json.loads(open("__RESPONSES__").read())
 WORKERS = json.loads(open("__WORKERS__").read())
+ACK_RESPONSES = json.loads(open("__ACK_RESPONSES__").read())
 CALLS = "__CALLS__"
 ACKS = "__ACKS__"
+ACK_COUNTER = "__ACK_COUNTER__"
 COUNTER = "__COUNTER__"
 WORKER_COUNTER = "__WORKER_COUNTER__"
 KEEPALIVE = __KEEPALIVE__
@@ -81,6 +85,18 @@ if "--ack" in argv:
     did = argv[argv.index("--ack") + 1]
     with open(ACKS, "a") as out:
         out.write(did + "\\n")
+    try:
+        index = int(open(ACK_COUNTER).read())
+    except (OSError, ValueError):
+        index = 0
+    with open(ACK_COUNTER, "w") as out:
+        out.write(str(index + 1))
+    # Scripted refusals exercise the "record failed and stay unacked" path; an
+    # unscripted ack succeeds, exactly as the live CLI does for a real delivery.
+    entry = ACK_RESPONSES[min(index, len(ACK_RESPONSES) - 1)] if ACK_RESPONSES else {}
+    if isinstance(entry, dict) and "fail" in entry:
+        sys.stderr.write(entry["fail"])
+        sys.exit(1)
     sys.stdout.write(json.dumps({"ok": True, "result": {"acknowledged": did}}))
     sys.exit(0)
 
@@ -195,14 +211,17 @@ class FakeOrca:
     ``--wait`` emits keepalive lines on stderr exactly as the real CLI does.
     """
 
-    def __init__(self, directory, responses, ack_log=None, worker_states=None, keepalive=False):
+    def __init__(self, directory, responses, ack_log=None, worker_states=None, keepalive=False,
+                 ack_responses=None):
         self.directory = Path(directory)
         self.responses = responses
         self.worker_states = [[]] if worker_states is None else worker_states
         self.keepalive = keepalive
+        self.ack_responses = list(ack_responses or [])
         self.ack_log = Path(ack_log) if ack_log else self.directory / "acks.txt"
         self.calls_log = self.directory / "calls.txt"
         self.counter_file = self.directory / "counter.txt"
+        self.ack_counter_file = self.directory / "ack-counter.txt"
         self.worker_counter_file = self.directory / "worker-counter.txt"
         self.path = self.directory / "orca"
 
@@ -212,12 +231,16 @@ class FakeOrca:
         responses_file.write_text(json.dumps(self.responses))
         workers_file = self.directory / "workers.json"
         workers_file.write_text(json.dumps(self.worker_states))
+        ack_responses_file = self.directory / "ack-responses.json"
+        ack_responses_file.write_text(json.dumps(self.ack_responses))
         shim = (SHIM_TEMPLATE
                 .replace("__PYTHON__", sys.executable)
                 .replace("__RESPONSES__", str(responses_file))
                 .replace("__WORKERS__", str(workers_file))
+                .replace("__ACK_RESPONSES__", str(ack_responses_file))
                 .replace("__CALLS__", str(self.calls_log))
                 .replace("__ACKS__", str(self.ack_log))
+                .replace("__ACK_COUNTER__", str(self.ack_counter_file))
                 .replace("__COUNTER__", str(self.counter_file))
                 .replace("__WORKER_COUNTER__", str(self.worker_counter_file))
                 .replace("__KEEPALIVE__", repr(self.keepalive))
@@ -264,11 +287,57 @@ def worker(dispatch_id="ctx_worker", state="ready", status="dispatched", detail=
     }
 
 
+def delivery_path(state, delivery_id):
+    """The same durable name the product gives a saved batch, derived from its id."""
+    digest = hashlib.sha256(delivery_id.encode()).hexdigest()
+    return state / "deliveries" / (digest + ".json")
+
+
+def seed_delivery(state, delivery_id, messages, mtime=None):
+    """Put a saved batch on disk without running the loop: the reinstall fixture."""
+    path = delivery_path(state, delivery_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(batch(delivery_id, messages), ensure_ascii=False, indent=2))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def read_receipts(state):
+    """Every append-only receipt line, in the order the consumer wrote them."""
+    path = state / "receipts.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def read_state(state):
+    return json.loads((state / "state.json").read_text())
+
+
+def seed_binding(state, run_id="run_test", terminal="term_coordinator"):
+    """The binding an installed loop leaves behind; the ack entry reads it back."""
+    (state / "binding.json").write_text(json.dumps({"run": run_id, "terminal": terminal}))
+
+
+def run_ack(skill_dir, state, delivery_id, orca_path):
+    """Run the product's coordinator-facing ack entry point as a subprocess."""
+    env = dict(os.environ)
+    env["ORCA_CLI_COMMAND"] = str(orca_path)
+    return subprocess.run(
+        [sys.executable, str(skill_dir / SCRIPT_RELATIVE),
+         "--ack", delivery_id, str(state)],
+        env=env, capture_output=True, text=True, timeout=20,
+        cwd=str(Path(state).resolve()),
+    )
+
+
 def start_loop(tmp, responses, skill_dir, state, wait_ms=200, env_extra=None,
-               worker_states=None, keepalive=False):
+               worker_states=None, keepalive=False, ack_responses=None):
     """Start the real loop against a scripted stub CLI, in a temporary state directory."""
     fake = FakeOrca(tmp / ("fake-" + skill_dir.name), responses,
-                    worker_states=worker_states, keepalive=keepalive).write()
+                    worker_states=worker_states, keepalive=keepalive,
+                    ack_responses=ack_responses).write()
     env = dict(os.environ)
     env["ORCA_CLI_COMMAND"] = str(fake.path)
     env["WAIT_TIMEOUT_MS"] = str(wait_ms)
@@ -359,10 +428,14 @@ class InboxLoopCase(unittest.TestCase):
         self.skill_dir = SKILL_DIRS[0]
 
     def start(self, responses, skill_dir=None, env_extra=None, wait_ms=200,
-              worker_states=None, keepalive=False):
-        return start_loop(self.tmp, responses, skill_dir or self.skill_dir, self.state,
-                          wait_ms=wait_ms, env_extra=env_extra, worker_states=worker_states,
-                          keepalive=keepalive)
+              worker_states=None, keepalive=False, ack_responses=None):
+        process, fake = start_loop(
+            self.tmp, responses, skill_dir or self.skill_dir, self.state,
+            wait_ms=wait_ms, env_extra=env_extra, worker_states=worker_states,
+            keepalive=keepalive, ack_responses=ack_responses)
+        # A failing assertion must not leave a loop (and its stub children) behind.
+        self.addCleanup(self.stop, process)
+        return process, fake
 
     def wait_for(self, predicate, timeout=15.0, what="condition"):
         deadline = time.time() + timeout
@@ -420,6 +493,47 @@ class AtomicPersistenceTests(InboxLoopCase):
             self.stop(process)
 
 
+class AtomicDurabilityTests(unittest.TestCase):
+    """After a power loss the renamed file must still be there.
+
+    Renaming a complete file is atomic against readers, but the directory entry itself is
+    metadata: without an fsync of the parent directory the rename can be lost even though
+    the file's own contents were flushed. The test injects the sync and rename calls so it
+    can see the window a re-read test cannot.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.module = load_inbox_module(SKILL_DIRS[0])
+
+    def test_atomic_write_fsyncs_the_file_and_its_parent_directory(self):
+        target = self.tmp / "delivery.json"
+        events = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def recording_fsync(descriptor):
+            mode = os.fstat(descriptor).st_mode
+            events.append("dir-fsync" if stat.S_ISDIR(mode) else "file-fsync")
+            return real_fsync(descriptor)
+
+        def recording_replace(source, destination):
+            events.append("replace")
+            return real_replace(source, destination)
+
+        with mock.patch.object(self.module.os, "fsync", recording_fsync), \
+                mock.patch.object(self.module.os, "replace", recording_replace):
+            self.module.atomic(target, '{"result": "complete"}')
+
+        self.assertEqual(target.read_text(), '{"result": "complete"}')
+        self.assertEqual(
+            events, ["file-fsync", "replace", "dir-fsync"],
+            "the file contents, the rename, and the parent directory entry must all be "
+            "durable, in that order",
+        )
+        self.assertEqual(list(self.tmp.glob("*.tmp")), [], "a temp file survived the write")
+
+
 class WakeSignalTests(InboxLoopCase):
     def test_new_batch_ends_the_process_with_one_parseable_line(self):
         """A new non-heartbeat batch is persisted first, then announced on stdout."""
@@ -436,6 +550,9 @@ class WakeSignalTests(InboxLoopCase):
         saved = Path(payload["saved"])
         self.assertTrue(saved.exists(), "the wake line named a file that was not saved")
         self.assertEqual(json.loads(saved.read_text())["result"]["deliveryId"], "delivery_new")
+        state = read_state(self.state)
+        self.assertIn("delivery_new", state["woken_deliveries"],
+                      "a wake must be durable: a reinstall must not wake for it again")
 
     def test_batch_types_are_listed_in_fifo_order(self):
         """``types`` describes the whole batch, in order, not just its first message."""
@@ -466,11 +583,41 @@ class HeartbeatQuietTests(InboxLoopCase):
             self.wait_for(lambda: log_path.exists()
                           and "AUTO-ACK heartbeat-only delivery_hb" in log_path.read_text(),
                           what="the auto-ack log line")
+            self.wait_for(
+                lambda: any(entry["result"] == "success"
+                            for entry in read_receipts(self.state)),
+                what="the automatic ack receipt",
+            )
+            receipts = read_receipts(self.state)
+            self.assertEqual([entry["result"] for entry in receipts], ["pending", "success"])
+            self.assertEqual({entry["request_id"] for entry in receipts}, {"ack:delivery_hb"})
+            progress = load_inbox_module(SKILL_DIRS[0]).inbox_progress(self.state)
+            self.assertEqual(progress["unacked"], 0,
+                             "an automatic ack must reduce unacked")
+            self.assertIsNone(progress["blocked"], "an automatic ack clears the blocked head")
             time.sleep(0.6)
             self.assertIsNone(process.poll(), "a heartbeat batch must not end the loop")
             self.assertEqual(self.stop(process), "", "a heartbeat batch must print nothing")
         finally:
             self.stop(process)
+
+    def test_failed_automatic_ack_records_failed_and_wakes_once(self):
+        """An Orca refusal is evidence, not silence: record it and end in one wake."""
+        process, fake = self.start(
+            [batch("delivery_hb_failed", [heartbeat()])],
+            ack_responses=[{"fail": "simulated automatic ack failure"}],
+        )
+        payload = self.wake(process, expect=1)
+        self.assertEqual(payload["reason"], "error")
+        self.assertIn("simulated automatic ack failure", payload["detail"])
+        self.assertEqual(fake.acks(), ["delivery_hb_failed"],
+                         "the loop must not retry a refused ack by itself")
+        self.assertEqual([entry["result"] for entry in read_receipts(self.state)],
+                         ["pending", "failed"])
+        module = load_inbox_module(SKILL_DIRS[0])
+        progress = module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 1, "a failed ack leaves the batch unacked")
+        self.assertEqual(progress["blocked"]["deliveryId"], "delivery_hb_failed")
 
     def test_heartbeat_ack_still_honours_the_backoff(self):
         """Backoff is documented for an ack too: a stream of heartbeats must not hammer the CLI."""
@@ -517,6 +664,8 @@ class ReplayTests(InboxLoopCase):
         process, _ = self.start([first])
         self.assertEqual(self.wake(process)["deliveryId"], "delivery_replay")
         path = self.deliveries()[0]
+        self.assertIn("delivery_replay", read_state(self.state)["woken_deliveries"],
+                      "the first install announced the batch and must have recorded it")
 
         second, _ = self.start([replay])
         try:
@@ -525,6 +674,8 @@ class ReplayTests(InboxLoopCase):
             saved = json.loads(path.read_text())
             self.assertEqual(saved["result"]["messages"][0]["id"], "first_read")
             self.assertEqual(len(self.deliveries()), 1, "replay created a second file")
+            self.assertIsNone(read_state(self.state).get("reconciled_delivery_id"),
+                              "an already announced batch is not a reconciliation")
         finally:
             self.stop(second)
 
@@ -540,8 +691,228 @@ class ReplayTests(InboxLoopCase):
             self.assertIsNone(second.poll(), "an empty queue must not end the loop")
             self.assertTrue(marker.exists(), "the PENDING marker was cleared automatically")
             self.assertEqual(marker.read_text(), first)
+            self.assertEqual(read_state(self.state)["woken_deliveries"], ["delivery_pending"],
+                             "the announced batch stays not-news across the reinstall")
+            self.assertIsNone(read_state(self.state).get("reconciled_delivery_id"))
         finally:
             self.stop(second)
+
+
+class ReinstallReconciliationTests(InboxLoopCase):
+    """A reinstall must not silently absorb a batch that was saved but never announced.
+
+    The delivery file survives a crash before the wake line; comparing it with the
+    successful receipts is what turns that gap into exactly one wake. The record is local
+    (``state.json``), so the coordinator can transcribe it into the ledger; the consumer
+    never writes the ledger itself.
+    """
+
+    def test_reinstall_reconciles_the_oldest_never_woken_unacknowledged_batch(self):
+        acknowledged = seed_delivery(self.state, "delivery_acked", [normal()],
+                                     mtime=1_700_000_000)
+        orphan = seed_delivery(self.state, "delivery_orphan", [normal()],
+                               mtime=1_700_000_100)
+        module = load_inbox_module(SKILL_DIRS[0])
+        module.append_receipt(self.state, "delivery_acked", "success")
+
+        process, fake = self.start([batch("empty", [])])
+        payload = self.wake(process)
+
+        self.assertEqual(payload["reason"], "delivery")
+        self.assertEqual(payload["deliveryId"], "delivery_orphan")
+        self.assertEqual(Path(payload["saved"]).resolve(), orphan.resolve())
+        self.assertIn("reconciliation", payload["detail"])
+        self.assertEqual(fake.calls_starting("orchestration check"), [],
+                         "reconciliation happens before the first queue read")
+        self.assertEqual(len(fake.calls_starting("orchestration worker-list")), 1,
+                         "the install reads the worker baseline exactly once")
+        self.assertEqual(fake.acks(), [], "reconciliation never acks by itself")
+
+        state = read_state(self.state)
+        self.assertEqual(state["reconciled_delivery_id"], "delivery_orphan")
+        self.assertIn("delivery_orphan", state["woken_deliveries"])
+        self.assertNotIn("delivery_acked", state["woken_deliveries"])
+        observation = state["observation"]
+        self.assertEqual(observation["kind"], "inbox_reconciliation")
+        self.assertEqual(observation["saved"], 2)
+        self.assertEqual(observation["unacked"], 1)
+        self.assertEqual(observation["unacked_delivery_ids"], ["delivery_orphan"])
+        self.assertEqual(observation["blocked"],
+                         {"deliveryId": "delivery_orphan", "reason": "unacknowledged"})
+        self.assertEqual(observation["reconciled_delivery_id"], "delivery_orphan")
+        self.assertEqual(observation["baseline_worker_signature"], "")
+        self.assertEqual(observation["write_scope"], "state.json")
+        self.assertEqual(observation["transcribe_to"], "ledger")
+        self.assertTrue(acknowledged.exists(), "an acked delivery is kept as evidence")
+        self.assertTrue(orphan.exists())
+
+    def test_a_corrupt_delivery_is_an_error_wake_not_an_empty_inbox(self):
+        """An unreadable delivery proves nothing; it must never be skipped as 'no news'."""
+        broken = self.state / "deliveries" / "broken.json"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("{not json")
+        process, _ = self.start([batch("empty", [])])
+
+        payload = self.wake(process, expect=1)
+
+        self.assertEqual(payload["reason"], "error")
+        self.assertIn("unreadable delivery file", payload["detail"])
+        self.assertEqual(read_state(self.state)["phase"], "error")
+
+    def test_second_reinstall_does_not_wake_again_for_the_same_batch(self):
+        seed_delivery(self.state, "delivery_orphan", [normal()])
+        first, _ = self.start([batch("empty", [])])
+        self.assertEqual(self.wake(first)["deliveryId"], "delivery_orphan")
+        reconciled = read_state(self.state)["reconciled_delivery_id"]
+
+        second, _ = self.start([batch("empty", [])])
+        try:
+            time.sleep(1.0)
+            self.assertIsNone(second.poll(),
+                              "a persisted reconciliation must prevent a second wake")
+            self.assertEqual(self.stop(second), "", "the second install printed a wake")
+            self.assertEqual(read_state(self.state)["reconciled_delivery_id"], reconciled)
+        finally:
+            self.stop(second)
+
+
+class ReceiptStatusTests(unittest.TestCase):
+    """The local arithmetic that makes an unacked FIFO head visible as ``blocked``.
+
+    It is computed from the delivery files and the append-only receipts only: status never
+    consumes the Orca queue and never invents a delivery id.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+        self.module = load_inbox_module(SKILL_DIRS[0])
+
+    def test_blocked_names_the_oldest_unacknowledged_delivery(self):
+        seed_delivery(self.state, "delivery_old", [normal()], mtime=1_700_000_000)
+        seed_delivery(self.state, "delivery_new", [normal()], mtime=1_700_000_100)
+
+        progress = self.module.inbox_progress(self.state)
+
+        self.assertEqual(progress["saved"], 2)
+        self.assertEqual(progress["unacked"], 2)
+        self.assertEqual(progress["unacked_delivery_ids"], ["delivery_old", "delivery_new"])
+        self.assertEqual(
+            progress["blocked"],
+            {"deliveryId": "delivery_old", "reason": "unacknowledged"},
+            "the FIFO head is the oldest unacknowledged delivery, named with its reason",
+        )
+
+    def test_a_successful_receipt_unblocks_the_next_delivery(self):
+        seed_delivery(self.state, "delivery_old", [normal()], mtime=1_700_000_000)
+        seed_delivery(self.state, "delivery_new", [normal()], mtime=1_700_000_100)
+
+        self.module.append_receipt(self.state, "delivery_old", "pending")
+        self.module.append_receipt(self.state, "delivery_old", "success")
+        progress = self.module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 1)
+        self.assertEqual(progress["blocked"]["deliveryId"], "delivery_new")
+
+        self.module.append_receipt(self.state, "delivery_new", "success")
+        progress = self.module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 0)
+        self.assertIsNone(progress["blocked"], "a fully acknowledged inbox has no blocked head")
+
+    def test_a_failed_receipt_does_not_acknowledge_a_delivery(self):
+        seed_delivery(self.state, "delivery_refused", [normal()])
+        self.module.append_receipt(self.state, "delivery_refused", "pending")
+        self.module.append_receipt(self.state, "delivery_refused", "failed")
+
+        progress = self.module.inbox_progress(self.state)
+
+        self.assertEqual(progress["unacked"], 1)
+        self.assertEqual(progress["blocked"]["deliveryId"], "delivery_refused")
+
+
+class CoordinatorAckTests(unittest.TestCase):
+    """The coordinator acks through the script, and the receipt proves what Orca accepted.
+
+    An Orca refusal is recorded as ``failed`` and leaves the delivery unacknowledged; a
+    retry reuses the same local request id. The entry never acks an id it did not save, so
+    a read-only ``check --all`` cannot be turned into a fabricated acknowledgement.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+        self.module = load_inbox_module(SKILL_DIRS[0])
+        seed_binding(self.state)
+
+    def fake(self, name="fake-ack", ack_responses=None):
+        return FakeOrca(self.tmp / name, [], ack_responses=ack_responses).write()
+
+    def test_ack_records_pending_then_success_and_clears_the_blocked_head(self):
+        delivery = seed_delivery(self.state, "delivery_one", [normal()])
+        fake = self.fake()
+
+        result = run_ack(SKILL_DIRS[0], self.state, "delivery_one", fake.path)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(fake.acks(), ["delivery_one"])
+        receipts = read_receipts(self.state)
+        self.assertEqual([entry["result"] for entry in receipts], ["pending", "success"])
+        self.assertEqual({entry["delivery_id"] for entry in receipts}, {"delivery_one"})
+        self.assertEqual({entry["request_id"] for entry in receipts}, {"ack:delivery_one"})
+        self.assertTrue(all(entry["acked_at"] for entry in receipts))
+        progress = self.module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 0, "a successful ack must reduce unacked")
+        self.assertIsNone(progress["blocked"], "a successful ack must clear the blocked head")
+        self.assertTrue(delivery.exists())
+
+    def test_refused_ack_records_failed_and_a_retry_reuses_the_request_id(self):
+        delivery = seed_delivery(self.state, "delivery_refused", [normal()])
+        before = delivery.read_bytes()
+        refusing = self.fake("fake-refuse", [{"fail": "simulated ack refusal"}])
+
+        refused = run_ack(SKILL_DIRS[0], self.state, "delivery_refused", refusing.path)
+
+        self.assertEqual(refused.returncode, 1, "an Orca refusal must exit non-zero")
+        self.assertIn("simulated ack refusal", refused.stderr)
+        self.assertEqual(refusing.acks(), ["delivery_refused"],
+                         "the refusal must not be retried by the entry itself")
+        self.assertEqual([entry["result"] for entry in read_receipts(self.state)],
+                         ["pending", "failed"])
+        progress = self.module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 1, "a failed ack leaves the delivery unacked")
+        self.assertEqual(progress["blocked"]["deliveryId"], "delivery_refused")
+        self.assertEqual(delivery.read_bytes(), before, "the delivery file must be kept")
+
+        accepting = self.fake("fake-retry")
+        retried = run_ack(SKILL_DIRS[0], self.state, "delivery_refused", accepting.path)
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(accepting.acks(), ["delivery_refused"])
+        receipts = read_receipts(self.state)
+        self.assertEqual([entry["result"] for entry in receipts],
+                         ["pending", "failed", "pending", "success"])
+        self.assertEqual({entry["request_id"] for entry in receipts}, {"ack:delivery_refused"},
+                         "a retry must reuse the same local request id")
+        self.assertEqual(self.module.inbox_progress(self.state)["unacked"], 0)
+        self.assertEqual(delivery.read_bytes(), before, "the retry must keep the delivery file")
+
+    def test_ack_refuses_an_id_the_consumer_never_saved(self):
+        fake = self.fake()
+
+        result = run_ack(SKILL_DIRS[0], self.state, "delivery_fabricated", fake.path)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no saved delivery", result.stderr)
+        self.assertEqual(fake.acks(), [],
+                         "an id that was never persisted must never reach Orca")
+        self.assertEqual(read_receipts(self.state), [],
+                         "a refused id must not produce a receipt")
+        progress = self.module.inbox_progress(self.state)
+        self.assertEqual(progress["unacked"], 0)
+        self.assertIsNone(progress["blocked"])
 
 
 class BlockingWaitTests(InboxLoopCase):

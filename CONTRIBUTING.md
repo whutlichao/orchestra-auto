@@ -53,11 +53,18 @@ python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 `progress-demo.py` fixture generator never consume inbox messages. Its safety properties are the reason
 the tests exist, and a change that weakens one needs a very good argument:
 
-- a delivery batch is written atomically, and a re-read never sees a partial file;
+- a delivery batch is written atomically and its parent directory is fsynced after the rename,
+  and a re-read never sees a partial file;
 - a replayed `deliveryId` does not overwrite the evidence of the first read;
+- every ack appends a `pending`/`success`/`failed` receipt to `receipts.jsonl`; a refused Orca ack
+  is recorded as `failed`, stays unacked, and is never written as a success;
 - only a batch whose **every** message is a heartbeat is auto-acknowledged — normal and mixed
   batches are left for the coordinator;
 - a CLI error exits non-zero and is reported, and is never reinterpreted as an empty queue;
+- a fresh install reconciles saved deliveries with successful receipts: the oldest unacknowledged
+  batch that was never announced produces exactly one wake and a persisted
+  `reconciled_delivery_id`, and the local observation in `state.json` is for the coordinator to
+  transcribe into the ledger;
 - one consumer per state directory, enforced by a file lock;
 - a CLI child never outlives the call that owns it: an exception, a wake or a signal reaps every
   process the loop started. A survivor keeps its CLI waiter slot, so the next install fails while
@@ -70,8 +77,11 @@ non-heartbeat batch arrives, when this Run's worker signature changes, or when t
 fails (a non-zero exit is the third leg). That line's fields and the exit codes are a published
 contract — `references/inbox-and-waiting.md` §3 defines them and the tests assert them — so
 changing either is the same kind of change as weakening the list above. A batch that is already on
-disk is deliberately **not** a wake: it is the coordinator's outstanding duty, and waking for it on
-every install would spin instead of waiting for the next message.
+disk **and already announced** is deliberately **not** a wake: it is the coordinator's outstanding
+duty, and waking for it on every install would spin instead of waiting for the next message. The
+one install-time exception is a saved batch that was never announced: reconciliation wakes for the
+oldest such batch exactly once and persists `reconciled_delivery_id` so a second install stays
+quiet.
 
 ### If you change a SKILL.md or a reference
 
