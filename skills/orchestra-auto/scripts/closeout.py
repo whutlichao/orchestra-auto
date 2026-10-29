@@ -1081,6 +1081,29 @@ def _digest(facts, records, answer_location, verification):
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
+def _bounded_detail(detail):
+    """Keep the record inside the ledger's 64 KiB limit without losing the identity.
+
+    The full checklist is the useful part, so it is the last thing trimmed: the counts,
+    the classification and the evidence references survive a truncation, and the record
+    says it was truncated rather than failing to write at all.
+    """
+    if len(_canonical(detail)) <= LEDGER.MAX_RECORD_BYTES - 4096:
+        return detail
+    trimmed = dict(detail)
+    trimmed["checklist"] = {
+        key: value for key, value in detail["checklist"].items()
+        if key in ("schema_version", "run_id", "observed_at", "ready", "blocking",
+                   "classification", "merge_blocked", "non_repeatable", "answer_location")
+    }
+    trimmed["truncated"] = True
+    if len(_canonical(trimmed)) <= LEDGER.MAX_RECORD_BYTES - 4096:
+        return trimmed
+    trimmed["evidence_refs"] = trimmed["evidence_refs"][:64]
+    trimmed["mapping"] = trimmed["mapping"][:64]
+    return trimmed
+
+
 def _closeout_record(run_id, digest, checklist, facts, verification, observed_at):
     outcome = _outcome(checklist)
     evidence_refs = sorted({
@@ -1099,6 +1122,7 @@ def _closeout_record(run_id, digest, checklist, facts, verification, observed_at
         "checklist": checklist,
         "observed_at": observed_at,
     }
+    detail = _bounded_detail(detail)
     state = {"success": "completed", "failure": "failed", "pending": "pending"}[outcome]
     return {
         "schema_version": LEDGER.SCHEMA_VERSION,

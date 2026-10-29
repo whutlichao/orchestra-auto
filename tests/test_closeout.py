@@ -897,6 +897,45 @@ class ReconciliationTests(unittest.TestCase):
                                   answer_location="")
         self.assertEqual(self.records("closeout"), [])
 
+    def test_a_very_large_checklist_still_writes_a_valid_record(self):
+        """The ledger caps a record at 64 KiB; a big map must not lose its closeout.
+
+        Row 1 carries every accepted record's Answer location, so a map of long
+        locations produces a checklist larger than one ledger record. The closeout keeps
+        its outcome, its own Answer location and the acceptance ids, marks itself
+        truncated, and still validates.
+        """
+        answer = "tickets/task-40-answer.md"
+        long_answer = "tickets/" + "a" * 1800 + ".md"
+        for number in range(100, 140):
+            payload = acceptance_record(
+                pr={"number": number, "head_at_acceptance": ACCEPTED, "base": "main"},
+                answer_location=long_answer)
+            self.assertEqual(self.acceptance.validate(payload), [])
+            self.ledger.append(
+                self.acceptance._ledger_record(payload, RUN_ID), home=self.home)
+        self.assertGreater(
+            len(self.module._canonical(facts(
+                acceptance={"state": "ok", "reason": "", "records": [
+                    {"record_id": str(uuid.uuid4()),
+                     **acceptance_record(answer_location=long_answer)}
+                    for _ in range(40)]}))),
+            60 * 1024)
+        authority = self.authority(pr_host={
+            "state": "ok", "reason": "",
+            "pull_requests": [
+                {"pr": number, "state": "MERGED", "base": "main",
+                 "head_sha": ACCEPTED, "merge_sha": MERGE}
+                for number in range(100, 140)]})
+        result = self.reconcile(authority=authority)
+        self.assertTrue(result["recorded"], result)
+        stored = self.records("closeout")[0]
+        self.assertEqual(stored["detail"]["outcome"], "success")
+        self.assertTrue(stored["detail"]["truncated"])
+        self.assertEqual(stored["detail"]["answer_location"], answer)
+        self.assertEqual(len(stored["detail"]["acceptance_record_ids"]), 40)
+        self.ledger.validate_record(stored)
+
     def test_the_shared_fake_serves_the_pr_host_section(self):
         self.record_acceptance()
         authority = self.authority()
@@ -1016,7 +1055,6 @@ class CliTests(unittest.TestCase):
         return path
 
     def seed_acceptance(self):
-        acceptance = load_module(SKILL_DIRS[0], "acceptance.py")
         payload = acceptance_record()
         result = subprocess.run(
             [sys.executable, str(SKILL_DIRS[0] / "scripts" / "acceptance.py"),
