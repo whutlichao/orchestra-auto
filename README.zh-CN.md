@@ -2,7 +2,7 @@
 
 **[English](README.md) · [简体中文](README.zh-CN.md)**
 
-[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-90%20passing%2C%201%20skipped-brightgreen)](#验证) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-unittest%20discover-blue)](#验证) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 这是一份 Orca 最佳实践，整个做法围绕 [Matt Pocock 的工程 skill](https://github.com/mattpocock/skills)。链用他的。监督、隔离、门禁和合并用 [Orca](https://www.onorca.dev/)。
 
@@ -187,7 +187,8 @@ skill。跑 `orca skills install --skill orchestra-auto` 会报 `Unknown skill`�
 
 ## 验证
 
-仓库用 `python3 -m unittest discover` 检查，跑两个套件。不联网、不需要凭证、不依赖任何特定机器：
+仓库用 `python3 -m unittest discover` 检查，它会跑 `tests/` 下的每个模块。下面这份清单是散文，不是计数；
+新增套件是预期的，由命令本身判定。不联网、不需要凭证、不依赖任何特定机器：
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -200,14 +201,24 @@ python3 -m unittest discover -s tests -v
   原生 `check --wait` 路径、其 stderr keepalive，以及超时后重新装上等待。它同时钉住进程生命周期：
   CLI 子进程绝不比拥有它的调用活得更久——worker 状态探针抛异常、或信号落在嵌套调用期间，
   收件器会回收自己启动的每个子进程，而不是留下一个占着 waiter 槽位。
+- `tests/test_progress_dashboard.py` 覆盖进度 CLI 与 localhost 看板：snapshot 与注册表契约、
+  单例启动锁、协议兼容、旧服务与不兼容服务的回退、Run 隔离、只读 HTTP 表面与其安全响应头，
+  以及 `serve --state` 的 DEMO 路径。
+- `tests/test_ledger.py`、`tests/test_preflight.py`、`tests/test_health.py`、
+  `tests/test_acceptance.py` 与 `tests/test_closeout.py` 通过各自声明的缝覆盖稳定性模块：
+  台账的存储、对账与崩溃窗口分类；派活前检查回执及其阻断判定；纯健康状态机与迁移表；
+  验收记录及其证据规则与四个层级；收尾清单及其 release 门禁。
 - `tests/test_package_content.py` 检查包本身：两个语言变体结构一致、frontmatter 合法且 `name`
   与目录一致、所有相对链接可解析、随包发布的每个 reference 都可达并声明了自己的触发条件、
   eval JSON 的形状与唯一性、`eval.yaml` 白名单、Python 的 `py_compile`、shell wrapper 的
   `bash -n`、MIT 许可，以及脱敏扫描。另有一组「散文契约」回归，钉住文档过去判错的决定：
   三个派活检查点以及哪一个能阻止派活、frontier 的四种状态、四个验收层级、Merge Danger 的单一
-  权威定义、启动确认的评估场景，以及本 README 里记录的真实场景数。
+  权威定义、六条散文锚点、新增的对齐场景、启动确认的评估场景，以及本 README 里记录的真实计数。
+  锚点测试**只查锚点，不等于完整语义等价**：它在两个语言包里找这六条判据的措辞，并不（也无法）证明
+  锚点之间的段落仍然等价，因此双轴 review 仍要读 diff。
 
-已记录结果为 **90 OK（1 skipped）**。这是主要的结构与行为门禁。
+套件总数**故意不写在这里**：任何数字都会在下一批测试落地时过时。上面那条命令就是门禁，退出码即结论。
+本票的运行结果写在它的 Answer 里，不写进这个文件。
 
 想单独跑某一条也可以：
 
@@ -229,17 +240,21 @@ python3 -c "import json,glob;[json.load(open(p)) for p in glob.glob('skills/*/ev
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4）|
 | --- | ---: | ---: |
-| 英文 | 30,208 → 20,287（−32.8%） | 7,552 → 5,071 |
-| 中文 | 24,359 → 15,963（−34.5%） | 6,089 → 3,990 |
+| 英文 | 30,208 → 22,442（−25.7%） | 7,552 → 5,610 |
+| 中文 | 24,359 → 19,112（−21.5%） | 6,089 → 4,778 |
 
-这里的 token 节省**口径是字节数 ÷ 4**，不是 tokenizer 实测。细节仍保留在 references 中，因此整个包的字节总量
+右列就是当前随包发布的文件，且有一条测试从包本身重算它，所以这张表不会和它描述的文件漂移。
+这里的 token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。细节仍保留在 references 中，因此整个包的字节总量
 几乎不变。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
 ### 自动脱敏扫描
 
 `tests/test_package_content.py` 里的 `LeakScanTests` 是脱敏检查的自动化部分。它扫描每个已发布的
-文本文件，找那些绝不能出厂的形态：主目录绝对路径、某个具体的 profile 数据库文件名、凭证类变量名，
-以及 token 字面量。有四点和模式本身同样重要：
+文本文件，找那些绝不能出厂的形态：主目录绝对路径、某个具体的 profile 数据库文件名、凭证类变量名、
+token 字面量，以及**内部 Run/Task/Dispatch/message 标识**——`run`、`task`、`ctx`、`msg`、`request`、
+`delivery`、`attempt` 前缀后接 8 位以上十六进制。最后一项重要，是因为这样的 id 标识的是某一次具体操作，
+对局外人没有意义，也没人能核对；`run_xxx` 这类模板占位符没有十六进制，因此**不会**被命中。
+有五点和模式本身同样重要：
 
 1. **不写下任何私有字面量。** 扫描器只持有通用**形态**，绝不写具体的私有仓库名、账号名或凭证变量名
    ——把那些写进一个公开扫描器，等于公开了扫描本来要挡住的标识本身。精确值走带外核验：
@@ -255,6 +270,9 @@ python3 -c "import json,glob;[json.load(open(p)) for p in glob.glob('skills/*/ev
 4. **通用形态仍要有牙齿。** `test_generic_credential_pattern_catches_a_realistic_secret_name` 断言
    凭证形态能匹配现实中的变量名（例如带 `_TOKEN` 或 `_API_KEY` 后缀的全大写名字）且不误伤普通文字，
    这样把字面量换成形态不会悄悄把检查变成空操作。
+5. **标识模式两个方向都测。** `test_internal_id_pattern_matches_a_real_id_but_not_a_placeholder`
+   断言真实形似的 id 会被命中，而 `xxx` 占位符、尖括号占位符和短人名不会——这样模式不会扩成
+   制造误报、最后被人关掉的规则。
 
 另有两项人工检查与它并列，且都无法从仓库内部自动化：
 
@@ -265,10 +283,16 @@ python3 -c "import json,glob;[json.load(open(p)) for p in glob.glob('skills/*/ev
 
 ## 评估集
 
-每个语言变体都带一份 `evals/evals.json`，31 个提示词层面的场景，覆盖通道判定、worker 栏取值、
+每个语言变体都带一份 `evals/evals.json`，38 个提示词层面的场景，覆盖通道判定、worker 栏取值、
 启动确认（含 `turnStart: observed`、unsupported 回执、以及没有终端的 worker）、门禁选择、
 review 安排、打回判断、决策分类、升级、合并例外，以及「先唤醒、再重装」的契约。
 需要文件系统路径的场景自带 `SKILLS_ROOT` / `PRE_SKILL` 夹具，不要求模型凭空编一个真实的本机路径。
+
+最后七个场景覆盖稳定性工作流：崩溃窗口对账、带未 ack 批次的重新安装、并发单例启动、
+旧版或不兼容看板回退、看板故障不阻断派发、revert/reopen 收尾，以及绑定丢失。
+**崩溃窗口对账是一个场景，同时点名 W1/W2/W3 三个窗口**，因此总数是 31 条基线 + 7 = 38，
+而不是 40。`tests/test_package_content.py` 从文件本身推出这个总数并断言它；场景也绝不声称跑过测试——
+一个提示词跑不了测试。
 
 这些是**场景检查，不是端到端证明**：它们看的是一个读过本 skill 的 agent 是否按 skill 的意图推理，
 并不证明编排在真实 Orca 主机上能跑通——那是脚本行为测试和真实使用的事。每份文件都在 `_note`
@@ -290,7 +314,7 @@ review 安排、打回判断、决策分类、升级、合并例外，以及「�
 ├── skills/
 │   ├── orchestra-auto/         英文包
 │   │   ├── SKILL.md            路由与核心约束
-│   │   ├── references/         按条件读取的细节，12 个文件
+│   │   ├── references/         按条件读取的细节，16 个文件
 │   │   ├── scripts/            可选的收件循环
 │   │   ├── evals/evals.json    提示词层面的场景
 │   │   └── eval.yaml           可选的外部 skill runner 用例

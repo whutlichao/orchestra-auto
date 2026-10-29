@@ -226,7 +226,7 @@ MIT。欢迎贡献。
 > （一个小脚本，真批次到达时它会结束进程来唤醒 coordinator）、决策升级给人、按票型的门禁、
 > 还原前先留证、有界重试。
 >
-> 每种语言 `evals/` 里有 30 个场景，另有收件脚本的真实行为测试（原子写入、重放安全、ack 纪律、
+> 每种语言 `evals/` 里有 38 个场景，另有收件脚本的真实行为测试（原子写入、重放安全、ack 纪律、
 > 唤醒行、显式失败）。MIT。欢迎反馈。
 
 ### 6.4 X / Twitter
@@ -298,7 +298,7 @@ diff，以及为什么先留证再还原；(5) 一个 Python 脚本，让 agent 
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
 > One small standard-library Python script handles the inbox and ends the process to wake the
-> coordinator when a real batch lands. The rest is Markdown plus 20 prompt-level scenarios per
+> coordinator when a real batch lands. The rest is Markdown plus 38 prompt-level scenarios per
 > language so the reasoning is testable, and real behaviour tests for the script.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether

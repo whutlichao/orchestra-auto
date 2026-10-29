@@ -39,6 +39,7 @@ description: >-
 | 文件 | 什么时候读 |
 | --- | --- |
 | `references/dispatch-preflight.md` | 每次派活前（§4.0.1 打勾）、拿到回执后（§4.0.2 启动与隔离证据）、以及收尾时（§4.0.3 格式化噪声） |
+| `references/prose-contract.md` | 验收时、审查任一语言包时，或两份文档对「从某个信号能推出什么结论」看似不一致时 |
 | `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
 | `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型 |
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |

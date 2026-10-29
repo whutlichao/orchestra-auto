@@ -21,11 +21,13 @@ language-specific (a quoted idle banner, a CLI flag name). Concretely:
 
 - The same reference files exist in both, with the same trigger conditions.
 - The same eval scenarios exist in both, in the same order, with the same assertion counts.
-- All shipped scripts and static assets (`acceptance.py`, `closeout.py`, `inbox-loop.py`,
-  `inbox-loop.sh`,
-  `ledger.py`, `progress.py`, `progress-demo.py`, `progress.html`) are **byte-identical**
-  between the variants. The tests assert this; a divergence is a test failure, not a style
-  preference.
+- All shipped scripts and static assets (`acceptance.py`, `closeout.py`, `health.py`, `inbox-loop.py`,
+  `inbox-loop.sh`, `ledger.py`, `preflight.py`, `progress.py`, `progress-demo.py`, `progress.html`)
+  are **byte-identical** between the variants. The tests assert this; a divergence is a test
+  failure, not a style preference. `SCRIPT_FILES` and `PYTHON_SCRIPTS` in
+  `tests/test_package_content.py` are the lists those checks iterate: a new script that is not
+  added to both fails the suite on purpose, because an unregistered script would otherwise be
+  green and untested.
 
 When you edit one variant, edit the other in the same commit. If you cannot translate a phrase
 faithfully, rewrite both sides into something both can carry rather than letting the two drift.
@@ -45,6 +47,9 @@ while you work, the individual commands are:
 python3 -m py_compile skills/*/scripts/*.py     # Python compiles
 bash -n skills/*/scripts/inbox-loop.sh                    # shell wrapper parses
 python3 -m unittest tests.test_package_content -v         # package + disclosure scan
+python3 -m unittest tests.test_ledger -v               # ledger storage + reconcile
+python3 -m unittest tests.test_preflight -v            # preflight receipt
+python3 -m unittest tests.test_health -v               # pure health state machine
 python3 -m unittest tests.test_acceptance -v           # acceptance records + four levels
 python3 -m unittest tests.test_closeout -v             # closeout checklist + release gate
 python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
@@ -107,6 +112,9 @@ quiet.
 - Do not hardcode a version-specific detail. If a file name, table name or receipt field is really
   version-dependent, point at the current CLI help and the current guide, and tell the reader to ask
   with evidence when their command does not match the public documentation.
+- The six clauses in `references/prose-contract.md` are load-bearing. Keep the wording recognisable
+  in both bundles; the anchor test looks for the phrases, and the review reads the paragraph around
+  them, because the anchor test cannot check that the surrounding prose still means the same thing.
 
 ### If you touch the eval scenarios
 
@@ -118,6 +126,12 @@ supply a self-contained fixture (`SKILLS_ROOT` / `PRE_SKILL`) and assert against
 the model never has to invent a real machine path and a genuine path requirement still gets tested.
 The `_note` field states that these are prompt-level checks, not end-to-end proof — keep that
 accurate.
+
+New scenarios are appended after the existing set, in the same order in both bundles, with the same
+assertion counts. `tests/test_package_content.py` asserts that order, that the count matches the
+files, and that no scenario claims a test ran. The count is never restated by hand in the README or
+the launch kit: those documents are checked against the files, so a scenario added in one place and
+not the other fails the suite.
 
 ## Disclosure discipline
 

@@ -836,6 +836,185 @@
           "text": "用户或仓库明示要求把该事实写进仓库时，遵循其规则"
         }
       ]
+    },
+    {
+      "id": 31,
+      "name": "crash-window-reconciliation",
+      "prompt": "你在协调一次 Orca 编排，进程在 `worker-start` 中途挂掉。台账里只有这次派发的 intent，别无其他。你对记录下来的权威跑 `ledger reconcile`。\n\n请只输出：\n1. W1_CLASS: 动作之前那个窗口的分类\n2. W2_CLASSES: 动作之后可能的分类\n3. W3_CLASS: 回执或某个权威源读不到时的分类\n4. ACTIONS: 对账可以追加什么、绝不能做什么\n5. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "W1 是 `orphan_intent`：intent 已落盘、无回执、权威侧无效果，所以先由探测决定，绝不直接重放。W2 是 `matched`、`divergent` 或 `orphan_effect` 之一，因为存在回执或可见的权威效果。W3 是 `unknown`：回执或某个权威源读不到，分类如实说明，而不是猜。对账可以追加迟到的 result 或 observation、gap、投影更新、divergence 标记、pending 记录和一条 closeout；它绝不合并、绝不关票、也绝不 stop / release / 重试 worker。只有携带同一 request id 的 replay 是被允许的；merge、tracker 关闭、未证实的重试与未结算的 release 都是 coordinator 的 decision。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "w1_is_orphan_intent",
+          "text": "把动作前的窗口分类为 orphan_intent：intent 已落盘、无回执、权威侧无效果"
+        },
+        {
+          "name": "w2_has_all_three_outcomes",
+          "text": "把 matched、divergent、orphan_effect 都列为动作后的可能分类"
+        },
+        {
+          "name": "w3_is_unknown",
+          "text": "把读不到的回执或权威源分类为 unknown，而不是成功或失败"
+        },
+        {
+          "name": "no_auto_retry_of_destructive_actions",
+          "text": "不因对账自动合并、自动关票或自动 release；这些都是 decision"
+        },
+        {
+          "name": "repairs_are_bounded",
+          "text": "只允许已记录的修复加一次同 request id 的 replay，并指明唯一一条 closeout"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "name": "reinstall-with-unacked-batches",
+      "prompt": "某个 Run 的收件循环超时后被卸载。磁盘上留着两个已保存的批次：较旧的一个普通批次，其 ack 回执是 `failed`；较新的一个纯心跳批次。你重新安装收件循环。\n\n请只输出：\n1. WAKE: 安装会不会唤醒你，为哪个批次唤醒\n2. ACK: 每个批次如何 ack（如果有）\n3. SECOND_INSTALL: 之后再安装一次会怎样\n4. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "安装会把已保存的投递与成功回执对账，只唤醒一次——对象是最旧的那个从未宣告过的批次，打印一行带 `reason=delivery` 的机器可读输出，并持久化 `reconciled_delivery_id`。ack 回执为 failed 的批次仍未 ack：用同一 request id 重试 ack 并保留投递文件，绝不记为成功。只有每条消息都是心跳的批次才自动 ack，所以纯心跳批次在本地 ack、不产生唤醒。第二次安装不再唤醒，因为 `reconciled_delivery_id` 记录过这次对账。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "one_wake_for_oldest_unannounced",
+          "text": "只唤醒一次，对象是最旧的从未宣告过的已保存批次"
+        },
+        {
+          "name": "reconciled_id_persisted",
+          "text": "持久化 reconciled_delivery_id，避免重复对账"
+        },
+        {
+          "name": "failed_ack_stays_unacked",
+          "text": "ack 回执为 failed 的批次保持未 ack，并用同一 request id 重试"
+        },
+        {
+          "name": "second_install_quiet",
+          "text": "对已对账的批次，下一次安装不再唤醒"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "name": "concurrent-singleton-startup",
+      "prompt": "同一个用户账号下，两个 coordinator 轮次在同一时刻为两个不同的 Run 调用进度 `open`。此时还没有看板服务在运行。\n\n请只输出：\n1. SERVICES: 最终运行几个服务\n2. WINNER: 先到的调用做什么\n3. LOSER: 另一个调用做什么\n4. LOCK_TIMEOUT: 启动锁超时意味着什么\n5. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "最终只有一个服务在跑：启动锁把启动串行化，后到的调用发现健康服务后注册到它，而不是再起一个。若先到者尚未写出 `server.json`，后到者在锁上等待或重试探测，采纳记录在 `starting.json` 里的健康子进程，并且只在子进程确定已死时才删除 `starting.json`。启动锁超时属于降级：绝不启动第二个服务，调用方回退到 `serve --state` 并记录 gap。任何路径都不会在等待 Orca 调用时持有启动锁。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "one_service_only",
+          "text": "说明两个 Run 最终只有一个服务"
+        },
+        {
+          "name": "loser_registers_with_the_service",
+          "text": "让后到者注册到健康服务或采纳已记录的子进程"
+        },
+        {
+          "name": "lock_timeout_is_degraded",
+          "text": "把启动锁超时当作降级回退，而不是再启动一个"
+        },
+        {
+          "name": "no_second_service_ever",
+          "text": "说明任何路径都不会启动第二个服务"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "name": "old-or-incompatible-dashboard-fallback",
+      "prompt": "启动看板之前，你发现 `server.json` 描述着一个正在运行的服务。该服务能应答 `GET /`，但没有 `/health`。另一个不同的宿主构建能应答 `/health`，返回 `protocol_version: 1`，而你的客户端要求 `2`。\n\n请只输出：\n1. LEGACY: 对没有 `/health` 的服务怎么处理\n2. INCOMPATIBLE: 对低于客户端最低版本的服务怎么处理\n3. RESULT: 接下来如何继续，记录什么\n4. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "两种情况都回退，且都不杀、不删对端服务。没有 `/health` 的旧服务绝不注册；`protocol_version` 低于客户端最低版本的服务也留着继续运行。调用方回退到 `serve --state`：该回退不注册、报告 `degraded: true` 并给出 `reason`、不适用单例不变量，且绝不写 `server.json`。记录一条台账 gap，编排继续，并告诉用户去停掉旧服务。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "legacy_never_registered",
+          "text": "绝不在没有 /health 的服务上注册"
+        },
+        {
+          "name": "never_kill_or_delete",
+          "text": "既不杀也不删旧版或不兼容的服务"
+        },
+        {
+          "name": "fallback_is_degraded_with_reason",
+          "text": "回退到 serve --state，报告 degraded: true 与 reason，且不注册"
+        },
+        {
+          "name": "gap_recorded_and_dispatch_continues",
+          "text": "记录台账 gap 并告知用户停掉旧服务，同时不阻断派发"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "name": "dashboard-failure-does-not-block-dispatch",
+      "prompt": "在派发前检查点，进度写入因锁超时失败，`open` 命令在预算内没有返回。派发前检查回执已是绿色。\n\n请只输出：\n1. DISPATCH: 是否照常派发\n2. RECORD: 你为这次失败记录什么\n3. RETRY: 失败的写入后续如何处理\n4. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "照常派发。进度写入失败只记一条台账 gap，派发沿同一条路继续；`open` 是预算 15 秒的尽力后置步骤，从不在派发的关键路径上。派发控制流绝不按进度退出码分支，锁超时属于降级而不是调用方错误。下一个检查点用同一 event id 重试这次失败的写入。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "dispatch_continues",
+          "text": "即便进度与 open 都失败，仍继续派发"
+        },
+        {
+          "name": "gap_recorded",
+          "text": "为失败的写入记录一条台账 gap"
+        },
+        {
+          "name": "no_branch_on_exit_code",
+          "text": "不让派发控制流按进度退出码分支"
+        },
+        {
+          "name": "retry_same_event_id",
+          "text": "在下一个检查点用同一 event id 重试失败的写入"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "name": "revert-reopen-closeout",
+      "prompt": "一个已合并的 PR 在验收两天后被 revert，而 merge 关键字关闭的那张票又被 reopen。你现在跑收尾。\n\n请只输出：\n1. OBSERVATION: 追加哪些 observation，各几条\n2. ROWS: 收尾会降低哪些清单行\n3. SECOND_OBSERVATION: 收尾是否再追加一条\n4. LEVELS: revert 与 reopen 影响哪些验收层级\n5. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "revert 与 reopen 各自通过 `acceptance.py observe` 追加一条 observation。收尾消费这些 observation，对 revert 降低清单第 2、3、4 行、对 reopen 降低第 7 行；它绝不为同一事实再追加一条 observation。四个层级保持彼此独立——票实施完成、集成已验收、PR 已合并、票据按 tracker 关闭——revert 或 reopen 会降低结论，而不是让旧的更高层级继续成立。`never_merge` 终态不受二者影响。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "observation_appended_once",
+          "text": "在收尾之前为每个事实（revert、reopen）各追加恰好一条 observation"
+        },
+        {
+          "name": "closeout_consumes_observation",
+          "text": "收尾消费已记录的 observation，而不是自己再追加一条"
+        },
+        {
+          "name": "rows_lowered",
+          "text": "revert 时降低第 2/3/4 行，reopen 时降低第 7 行"
+        },
+        {
+          "name": "four_levels_stay_distinct",
+          "text": "保持 implemented / integrated / merged / tracker-closed 四个层级彼此独立"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "name": "binding-loss",
+      "prompt": "一个 worker 报告 `outcome: run_binding_lost`。`worker-show` 对这个 Run 返回不到已确认的 owner，收件循环报告 `consumer_fenced`。\n\n请只输出：\n1. HEALTH: 你记录的健康状态与原因\n2. NEXT: 下一步做什么\n3. NEW_RUN: 是否新建 Run\n4. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "`consumer_fenced` 是 `blocked`、`reason: binding_loss`，在 ownership 尚未证实（`unproven`）时升级给人。没有已确认 owner 的 `run_binding_lost` 是 `unknown`、`reason: ownership_unobserved`，应升级而不是重试。绑定丢失绝不是重试触发器，任何 block 都只是一条关于该 Run 的 observation。你要重建绑定，而不是重建 Run：绝不无条件新建 Run，先读已有句柄。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "fenced_is_blocked_and_escalated",
+          "text": "把 consumer_fenced 记为 blocked/binding_loss，并在 ownership 未证实时升级"
+        },
+        {
+          "name": "unverified_owner_is_unknown",
+          "text": "把没有已确认 owner 的 run_binding_lost 记为 unknown 加 ownership_unobserved"
+        },
+        {
+          "name": "no_new_run_unconditionally",
+          "text": "不无条件新建 Run，而是重建绑定"
+        },
+        {
+          "name": "binding_loss_not_a_retry_trigger",
+          "text": "把绑定丢失当作 observation，绝不作为重试动作的理由"
+        }
+      ]
     }
   ]
 }

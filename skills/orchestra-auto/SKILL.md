@@ -50,6 +50,7 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | File | When to read it |
 | --- | --- |
 | `references/dispatch-preflight.md` | Before every dispatch (§4.0.1 tick sheet), right after the receipt (§4.0.2 start and isolation evidence), and at teardown (§4.0.3 formatter noise) |
+| `references/prose-contract.md` | During acceptance or a review of either bundle, or when two documents seem to disagree about what may be concluded from a signal |
 | `references/dispatch-loop.md` | Every B/C dispatch for the full worker-start flags, turn-start confirmation, guide fetch, or communication-loop detail |
 | `references/spec-contract.md` | When writing a worker's spec, on any channel and for any ticket type |
 | `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
@@ -87,12 +88,12 @@ type** (§4.3), written as its real absolute path, confirmed readable before dis
 name is a slug you take at dispatch time; it is not part of the delivery endpoint.
 
 `worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is
-missing or unrecognized; pass the selected value explicitly. More rationale and the full dispatch
-narrative: [dispatch loop](references/dispatch-loop.md).
+missing or unrecognized; pass the selected value explicitly. The routing table above points at the
+[dispatch loop](references/dispatch-loop.md) for the rationale and every flag.
 
-Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be unsupported,
-report per §9 and stop rather than guessing or substituting. §4.3's table gives start/title criteria only, never
-defaults or disabled state.
+Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be
+unsupported, report per §9 and stop rather than guessing or substituting. §4.3's table gives
+start/title criteria only, never defaults or disabled state.
 
 ## 1. Channel and delivery endpoint
 
@@ -175,8 +176,7 @@ Every pre-dispatch run writes a durable ledger `kind: preflight` receipt first t
 ### 4.1 Read-only exploration
 
 Gather the facts needed to write the spec on main first (three parallel reads at most).
-**Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is
-the signal to dispatch, not a licence to skip it.
+**Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is the signal to dispatch, not a licence to skip it.
 
 ### 4.2 Fetch the orchestration guide
 
