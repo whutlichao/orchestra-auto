@@ -33,9 +33,13 @@ coordinator turn by itself — only the end of a command the harness surfaces ca
   reconciliation, records ``reconciled_delivery_id`` and a local observation in
   ``state.json``, and exits. A batch already announced is never news again, and the consumer
   never writes the ledger — the coordinator transcribes the observation;
-* a change in this Run's worker signature — the read-only ``worker-list --run``, reduced to
-  ``dispatchId:workerState:dispatchStatus:stage`` per worker — is the second wake leg, so
-  the coordinator does not have to wait for a ``worker_done`` that may never come;
+* a change in this Run's worker signature — the read-only ``worker-list --run --include-remote``
+  read to the last page, reduced to one line per worker of
+  ``dispatchId:workerState:dispatchStatus:stage.detail`` plus the scalar projection fields that
+  exist (``liveness.verdict``, ``liveness.state``, ``attention.requiresAction``,
+  ``nextAction.kind``, and ``liveness.reason`` only when present) — is the second wake leg, so
+  the coordinator does not have to wait for a ``worker_done`` that may never come. A missing
+  field reads ``unknown``, never healthy, and a truncated page is an error, not a signature;
 * a fatal error of the loop itself is the third leg: it exits non-zero and prints the same
   line with ``reason=error``.
 
@@ -44,6 +48,14 @@ poll-and-sleep: the CLI holds the connection and writes its keepalive lines to s
 which never reach this process's stdout. Every wake event ends the process, so the
 coordinator handles the batch and installs the next wait; not re-installing one is a silent
 stall. ``--status`` still inspects a directory without consuming its queue.
+
+``--status --json`` is the machine contract: it returns ``loop``, ``phase``, ``saved``,
+``unacked``, ``blocked``, ``last_activity_at``, ``watch``, ``run`` and ``terminal``, and exits
+``0`` for a healthy or resting loop, ``1`` for a fatal error, ``2`` when the state directory does
+not exist and ``3`` for a degraded or blocked inbox. The computation is local — delivery files,
+receipts, ``state.json``, the log and the directory lock — so status never calls the CLI and
+never consumes the queue. The legacy plain-text ``--status`` keeps its ``0``/``1`` exit codes for
+one minor version and says so on stderr.
 
 A handled batch is acknowledged through ``--ack DELIVERY_ID STATE_DIR``: the entry writes
 the pending receipt, asks Orca, then records ``success`` or ``failed``. It refuses an id
@@ -88,17 +100,36 @@ CLI_TIMEOUT_SECONDS = 45
 #: Grace added on top of ``--timeout-ms`` so the CLI's own timeout, not ours, decides.
 WAIT_GRACE_SECONDS = 15
 
+#: Rows per ``worker-list`` page, and the most pages one signature may read. A read that
+#: never exhausts its pages is a truncated signature, not a complete one.
+WORKER_PAGE_LIMIT = 100
+MAX_WORKER_PAGES = 1000
+
+#: The value every unobserved signature field carries. Never ``healthy``: absence of evidence
+#: is not evidence of health.
+UNKNOWN = "unknown"
+
 #: Append-only ack receipts in the state directory. A delivery is acknowledged locally only
 #: by a ``success`` entry; ``pending`` and ``failed`` are evidence, not proof.
 RECEIPTS_FILE = "receipts.jsonl"
 
 #: Local durable markers. They survive every state rewrite because they answer questions a
-#: transient phase cannot: which batches were already announced, and which one a reinstall
-#: reconciliation already woke for.
+#: transient phase cannot: which batches were already announced, which one a reinstall
+#: reconciliation already woke for, and whether worker watching was installed at all.
 WOKEN_KEY = "woken_deliveries"
 RECONCILED_KEY = "reconciled_delivery_id"
 OBSERVATION_KEY = "observation"
-LOCAL_STATE_KEYS = (WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY)
+WATCH_KEY = "watch"
+LOCAL_STATE_KEYS = (WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY, WATCH_KEY)
+
+#: Exit codes of ``--status --json``. They are a published contract: ``0`` resting after a
+#: wake or healthy, ``1`` fatal, ``2`` no state directory, ``3`` degraded or blocked. The
+#: install command's own ``2`` (occupied directory or binding mismatch) is a different
+#: contract and is not affected by these values.
+STATUS_OK = 0
+STATUS_FATAL = 1
+STATUS_MISSING = 2
+STATUS_DEGRADED = 3
 
 
 class Wake(Exception):
@@ -563,32 +594,109 @@ def check(directory, run_id, terminal, args, timeout, watch=None):
 def worker_signature(directory, run_id):
     """Reduce this Run's worker states to one comparable, read-only signature.
 
-    The signature is the sorted set of ``dispatchId:workerState:dispatchStatus:stage``
-    lines from ``worker-list --run``. Comparing whole lines rather than a count is the
-    point: a count cannot see one worker replace another, and a snapshot taken after an
-    event is exactly how a real wake-up was missed once already. A failure here is
-    reported like any other CLI failure — never as "nothing changed".
+    The signature is the sorted set of ``dispatchId:workerState:dispatchStatus:stage.detail``
+    lines from ``worker-list --run --include-remote``, extended with the scalar projection
+    fields that decide the next step: ``liveness.verdict`` (the live CLI's name for the
+    reported liveness — the spec's ``liveness.state`` is read too, and reads ``unknown`` when
+    absent), ``liveness.state``, ``attention.requiresAction``, ``nextAction.kind`` and
+    ``stage.detail``. ``liveness.reason`` is appended only when it is present, because its
+    absence is normal and a trailing ``unknown`` would hide that.
+
+    Every page is followed through ``page.nextCursor`` until ``page.hasMore`` is false, so a
+    remote worker on a later page is part of the signature. A page that claims more rows but
+    carries no usable, unseen cursor, or a page that carries no ``page`` object at all, is a
+    truncated read and raises: half a roster must never compare equal to a full one. Missing
+    fields serialize as ``unknown`` — never as a healthy-looking value — and an object-valued
+    field is reduced to ``unknown`` rather than being embedded whole.
+
+    Comparing whole lines rather than a count is the point: a count cannot see one worker
+    replace another, and a snapshot taken after an event is exactly how a real wake-up was
+    missed once already. A failure here is reported like any other CLI failure — never as
+    "nothing changed".
     """
-    code, raw, problem = cli_run(
-        directory,
-        [CLI, "orchestration", "worker-list", "--run", run_id, "--json"],
-        "worker-list",
-    )
-    data = parse_cli_result(code, raw, problem)
-    workers = data["result"].get("workers")
-    if not isinstance(workers, list):
-        raise RuntimeError("worker-list returned no workers array")
+    rows = []
+    cursor = ""
+    seen = set()
+    for _page_number in range(MAX_WORKER_PAGES):
+        command = [CLI, "orchestration", "worker-list", "--run", run_id,
+                   "--include-remote", "--limit", str(WORKER_PAGE_LIMIT), "--json"]
+        if cursor:
+            command.extend(["--cursor", cursor])
+        code, raw, problem = cli_run(directory, command, "worker-list")
+        data = parse_cli_result(code, raw, problem)
+        page_rows = data["result"].get("workers")
+        if not isinstance(page_rows, list):
+            raise RuntimeError("worker-list returned no workers array")
+        rows.extend(row for row in page_rows if isinstance(row, dict))
+        page = data["result"].get("page")
+        if not isinstance(page, dict):
+            raise RuntimeError(
+                "worker-list returned no page object: a truncated page is not a complete signature")
+        if not page.get("hasMore"):
+            return "\n".join(sorted(signature_lines(rows)))
+        following = page.get("nextCursor")
+        if not isinstance(following, str) or not following or following in seen:
+            raise RuntimeError(
+                "worker-list pagination has no usable cursor: a truncated page is not a "
+                "complete signature")
+        seen.add(following)
+        cursor = following
+    raise RuntimeError("worker-list pagination exceeded the page limit: not a complete signature")
+
+
+def scalar(value):
+    """Reduce one projection field to a comparable scalar, or ``unknown``.
+
+    A JSON object or array is not a scalar: embedding it whole would make the signature line
+    split on the field separators and drift on unrelated detail, so it becomes ``unknown``.
+    ``None`` is the absent field, and absence is ``unknown`` — never a healthy-looking value.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        text = str(value)
+        # The line is colon-separated and newline-separated; a value carrying either would
+        # shift the fields or invent a row.
+        return " ".join(text.replace(":", " ").split()) or UNKNOWN
+    return UNKNOWN
+
+
+def signature_lines(rows):
+    """One comparable line per worker row, in the published field order."""
     lines = []
-    for worker in workers:
+    for worker in rows:
         if not isinstance(worker, dict):
             continue
         projection = worker.get("projection")
-        stage = projection.get("stage") if isinstance(projection, dict) else None
-        detail = stage.get("detail") if isinstance(stage, dict) else None
-        lines.append(":".join(str(part) for part in (
-            worker.get("dispatchId"), worker.get("workerState"),
-            worker.get("dispatchStatus"), detail)))
-    return "\n".join(sorted(lines))
+        if not isinstance(projection, dict):
+            projection = {}
+        stage = projection.get("stage")
+        if not isinstance(stage, dict):
+            stage = {}
+        liveness = projection.get("liveness")
+        if not isinstance(liveness, dict):
+            liveness = {}
+        attention = projection.get("attention")
+        if not isinstance(attention, dict):
+            attention = {}
+        next_action = projection.get("nextAction")
+        if not isinstance(next_action, dict):
+            next_action = {}
+        detail = scalar(stage.get("detail"))
+        line = ":".join((
+            scalar(worker.get("dispatchId")),
+            scalar(worker.get("workerState")),
+            scalar(worker.get("dispatchStatus")),
+            detail,
+            scalar(liveness.get("verdict")),
+            scalar(liveness.get("state")),
+            scalar(attention.get("requiresAction")),
+            scalar(next_action.get("kind")),
+        ))
+        if "reason" in liveness:
+            line += ":liveness.reason=" + scalar(liveness.get("reason"))
+        lines.append(line)
+    return lines
 
 
 def worker_changes(before, after):
@@ -818,30 +926,222 @@ def stop(signum, frame):
     raise SystemExit(0)
 
 
-def status(path):
-    """Print this directory's lock and state without consuming the queue."""
+def directory_mtime(directory):
+    """The newest mtime among ``state.json``, ``watch.log`` and ``deliveries/``.
+
+    These are the three places local activity can leave a trace without the queue being
+    consumed, so this is the one timestamp a coordinator can trust from a dead loop.
+    """
+    newest = None
+    for path in (directory / "state.json", directory / "watch.log", directory / "deliveries"):
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or stamp > newest:
+            newest = stamp
+    return newest
+
+
+def iso_time(stamp):
+    """Format an epoch timestamp the way the status contract publishes it, or ``None``."""
+    if stamp is None:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+
+
+def unrecorded_error(directory):
+    """The ``ERROR`` line that ``state.json`` never caught up with, or ``None``.
+
+    ``fatal()`` logs the error and then writes ``phase=error``; a kill between the two leaves
+    only the log line, which is exactly the "the loop died loudly but the state says it was
+    busy" gap this reports. ``watch.log`` is append-only across installs, so an ERROR line
+    older than the current ``state.json`` is history — the reinstall that replaced it is the
+    current verdict — and only a last line written after the state file counts.
+    """
+    log_path = directory / "watch.log"
+    state_path = directory / "state.json"
+    try:
+        text = log_path.read_text(errors="replace")
+        log_mtime = log_path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        state_mtime = state_path.stat().st_mtime
+    except OSError:
+        state_mtime = None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or " ERROR " not in lines[-1]:
+        return None
+    if state_mtime is not None and log_mtime < state_mtime:
+        return None
+    return lines[-1]
+
+
+def loop_state(directory):
+    """``alive``/``dead``/``unknown`` from the per-directory lock, never from the pid file.
+
+    The lock is the consumer's own claim on the directory: a process that holds it is the
+    loop, and the pid file alone is not evidence because the loop unlinks it on every exit
+    path. ``unknown`` is returned when the lock cannot be probed at all — absence of evidence
+    is not a verdict.
+
+    The probe never creates the lock file: a directory with no lock file has never had a loop
+    installed, so it is ``dead``, and a status read must not add a file to someone's state
+    directory just by looking at it.
+    """
+    path = directory / "inbox.lock"
+    try:
+        descriptor = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return "dead"
+    except OSError:
+        return "unknown"
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Another process holds the lock: that process is the loop.
+            return "alive"
+        except OSError:
+            return "unknown"
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return "dead"
+    finally:
+        os.close(descriptor)
+
+
+def status_report(directory):
+    """The local status payload: fields plus the reason each degradation exists.
+
+    Reads delivery files, receipts, ``state.json``, ``watch.log`` and the directory lock only.
+    It never calls the CLI, so ``check`` and ``check --peek`` are never run and the FIFO queue
+    is never consumed. An unreadable delivery is an error, not an empty inbox.
+    """
+    payload = {
+        "loop": "dead",
+        "phase": None,
+        "saved": 0,
+        "unacked": 0,
+        "blocked": None,
+        "last_activity_at": None,
+        "watch": UNKNOWN,
+        "run": None,
+        "terminal": None,
+        "reasons": [],
+        "degraded": False,
+    }
+    if not directory.is_dir():
+        payload["error"] = "state directory missing: " + str(directory)
+        payload["reasons"] = ["missing_state_directory"]
+        payload["degraded"] = True
+        return payload, STATUS_MISSING
+
+    state = read_json(directory / "state.json")
+    binding = read_json(directory / "binding.json")
+    phase = state.get("phase")
+    payload["phase"] = phase if isinstance(phase, str) else None
+    payload["run"] = binding.get("run") if isinstance(binding.get("run"), str) else None
+    payload["terminal"] = (
+        binding.get("terminal") if isinstance(binding.get("terminal"), str) else None)
+    recorded_watch = state.get(WATCH_KEY)
+    if recorded_watch in ("on", "off"):
+        payload["watch"] = recorded_watch
+    payload["last_activity_at"] = iso_time(directory_mtime(directory))
+    payload["loop"] = loop_state(directory)
+    try:
+        progress = inbox_progress(directory)
+    except RuntimeError as error:
+        payload["error"] = str(error)
+        payload["reasons"] = ["unreadable_delivery"]
+        payload["degraded"] = True
+        return payload, STATUS_FATAL
+    payload["saved"] = progress["saved"]
+    payload["unacked"] = progress["unacked"]
+    payload["blocked"] = progress["blocked"]
+
+    # Fatal: the loop recorded its own failure, either as ``phase=error`` or as an ``ERROR``
+    # line the state never caught up with (a kill between the log write and the state write).
+    error_line = unrecorded_error(directory)
+    if payload["phase"] == "error" or error_line:
+        payload["error"] = state.get("error") if isinstance(state.get("error"), str) else error_line
+        payload["reasons"] = ["fatal"]
+        payload["degraded"] = True
+        return payload, STATUS_FATAL
+
+    reasons = []
+    if progress["blocked"] is not None:
+        # Head-of-line blocking: the FIFO head is unacknowledged, so nothing behind it moves.
+        reasons.append("blocked")
+    if payload["watch"] == "off":
+        # Watch disabled is a documented degradation, never healthy: nothing observes a
+        # worker changing state without sending a message.
+        reasons.append("watch_off")
+    if payload["loop"] == "dead" and payload["phase"] in (
+            "waiting", "checking", "backoff", "reconciling", "starting"):
+        # A loop with an active phase that no longer holds the lock died without writing a
+        # wake or an error — the "total silence" case, degraded until someone investigates.
+        reasons.append("loop_not_running")
+    payload["reasons"] = reasons
+    payload["degraded"] = bool(reasons)
+    return payload, (STATUS_DEGRADED if reasons else STATUS_OK)
+
+
+def status(path, json_mode=False):
+    """Report this directory's lock and state without consuming the queue.
+
+    ``json_mode`` prints the published machine contract and exits ``0``/``1``/``2``/``3``.
+    The legacy plain-text form keeps its ``0``/``1`` exit codes for one minor version and
+    says on stderr that machine callers must move to ``--json``.
+    """
     directory = Path(path).resolve()
+    if json_mode:
+        payload, code = status_report(directory)
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return code
+    print("warning: plain --status is deprecated; its 0/1 exit codes are kept for one minor "
+          "version. Use --status --json for the 0/1/2/3 contract.", file=sys.stderr)
     if not directory.is_dir():
         print("loop: DEAD (state directory missing)")
         return 1
-    handle = locked(directory)
-    alive = handle is None
-    if handle is not None:
-        handle.close()
-    print("loop:", "ALIVE" if alive else "DEAD")
+    payload, _code = status_report(directory)
+    print("loop:", "ALIVE" if payload["loop"] == "alive" else "DEAD")
     print("state:", json.dumps(read_json(directory / "state.json"), ensure_ascii=False))
-    saved = sorted((directory / "deliveries").glob("*.json"))
-    print("saved batches:", len(saved), "(durable records; not necessarily unhandled)")
+    print("saved batches:", payload["saved"],
+          "(durable records; not necessarily unhandled)")
+    print("unacked:", payload["unacked"],
+          "blocked:", json.dumps(payload["blocked"], ensure_ascii=False))
     marker = directory / "NEW-MESSAGE"
     if marker.exists():
         print(marker.read_text())
-    print("Run an explicit check --peek to inspect the queue; status never consumes messages.")
-    return 0 if alive else 1
+    print("Run an explicit check --all to inspect the queue; status never consumes messages.")
+    # The legacy contract is exactly 0 for a loop that holds the directory and 1 otherwise;
+    # the new 2/3 codes belong to ``--json`` alone.
+    return 0 if payload["loop"] == "alive" else 1
+
+
+def status_arguments(arguments):
+    """Split ``--status``'s arguments into ``(json_mode, path)``, or ``None`` on misuse."""
+    json_mode = False
+    rest = []
+    for argument in arguments:
+        if argument == "--json":
+            json_mode = True
+        else:
+            rest.append(argument)
+    if len(rest) != 1:
+        return None
+    return json_mode, rest[0]
 
 
 def main():
-    if len(sys.argv) >= 3 and sys.argv[1] == "--status":
-        return status(sys.argv[2])
+    if len(sys.argv) >= 2 and sys.argv[1] == "--status":
+        parsed = status_arguments(sys.argv[2:])
+        if parsed is None:
+            print("usage: inbox-loop.sh --status [--json] STATE_DIR", file=sys.stderr)
+            return 2
+        json_mode, path = parsed
+        return status(path, json_mode=json_mode)
     if len(sys.argv) >= 2 and sys.argv[1] == "--ack":
         if len(sys.argv) != 4:
             print("usage: inbox-loop.sh --ack DELIVERY_ID STATE_DIR", file=sys.stderr)
@@ -888,6 +1188,13 @@ def main():
     # A zero poll interval would probe in a tight loop, so the floor is part of the switch.
     worker_poll = max(env_number("WORKER_POLL_SECONDS", 15.0, float), 0.05)
     watch_workers = env_flag("WORKER_WATCH", True)
+    # The switch is durable and visible: ``--status`` must be able to say "watch is off"
+    # (degraded) instead of reporting a loop that looks fully healthy while one wake leg is
+    # missing. It is written before the baseline read, so an install that then fails in
+    # worker-list still records what it was configured to do.
+    write_state(directory, {WATCH_KEY: "on" if watch_workers else "off",
+                            **binding, "loopPid": os.getpid(),
+                            "phase": "starting", "updatedAt": time.time()})
     try:
         # Reading the baseline is a CLI call like any other: a failure here is reported
         # as an error, never swallowed into "nothing changed".
