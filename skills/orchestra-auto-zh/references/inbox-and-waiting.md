@@ -37,8 +37,8 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
 ```
 
 按 §3 的方式运行它——作为 harness 能呈现结果的阻塞调用——**不要**用 `nohup … &`。
-脚本把每批投递原子落盘、自动 ack 纯心跳批次，在出现需要你处理的事件时**结束进程**：
-这个结束就是你的唤醒。`--status` 只查看目录，不消费队列：
+脚本把每批投递原子落盘，并在重命名后 fsync 父目录，自动 ack 纯心跳批次，在出现需要你处理的
+事件时**结束进程**：这个结束就是你的唤醒。`--status` 只查看目录，不消费队列：
 
 ```bash
 <SKILL_DIR>/scripts/inbox-loop.sh --status /tmp/orch-<repo>-<run_id>
@@ -59,9 +59,20 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
 死亡——收件器退出时已把文件删掉，等待器把「没东西可查」读成了「一切正常」，继续睡。
 
 脚本每轮先做无过滤 check，再装上阻塞等待，防止心跳与普通消息积压。完整响应按 deliveryId
-哈希原子写入 `deliveries/*.json`；文件不轮转删除。**已经在盘上**的批次从不当作新消息：它是
-你尚未处理的责任，脚本会暂停等待而不是为它再唤醒一次或空转。`NEW-MESSAGE` 仅是最近落盘的
-提示，**不是待办清单**；收到新消息或恢复会话时枚举全部 delivery 文件，对照台账处理。
+哈希原子写入 `deliveries/*.json`，并在重命名后 fsync 父目录——只 fsync 文件不够，因为重命名
+改的是目录项——所以已落盘的批次能扛住断电；文件不轮转删除。**已经在盘上且已经宣告过**的批次
+从不当作新消息：它是你尚未处理的责任，脚本会暂停等待而不是为它再唤醒一次或空转。
+`NEW-MESSAGE` 仅是最近落盘的提示，**不是待办清单**；收到新消息或恢复会话时枚举全部 delivery
+文件，对照台账处理。
+
+重新安装时，脚本把每个 delivery 文件与成功 receipt 对账。若最老的未 ack 批次已落盘却从未宣告，
+它会发出恰好一次 `delivery` 唤醒，`detail` 写明这是对账；把 `reconciled_delivery_id` 与一条
+本地观察写入 `state.json`，然后退出。第二次安装不会为同一批再唤醒，已经宣告过的批次也不算
+新消息。这只发生在安装时：稳定运行期间，已落盘批次仍是你未处理的责任。对账只读一次
+`worker-list` 与 `state.json`，把 worker baseline 记进观察，并且只写 `state.json`；协调者把
+这条观察转录进台账，收件器自己从不写台账。观察包含 `kind`、`saved`、`unacked`、`blocked`、
+`reconciled_delivery_id` 与 `baseline_worker_signature`，并带 `write_scope: state.json` 和
+`transcribe_to: ledger`。
 
 错误显式落盘并退出，不能将 CLI 失败、JSON 错误或绑定失效解释成空队列。
 
@@ -83,15 +94,31 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
    不据此完成新 attempt。
 2. 提问用 `reply --id <message_id>` 回答；待人工决定的记录为 pending，不能超时自答。
    worker_done 对照真实 Dispatch 和产物验收；生命周期结算不等于交付验收通过。
-3. 按当前 Orca 指南完成整批消息及必要的终端归属决定后，才 ack **这份已读快照**里的
-   `.result.deliveryId`。保存 ack 的成功回执；失败保持台账并重新核验，不假定已确认。
-4. 一条等待人类决定的问题堵住 FIFO 时，执行 `check --run <run_id> --terminal <handle>
-   --all --json` 只读查看后续消息，先处理其他 worker 的问题/完成报告并登记；`--all` 不提供
-   可 ack 的 Delivery，不编造 ID。原批次完成后逐批消费，对已处理消息只对账。
+3. 完成整批消息及必要的终端归属决定后，才通过脚本 ack **这份已读快照**里的
+   `.result.deliveryId`：`inbox-loop.sh --ack <delivery_id> <state_dir>`。它先追加 `pending`
+   receipt，再调用 `orca orchestration check --ack <delivery_id>`，然后向 `receipts.jsonl`
+   追加 `success` 或 `failed`。Orca 拒绝时记 `failed`，批次保持未 ack；重试用同一个 delivery
+   id——本地 `request_id` 随之复用——并保留 delivery 文件。Orca 接受之前绝不写 `success`，
+   所以成功 receipt 才是 ack 已落地的证明；失败时保留台账并重新核验，不假定已确认。入口在
+   ack 落地时退出 `0`，Orca 拒绝或该 id 从未落盘时退出 `1`，用法错误或状态目录没有绑定时
+   退出 `2`。
+4. 一条等待人类决定的问题堵住 FIFO 时，头部就是 **blocked**：它的 delivery id 与原因
+   `unacknowledged` 可由已落盘 delivery 和成功 receipt 计算（状态契约里的 `blocked`），所以
+   先处理头部。要查看后续消息而不消费它们，执行只读
+   `check --run <run_id> --terminal <handle> --all --json`，先处理其他 worker 的问题/完成
+   报告并登记；`--all` 不提供可 ack 的 Delivery，不编造 ID。原批次完成后逐批消费，对已处理
+   消息只对账。
+
+每次 ack——自动或协调者发起——都向状态目录的 `receipts.jsonl` 追加一行
+`{delivery_id, request_id, acked_at, result}`，只增不改。`pending` 写在 Orca 调用之前，
+`success` 或 `failed` 写在调用之后；`request_id` 是稳定的本地键 `ack:<delivery_id>`，拒绝后
+重试复用它。收件器从未落盘的 delivery id 会在调用 Orca 前被拒绝：`check --all` 不产出可 ack
+的 id，任何 id 都不得编造。receipt 文件使 `unacked` 能减少、被堵的 FIFO 头部能解除。
 
 脚本只会自动 ack 已落盘且**每条都是 heartbeat**的非空批次；混合批次和未知类型一律交给
-coordinator。类型过滤只决定 waiter 何时醒来，不改变整批处理义务。脚本不会删除本地待办，
-队列为空也不说明台账都已完成。
+coordinator。自动 ack 写同样的 pending/success receipt；Orca 拒绝时记 `failed`、批次保持未
+ack，并以 error 唤醒结束进程——脚本绝不自行重试。类型过滤只决定 waiter 何时醒来，不改变
+整批处理义务。脚本不会删除本地待办，队列为空也不说明台账都已完成。
 
 ## 3. 协调者持续运行与唤醒
 
@@ -132,13 +159,14 @@ stdout 打印恰好一行。这才是正确的分工，写全了就是：**收�
 实例占用，或该目录已绑定到另一个 Run/句柄/CLI（两者都打印同样的 `reason=error` 那一行，并在
 `watch.log` 里留一条 `ERROR`，且都不去动该目录所属循环的 `state.json`）——或参数即用法错误，
 后者是唯一一条 stdout 什么都不打印的路径：循环根本没启动，于是它在 stderr 上说明，也没有可上报的
-状态目录。除此之外，除 `--status` 外 stdout 只有那一行，没有别的内容。
+状态目录。除此之外，除 `--status` 与 `--ack` 外 stdout 只有那一行，没有别的内容。
 
 三条腿都会唤醒，每条都因为另外两条看不见它而存在：
 
 1. **新消息**——盘上原先没有、且并非全是心跳的批次。纯心跳批次会被自动 ack，**不**唤醒：
-   它不携带任何决策。已经落盘批次的 FIFO 重放也不唤醒——那是你尚未处理的责任，不是新消息，
-   照台账处理即可。
+   它不携带任何决策。已经落盘且已经宣告过的批次的 FIFO 重放也不唤醒——那是你尚未处理的责任，
+   不是新消息，照台账处理即可。唯一的例外在安装时：已落盘却从未宣告的未 ack 批次会产生恰好
+   一次对账唤醒（§1），而持久化的 `reconciled_delivery_id` 防止第二次。
 2. **收件器自身死亡或错误**——非零退出本身就是一次唤醒，因为 harness 呈现的正是“进程结束”；
    `reason=error` 那一行说明原因。静默停掉的收件器是 §5.1 的「彻底安静」，不是空队列。
    现场实例：Orca app 重启时收件器正阻塞在 `check --wait`，CLI 回 `runtime_unavailable`
@@ -225,7 +253,7 @@ heartbeat 消息无关。脚本把该子进程的流放在自己的文件里，k
 | 断点 | 症状与一眼判据 | 动作 |
 | --- | --- | --- |
 | 唤醒 | worker_done 已在盘上或队列里，但协调者的 turn 早已结束、没有东西起新 turn：delivery 文件比你上一次 turn 更新，或 `NEW-MESSAGE` 早已过期，而 §3 的唤醒方式从未被确认 | `send` 成功只证明 durable enqueue；wake/nudge 是 best-effort。先确认自己处在 §3 哪一档：harness 能呈现作业完成时，收件器的结束——§3.1 那行唤醒——**就是**唤醒；若它始终没来，核对收件器是否按 §3.2 装的（而不是 `nohup`），以及上一次唤醒后是否装回了下一次等待（§3.4）。没有这种 harness 就停在 §3.3 的有界档，或在结束 turn 前记录无法自动唤醒的状态。绝不能把「进程还活着」当成「我会被叫醒」 |
-| FIFO 头部未 ack | 早先消息正常，之后的 worker_done 再不出现，批次头部压着一条未回答的提问或决策 | `check` 返回 Run 下**最老未 ack** 的 Delivery，并一直重放这一批直到 `--ack`，所以一批没 ack 就挡住它后面的一切。整批处理完再 ack 该快照的 `deliveryId`（§2 第 3 条）。人类决策堵住头部时，用只读 `check --all` 读后续消息（§2 第 4 条）；`--all` 从不出产可 ack 的 ID。ack 不是回复 |
+| FIFO 头部未 ack | 早先消息正常，之后的 worker_done 再不出现，批次头部压着一条未回答的提问或决策 | `check` 返回 Run 下**最老未 ack** 的 Delivery，并一直重放这一批直到 `--ack`，所以一批没 ack 就挡住它后面的一切。头部处于 `blocked`，带 delivery id 与原因 `unacknowledged`，由 delivery 文件与 `receipts.jsonl` 计算。整批处理完再通过 `inbox-loop.sh --ack` ack 该快照的 `deliveryId`（§2 第 3 条），让 receipt 记下 pending 与 success/failed。人类决策堵住头部时，用只读 `check --all` 读后续消息（§2 第 4 条）；`--all` 从不出产可 ack 的 ID。ack 不是回复 |
 | 动作被打断 | 批仍是未 ack，台账那条停在 `processing`，进程死在「做完事」和「记下事」之间——所以效果可能已经落地 | 先确立事实再重放（§2）：读真实状态——合并查 `pr view`、回复查回执、文件就读文件本身。只有效果可验证且动作幂等时，才用同一个 delivery ID 重放；无法从证据确立的效果交给人类，不要盲目重跑。这就是 `runtime_unavailable` 那条判断往上一层：变更可能已经生效，所以要证明它、或者去问，绝不假设 |
 | 身份/邮箱 | 哪个收件箱都收不到，或消息落在你没在看的地方 | `check` 用 `--terminal <handle>` 认调用方且不接受 `--from`；从终端标题、"最新终端"或别的会话/Run 拿来的 handle 指向错误邮箱。handle 取自真实调用方身份（`orca status --json`）并写入台账。worker_done/heartbeat 不能发组地址，其 sender handle 必须精确等于 dispatch assignee，否则该任务永不结算 |
 | 收件器已死 | 彻底安静（连心跳也没有）：`--status` 报 DEAD 且 `phase=error`、或 `watch.log` 有 `ERROR` 行；或收到的唤醒行 `reason=error` | 脚本刻意把 CLI 失败、JSON 错误与绑定丢失落盘并非零退出，一次停止从不等价于空队列——而且那次停止本身就是一次唤醒（§3.1）。判死看 `state.json`，不要只看 pid 文件（§1）。读 `ERROR` 行与 `detail`；绑定/waiter 问题通常意味着别的实例或别的 Run 的 loop 占走了槽。在重新下发任何东西之前，先按 CLI 自己给出的恢复指引走：`runtime_unavailable` 错误会附带 `request-show --request <id>` 指引，而那次改动可能已经生效；用 `request-show` 确认、再用 `--retry-request <id>` 重放，而不是当成一次全新尝试。收件器自己从不重试。waiter 槽是跨目录资源：起新 loop 前先确认并停掉旧 loop，绝不迁移旧状态目录 |
@@ -236,8 +264,9 @@ heartbeat 消息无关。脚本把该子进程的流放在自己的文件里，k
 报告缺失或 worker 像失联时，把这三处一起读；任何单独一处都可能显得空，或在并不健康时显得健康：
 
 1. **本地**：`--status` 看 `loop`/`phase`；枚举**全部** `deliveries/*.json`，而不是只信
-   `NEW-MESSAGE`（它只提示最近落盘的批次，不是待办清单）；读 `watch.log` 的 `ERROR` 行，
-   以及 `state.json` 里 `phase=wake` 的原因——那是上一次安装结束的缘由。
+   `NEW-MESSAGE`（它只提示最近落盘的批次，不是待办清单）；把它们与 `receipts.jsonl` 里的成功
+   receipt 对比（未 ack 的头部即 `blocked`）；读 `watch.log` 的 `ERROR` 行、`state.json` 里
+   最近一次对账观察，以及 `phase=wake` 的原因——那是上一次安装结束的缘由。
 2. **服务端队列**：只读 `check --run <run_id> --terminal <handle> --all --json`。
 3. **worker 状态**：`worker-list --include-remote --json`（有分页须读完），再对相关 Dispatch
    读 `worker-show` 与 `worker-read`——`projection.attention.requiresAction`、字面
