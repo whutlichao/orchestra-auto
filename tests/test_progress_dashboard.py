@@ -1,12 +1,19 @@
-"""Public CLI, snapshot and HTTP contracts for the progress sidecar."""
+"""Public CLI, snapshot, registry and HTTP contracts for the progress sidecar."""
 import fcntl
 import time
 import concurrent.futures
+import importlib.util
 import json
 import os
+import socket
+import stat
+import threading
+import unittest.mock
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 import subprocess
 import sys
 import tempfile
@@ -16,6 +23,56 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills/orchestra-auto/scripts/progress.py'
+
+
+def terminate(pid):
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def wait_dead(pid, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+class LegacyDashboardHandler(BaseHTTPRequestHandler):
+    """A pre-singleton dashboard: answers GET without a ``/health`` endpoint."""
+
+    def do_GET(self):
+        body = b'<html>legacy dashboard</html>'
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+class IncompatibleDashboardHandler(BaseHTTPRequestHandler):
+    """Speaks ``/health`` but reports a protocol older than the client minimum."""
+
+    health = {'ok': True, 'protocol_version': 0, 'pid': 0,
+              'started_at': '2026-01-01T00:00:00+00:00', 'runs': []}
+
+    def do_GET(self):
+        body = json.dumps(self.health).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
 
 
 class ProgressTests(unittest.TestCase):
@@ -30,15 +87,33 @@ class ProgressTests(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         (self.repo / '.git').mkdir()
+        # The singleton home and the ledger home are per-test temporary trees outside
+        # every repository; no test may ever touch the real ~/.orca directories.
+        self.home = self.root / 'progress-home'
+        self.ledger_home = self.root / 'ledger-home'
+        (self.root / 'sitecustomize.py').write_text(
+            'import webbrowser\nwebbrowser.open = lambda url: True\n')
+
+    def environment(self, **extra):
+        return {**os.environ, 'PYTHONPATH': str(self.root),
+                'ORCA_PROGRESS_HOME': str(self.home),
+                'ORCA_LEDGER_HOME': str(self.ledger_home), **extra}
+
+    def progress_module(self):
+        spec = importlib.util.spec_from_file_location('progress_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def cli(self, command, data=None, event='e1', source='coordinator', ok=True,
-            global_flags=(), flags=()):
-        args = [sys.executable, str(SCRIPT), '--state', str(self.state),
+            global_flags=(), flags=(), state=None):
+        args = [sys.executable, str(SCRIPT), '--state', str(state or self.state),
                 *global_flags, command]
         if command != 'show':
             args += ['--event-id', event, '--data', json.dumps(data or {}),
                      '--source', source, *flags]
-        result = subprocess.run(args, text=True, capture_output=True)
+        result = subprocess.run(args, text=True, capture_output=True,
+                                env=self.environment())
         self.assertEqual(result.returncode == 0, ok, result.stderr)
         return result
 
@@ -60,53 +135,520 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse((self.repo / 'progress.json').exists())
 
 
+    def origin_of(self, info):
+        parts = urlsplit(info['url'])
+        return parts.scheme + '://' + parts.netloc
+
+    def snapshot_of(self, info, run_id='run1'):
+        with urllib.request.urlopen(self.origin_of(info) + '/snapshot?run=' + run_id,
+                                    timeout=5) as response:
+            return json.load(response)
+
+    def health_of(self, info):
+        with urllib.request.urlopen(self.origin_of(info) + '/health', timeout=5) as response:
+            return json.load(response)
+
+    def init_run(self, name, run_id):
+        state = self.root / 'audit' / name
+        self.cli('init', {'id': run_id, 'target_repo': str(self.repo), 'mode': 'REAL',
+                          'phase': 'implementation', 'status': 'active'},
+                 event='init', state=state)
+        return state
+
+    def open_run(self, state):
+        return subprocess.run([sys.executable, str(SCRIPT), '--state', str(state), 'open'],
+                              env=self.environment(), capture_output=True, text=True, timeout=25)
+
     def test_open_starts_viewer_and_reports_browser_failure(self):
         self.init()
         (self.root / 'sitecustomize.py').write_text('import webbrowser\nwebbrowser.open = lambda url: False\n')
-        env = {**os.environ, 'PYTHONPATH': str(self.root)}
         result = subprocess.run([sys.executable, str(SCRIPT), '--state', str(self.state), 'open'],
-                                env=env, capture_output=True, text=True, timeout=10)
+                                env=self.environment(), capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         info = json.loads(result.stdout)
-        self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
+        self.addCleanup(terminate, info['pid'])
         self.assertFalse(info['browser_opened'])
         self.assertIn('manually', result.stderr)
-        with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
-            self.assertEqual(json.load(response)['run']['id'], 'run1')
+        self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
 
-    def background_viewer(self, script=SCRIPT):
+    def background_viewer(self, script=SCRIPT, state=None):
         """Run ``open`` with a stubbed browser so the test never launches a real window."""
         (self.root / 'sitecustomize.py').write_text(
             'import webbrowser\nwebbrowser.open = lambda url: True\n')
-        return subprocess.run([sys.executable, str(script), '--state', str(self.state), 'open'],
-                              env={**os.environ, 'PYTHONPATH': str(self.root)},
-                              capture_output=True, text=True, timeout=10)
+        return subprocess.run([sys.executable, str(script), '--state', str(state or self.state),
+                               'open'],
+                              env=self.environment(), capture_output=True, text=True, timeout=25)
 
     def test_open_reports_url_and_a_background_pid_that_outlives_it(self):
         self.init()
         result = self.background_viewer()
         self.assertEqual(result.returncode, 0, result.stderr)
         info = json.loads(result.stdout)
-        self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
+        self.addCleanup(terminate, info['pid'])
         self.assertTrue(info['browser_opened'])
         self.assertEqual(result.stderr, '')
         self.assertTrue(info['url'].startswith('http://127.0.0.1:'))
+        self.assertIn('?run=run1', info['url'])
         # The parent has exited, so reading here proves the viewer was detached.
-        with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
-            self.assertEqual(json.load(response)['run']['id'], 'run1')
+        self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
 
-    def test_open_gives_each_run_its_own_free_port(self):
+    def test_concurrent_open_yields_one_service_two_runs_and_no_second_server(self):
+        # Replaces the per-Run free-port test: the migration makes the dashboard one
+        # service per user, so two Runs share a port and register two descriptors.
         self.init()
-        opened = [self.background_viewer() for _ in range(2)]
+        second = self.init_run('second', 'run2')
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            opened = list(pool.map(self.open_run, [self.state, second]))
         for result in opened:
             self.assertEqual(result.returncode, 0, result.stderr)
         infos = [json.loads(result.stdout) for result in opened]
+        self.addCleanup(terminate, infos[0]['pid'])
         for info in infos:
-            self.addCleanup(os.kill, info['pid'], signal.SIGTERM)
-        self.assertNotEqual(infos[0]['url'], infos[1]['url'])
-        for info in infos:
-            with urllib.request.urlopen(info['url'] + 'snapshot', timeout=5) as response:
-                self.assertEqual(json.load(response)['run']['id'], 'run1')
+            self.assertEqual(set(info), {'url', 'pid', 'degraded', 'reason',
+                                         'browser_opened'})
+            self.assertFalse(info['degraded'])
+            self.assertEqual(info['reason'], '')
+            self.assertEqual(self.origin_of(info), self.origin_of(infos[0]))
+        self.assertEqual(infos[0]['pid'], infos[1]['pid'])
+        self.assertEqual(sorted(info['url'] for info in infos),
+                         sorted(self.origin_of(infos[0]) + '/?run=' + run_id
+                                for run_id in ('run1', 'run2')))
+        server = json.loads((self.home / 'server.json').read_text())
+        self.assertEqual(server['pid'], infos[0]['pid'])
+        self.assertEqual(server['port'], urlsplit(infos[0]['url']).port)
+        descriptors = sorted(path.name for path in (self.home / 'runs').iterdir())
+        self.assertEqual(descriptors, ['run1.json', 'run2.json'])
+        self.assertFalse((self.home / 'starting.json').exists())
+        lock = self.home / 'startup.lock'
+        self.assertTrue(lock.is_file())
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+        health = self.health_of(infos[0])
+        self.assertTrue(health['ok'])
+        self.assertEqual(health['protocol_version'], 1)
+        self.assertEqual(health['pid'], infos[0]['pid'])
+        self.assertTrue(health['started_at'])
+        self.assertEqual(sorted(health['runs']), ['run1', 'run2'])
+        # One service, one process: both descriptors point at the same live pid.
+        for run_id in ('run1', 'run2'):
+            descriptor = json.loads((self.home / 'runs' / (run_id + '.json')).read_text())
+            self.assertEqual(descriptor['run_id'], run_id)
+            self.assertEqual(descriptor['state_path'],
+                             str(self.state if run_id == 'run1' else second))
+            self.assertTrue(descriptor['registered_at'])
+            self.assertEqual(descriptor['label'], '')
+        self.assertEqual(self.snapshot_of(infos[0], 'run1')['run']['id'], 'run1')
+        self.assertEqual(self.snapshot_of(infos[0], 'run2')['run']['id'], 'run2')
+
+    def read_json(self, path):
+        return json.loads(path.read_text())
+
+    def registry_files(self):
+        if not self.home.exists():
+            return []
+        return sorted(path.name for path in self.home.iterdir())
+
+    def gaps(self, run_id='run1'):
+        path = self.ledger_home / 'runs' / run_id / 'ledger.jsonl'
+        if not path.exists():
+            return []
+        return [record for record in map(json.loads, path.read_text().splitlines())
+                if record.get('kind') == 'gap']
+
+    def free_port(self):
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            return sock.getsockname()[1]
+
+    def fake_service(self, handler, pid=None):
+        """Serve a fake dashboard on localhost; never bind a non-local address."""
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def cleanup():
+            server.shutdown()
+            server.server_close()
+
+        self.addCleanup(cleanup)
+        if pid is None:
+            sleeper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            self.addCleanup(sleeper.wait)
+            self.addCleanup(terminate, sleeper.pid)
+            pid = sleeper.pid
+        return server.server_port, pid
+
+    def write_server(self, port, pid, protocol_version=1):
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload = {'pid': pid, 'port': port, 'protocol_version': protocol_version,
+                   'started_at': '2026-01-01T00:00:00+00:00', 'binary_version': 'test'}
+        (self.home / 'server.json').write_text(json.dumps(payload))
+        return payload
+
+    def test_registry_module_exposes_register_discover_probe_and_private_home(self):
+        module = self.progress_module()
+        for name in ('register', 'discover', 'probe', 'open'):
+            self.assertTrue(callable(getattr(module, name, None)), name)
+        descriptor = module.register({'run_id': 'run1', 'state_path': str(self.state),
+                                      'label': 'ticket-41'}, home=self.home)
+        self.assertEqual(set(descriptor),
+                         {'run_id', 'state_path', 'registered_at', 'label'})
+        self.assertEqual(module.discover(home=self.home), [descriptor])
+        self.assertEqual(module.probe(home=self.home)['status'], 'absent')
+        self.assertEqual(stat.S_IMODE(self.home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((self.home / 'runs').stat().st_mode), 0o700)
+
+    def test_healthy_compatible_service_is_adopted_and_the_run_registered(self):
+        self.init()
+        first = self.background_viewer()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        info = json.loads(first.stdout)
+        self.addCleanup(terminate, info['pid'])
+        second = self.init_run('second', 'run2')
+        adopted = self.open_run(second)
+        self.assertEqual(adopted.returncode, 0, adopted.stderr)
+        again = json.loads(adopted.stdout)
+        self.assertFalse(again['degraded'])
+        self.assertEqual(again['reason'], '')
+        self.assertEqual(again['pid'], info['pid'])
+        self.assertEqual(self.origin_of(again), self.origin_of(info))
+        self.assertEqual(sorted(self.health_of(info)['runs']), ['run1', 'run2'])
+        self.assertEqual(self.snapshot_of(info, 'run2')['run']['id'], 'run2')
+
+    def test_incompatible_legacy_and_hung_services_are_never_killed_or_deleted(self):
+        self.init()
+        cases = (('legacy', LegacyDashboardHandler, {}, 'service_legacy'),
+                 ('incompatible', IncompatibleDashboardHandler,
+                  {'protocol_version': 0}, 'service_incompatible'))
+        for name, handler, health_overrides, reason in cases:
+            with self.subTest(name):
+                port, pid = self.fake_service(handler)
+                if health_overrides:
+                    handler.health = {**handler.health, **health_overrides,
+                                      'pid': pid}
+                payload = self.write_server(port, pid)
+                before = (self.home / 'server.json').read_bytes()
+                result = self.open_run(self.state)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                info = json.loads(result.stdout)
+                self.addCleanup(terminate, info['pid'])
+                self.assertTrue(info['degraded'])
+                self.assertEqual(info['reason'], reason)
+                self.assertEqual((self.home / 'server.json').read_bytes(), before)
+                os.kill(pid, 0)  # the pre-existing service was not killed
+                self.assertIn(reason, [gap['detail']['reason'] for gap in self.gaps()])
+                self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
+                (self.home / 'server.json').unlink()
+
+    def test_a_hung_service_degrades_quickly_and_is_not_deleted(self):
+        self.init()
+
+        class Hung(LegacyDashboardHandler):
+            def do_GET(self):
+                time.sleep(2)
+
+        port, pid = self.fake_service(Hung)
+        payload = self.write_server(port, pid)
+        before = (self.home / 'server.json').read_bytes()
+        started = time.monotonic()
+        result = self.open_run(self.state)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertTrue(info['degraded'])
+        self.assertEqual(info['reason'], 'service_unresponsive')
+        self.assertEqual((self.home / 'server.json').read_bytes(), before)
+        os.kill(pid, 0)
+        self.assertIn('service_unresponsive',
+                      [gap['detail']['reason'] for gap in self.gaps()])
+
+    def test_connection_refused_stale_server_is_cleaned_and_restarted(self):
+        self.init()
+        dead = subprocess.Popen([sys.executable, '-c', 'pass'])
+        dead.wait()
+        self.write_server(self.free_port(), dead.pid)
+        result = self.open_run(self.state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertFalse(info['degraded'])
+        self.assertNotEqual(info['pid'], dead.pid)
+        server = self.read_json(self.home / 'server.json')
+        self.assertEqual(server['pid'], info['pid'])
+        self.assertEqual(server['port'], urlsplit(info['url']).port)
+        self.assertTrue(self.health_of(info)['ok'])
+        self.assertEqual(self.read_json(self.home / 'runs' / 'run1.json')['run_id'], 'run1')
+
+    def test_crashed_service_restarts_and_reregisters_on_the_next_open(self):
+        self.init()
+        first = self.background_viewer()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        info = json.loads(first.stdout)
+        terminate(info['pid'])
+        self.assertTrue(wait_dead(info['pid']))
+        result = self.open_run(self.state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        restarted = json.loads(result.stdout)
+        self.addCleanup(terminate, restarted['pid'])
+        self.assertFalse(restarted['degraded'])
+        self.assertNotEqual(restarted['pid'], info['pid'])
+        self.assertEqual(self.read_json(self.home / 'server.json')['pid'],
+                         restarted['pid'])
+        self.assertEqual(self.health_of(restarted)['runs'], ['run1'])
+        self.assertEqual(self.snapshot_of(restarted)['run']['id'], 'run1')
+
+    def spawn_registry_child(self):
+        port = self.free_port()
+        child = subprocess.Popen(
+            [sys.executable, str(SCRIPT), 'serve', '--registry', str(self.home),
+             '--port', str(port)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(terminate, child.pid)
+        self.addCleanup(child.stdout.close)
+        line = child.stdout.readline().strip()
+        self.assertTrue(line.startswith('Read-only progress:'), line)
+        self.assertEqual(urlsplit(line.split()[-1]).port, port)
+        return child, port
+
+    def test_startup_crash_window_adopts_a_healthy_child(self):
+        self.init()
+        child, port = self.spawn_registry_child()
+        starting = {'pid': child.pid, 'port': port}
+        (self.home / 'starting.json').write_text(json.dumps(starting))
+        result = self.open_run(self.state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.assertFalse(info['degraded'])
+        self.assertEqual(info['pid'], child.pid)
+        self.assertEqual(self.read_json(self.home / 'server.json')['pid'], child.pid)
+        self.assertFalse((self.home / 'starting.json').exists())
+        self.assertEqual(self.read_json(self.home / 'runs' / 'run1.json')['run_id'], 'run1')
+        self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
+
+    def test_startup_crash_window_cleans_only_a_definitely_dead_child(self):
+        self.init()
+        dead = subprocess.Popen([sys.executable, '-c', 'pass'])
+        dead.wait()
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (self.home / 'starting.json').write_text(
+            json.dumps({'pid': dead.pid, 'port': self.free_port()}))
+        result = self.open_run(self.state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertFalse(info['degraded'])
+        self.assertNotEqual(info['pid'], dead.pid)
+        self.assertFalse((self.home / 'starting.json').exists())
+        self.assertTrue(self.health_of(info)['ok'])
+
+    def test_startup_lock_timeout_degrades_without_a_second_server(self):
+        self.init()
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (self.home / 'runs').mkdir(mode=0o700, exist_ok=True)
+        lock_path = self.home / 'startup.lock'
+        with lock_path.open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            started = time.monotonic()
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), '--state', str(self.state),
+                 '--startup-timeout', '0.3', 'open'],
+                env=self.environment(), capture_output=True, text=True, timeout=20)
+            self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertTrue(info['degraded'])
+        self.assertEqual(info['reason'], 'startup_lock_timeout')
+        self.assertFalse((self.home / 'server.json').exists())
+        self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
+        gaps = self.gaps()
+        self.assertIn('startup_lock_timeout', [gap['detail']['reason'] for gap in gaps])
+        self.assertTrue(gaps[-1]['detail']['repair'] == 'gap')
+
+    def test_server_and_descriptor_writes_are_atomic_and_crash_safe(self):
+        module = self.progress_module()
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = self.home / 'server.json'
+        synced, replaced = [], []
+        real_fsync, real_replace = module.os.fsync, module.os.replace
+
+        def record_fsync(fd):
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            return real_fsync(fd)
+
+        def record_replace(source, destination):
+            replaced.append((Path(source).parent, Path(destination)))
+            return real_replace(source, destination)
+
+        with unittest.mock.patch.object(module.os, 'fsync', record_fsync), \
+                unittest.mock.patch.object(module.os, 'replace', record_replace):
+            module.atomic_write_json(target, {'pid': 1, 'port': 2},
+                                     directory=self.home)
+        self.assertEqual(sorted(synced), [False, True])
+        self.assertEqual(len(replaced), 1)
+        self.assertEqual(replaced[0][0], target.parent)
+        self.assertEqual(replaced[0][1], target)
+        self.assertEqual(self.read_json(target), {'pid': 1, 'port': 2})
+        self.assertEqual([path.name for path in self.home.iterdir()], ['server.json'])
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_registry_home_must_be_private_and_outside_every_repository(self):
+        self.init()
+        inside_repo = self.repo / 'progress-home'
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), '--state', str(self.state), 'open'],
+            env=self.environment(ORCA_PROGRESS_HOME=str(inside_repo)),
+            capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertTrue(info['degraded'])
+        self.assertEqual(info['reason'], 'registry_home_invalid')
+        self.assertFalse(inside_repo.exists())
+        self.assertIn('registry_home_invalid',
+                      [gap['detail']['reason'] for gap in self.gaps()])
+        self.assertEqual(self.snapshot_of(info)['run']['id'], 'run1')
+        # The default home lives under the per-user directory, never in a project tree.
+        module = self.progress_module()
+        self.assertEqual(module.registry_home(None, environ={}),
+                         Path('~/.orca/progress').expanduser().resolve())
+
+    def test_descriptors_and_server_json_carry_no_credentials(self):
+        self.init()
+        result = self.background_viewer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        descriptor = self.read_json(self.home / 'runs' / 'run1.json')
+        self.assertEqual(set(descriptor),
+                         {'run_id', 'state_path', 'registered_at', 'label'})
+        server = self.read_json(self.home / 'server.json')
+        self.assertEqual(set(server),
+                         {'pid', 'port', 'protocol_version', 'started_at',
+                          'binary_version'})
+        for value in list(descriptor.values()) + list(server.values()):
+            self.assertNotIn('token', str(value).lower())
+            self.assertNotIn('secret', str(value).lower())
+            self.assertNotIn('authorization', str(value).lower())
+
+    def test_recorder_and_registry_share_one_state_path_validator(self):
+        module = self.progress_module()
+        link = self.root / 'link'
+        link.symlink_to(self.repo, target_is_directory=True)
+        bad_paths = (link / 'audit', self.repo / 'audit', self.repo)
+        for path in bad_paths:
+            with self.assertRaises(ValueError):
+                module.state_path(str(path))
+            with self.assertRaises(ValueError):
+                module.register({'run_id': 'bad', 'state_path': str(path)},
+                                home=self.home)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), '--state', str(path), 'init',
+                 '--event-id', 'bad', '--data',
+                 json.dumps({'id': 'bad', 'target_repo': str(self.repo),
+                             'mode': 'REAL'})],
+                env=self.environment(), capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / 'runs' / 'bad.json').exists())
+        # Linkage: register and the recorder both go through the module's validator.
+        calls = []
+        original = module.state_path
+
+        def counting(raw):
+            calls.append(str(raw))
+            return original(raw)
+
+        module.state_path = counting
+        try:
+            module.register({'run_id': 'run1', 'state_path': str(self.state)},
+                            home=self.home)
+            module.mutate(self.state, 'init',
+                          {'id': 'run1', 'target_repo': str(self.repo), 'mode': 'REAL'},
+                          'init', 'coordinator')
+        finally:
+            module.state_path = original
+        self.assertEqual(len(calls), 2, calls)
+
+    def test_open_json_degrades_exit_zero_while_the_legacy_path_exits_one(self):
+        self.init()
+        incomplete = self.root / 'incomplete-skill' / 'progress.py'
+        incomplete.parent.mkdir()
+        incomplete.write_bytes(SCRIPT.read_bytes())
+        legacy = self.background_viewer(incomplete)
+        self.assertEqual(legacy.returncode, 1)
+        self.assertEqual(legacy.stdout, '')
+        self.assertIn('dashboard server failed to start', legacy.stderr)
+        degraded = subprocess.run(
+            [sys.executable, str(incomplete), '--state', str(self.state), '--json',
+             'open'], env=self.environment(), capture_output=True, text=True, timeout=20)
+        self.assertEqual(degraded.returncode, 0, degraded.stderr)
+        payload = json.loads(degraded.stdout)
+        self.assertTrue(payload['degraded'])
+        self.assertEqual(payload['reason'], 'viewer_unavailable')
+        self.assertFalse((self.home / 'server.json').exists())
+
+    def test_serve_state_and_demo_never_register_in_the_singleton(self):
+        self.init()
+        url = self.serve()
+        self.assertEqual(json.load(urllib.request.urlopen(url + 'snapshot'))['run']['id'],
+                         'run1')
+        self.assertFalse((self.home / 'server.json').exists())
+        self.assertFalse((self.home / 'runs').exists())
+        demo = self.root / 'demo'
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT.with_name('progress-demo.py')), '--state',
+             str(demo), '--target-repo', str(self.repo)],
+            env=self.environment(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opened = subprocess.run([sys.executable, str(SCRIPT), '--state', str(demo),
+                                 '--json', 'open'],
+                                env=self.environment(), capture_output=True, text=True,
+                                timeout=20)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        demo_result = json.loads(opened.stdout)
+        self.assertTrue(demo_result['degraded'])
+        self.assertEqual(demo_result['reason'], 'demo_not_registered')
+        self.assertFalse((self.home / 'server.json').exists())
+        self.assertFalse((self.home / 'runs').exists())
+
+    def test_open_never_calls_orca_and_stays_inside_its_budget(self):
+        self.init()
+        forbidden = self.root / 'orca'
+        trace = self.root / 'orca.trace'
+        forbidden.write_text('#!/bin/sh\nprintf called >> "$ORCA_TRACE"\nexit 91\n')
+        forbidden.chmod(0o700)
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), '--state', str(self.state), 'open'],
+            env=self.environment(ORCA_CLI_COMMAND=str(forbidden),
+                                 ORCA_TRACE=str(trace), PATH=str(self.root) + os.pathsep +
+                                 os.environ['PATH']),
+            capture_output=True, text=True, timeout=20)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = json.loads(result.stdout)
+        self.addCleanup(terminate, info['pid'])
+        self.assertFalse(info['degraded'])
+        self.assertFalse(trace.exists(), 'open and the registry never call Orca')
+
+    def test_second_open_for_a_registered_run_updates_its_descriptor(self):
+        self.init()
+        first = self.background_viewer()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        info = json.loads(first.stdout)
+        self.addCleanup(terminate, info['pid'])
+        before = json.loads((self.home / 'runs' / 'run1.json').read_text())
+        again = subprocess.run(
+            [sys.executable, str(SCRIPT), '--state', str(self.state),
+             '--registry', str(self.home), '--label', 'renamed', 'open'],
+            env=self.environment(), capture_output=True, text=True, timeout=25)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        after = json.loads((self.home / 'runs' / 'run1.json').read_text())
+        self.assertEqual(sorted(path.name for path in (self.home / 'runs').iterdir()),
+                         ['run1.json'])
+        self.assertEqual(after['label'], 'renamed')
+        self.assertEqual(after['registered_at'], before['registered_at'])
+        self.assertEqual(json.loads(again.stdout)['pid'], info['pid'])
 
     def test_open_warns_instead_of_hanging_when_the_viewer_cannot_start(self):
         self.init()
@@ -584,6 +1126,22 @@ class ProgressTests(unittest.TestCase):
                  event='start-evidence')
         self.assertIn('start-evidence',
                       [event['type'] for event in self.snapshot()['events']])
+
+    def test_both_progress_references_document_the_singleton_registry_identically(self):
+        anchors = ('$ORCA_PROGRESS_HOME', 'server.json', 'startup.lock', 'starting.json',
+                   'runs/', 'protocol_version', 'register(run)', 'discover()', 'probe()',
+                   'serve --state', 'legacy', '10', '500', 'degraded', 'gap',
+                   '0720-not-used')
+        anchors = tuple(anchor for anchor in anchors if not anchor.endswith('not-used'))
+        english = ('/health', 'startup crash window', 'directory fsync', '5 s')
+        chinese = ('启动崩溃窗口', '目录 fsync', '5 秒', '启动锁')
+        for language, extra in (('orchestra-auto', english),
+                                ('orchestra-auto-zh', chinese)):
+            text = (ROOT / 'skills' / language /
+                    'references/progress-dashboard.md').read_text()
+            for token in (*anchors, *extra):
+                self.assertIn(token, text, f'{language}: progress-dashboard.md '
+                                           f'is missing the registry anchor {token!r}')
 
     def test_both_progress_references_document_protocol_v2_exit_codes_and_dispatch_contract(self):
         neutral = ('schema_version: 2', 'orca_run_id', 'health', 'provisional',
