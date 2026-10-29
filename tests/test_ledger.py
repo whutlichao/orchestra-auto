@@ -43,6 +43,7 @@ SKILL_DIRS = (
     REPO_ROOT / "skills" / "orchestra-auto-zh",
 )
 SCRIPT_RELATIVE = Path("scripts") / "ledger.py"
+PROGRESS_RELATIVE = Path("scripts") / "progress.py"
 RUN_ID = "run_alpha"
 
 
@@ -1908,6 +1909,393 @@ class ProjectionRepairTests(LedgerTestCase):
                          "dispatch-1")
 
 
+class DispatchCompositionTests(LedgerTestCase):
+    """The fixed dispatch order, composed as subprocesses from the real CLIs.
+
+    The coordinator contract is prose, not a new CLI: preflight receipt, ledger
+    intent, ``worker-start --retry-request``, result, best-effort progress and the
+    post-receipt observation. These tests run that sequence with the real ledger
+    and progress CLIs plus the shared fake Orca, and assert the gates together
+    with the record-failure semantics.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        (self.repo / ".git").mkdir()
+        self.progress_state = self.root / "progress-state"
+        self.evidence = self.root / "evidence"
+        self.evidence.mkdir()
+        self.authority_path = self.root / "authority.json"
+        self.authority_path.write_text(json.dumps({
+            "pr_host": {"state": "ok", "reason": "", "pull_requests": []},
+            "tracker": {"state": "ok", "reason": "", "tickets": []},
+            "git": {"state": "ok", "reason": "", "ancestry": []},
+        }))
+        self.fake = None
+
+    # -- helpers ---------------------------------------------------------
+
+    def fake_orca(self, **config):
+        self.fake = FAKE.FakeOrca(
+            self.root / ("fake-" + uuid.uuid4().hex), **config).write()
+        self.env["ORCA_CLI_COMMAND"] = str(self.fake.path)
+        return self.fake
+
+    def orca(self, *args):
+        return subprocess.run(
+            [str(self.fake.path), *args], env=self.env, text=True, capture_output=True)
+
+    def progress_process(self, command, data=None, event="progress-1", flags=(),
+                         global_flags=()):
+        args = [sys.executable, str(SKILL_DIRS[0] / PROGRESS_RELATIVE),
+                "--state", str(self.progress_state), *global_flags, command]
+        if command != "show":
+            args += ["--event-id", event, "--data", json.dumps(data or {}), *flags]
+        return subprocess.run(args, env=self.env, text=True, capture_output=True)
+
+    def progress(self, *args, **kwargs):
+        result = self.progress_process(*args, **kwargs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def snapshot(self):
+        return json.loads(self.progress("show").stdout)
+
+    def compose(self, steps):
+        """Run ``(name, call, gated)`` steps in order; a gated failure stops it."""
+        completed = []
+        for name, call, gated in steps:
+            result = call()
+            completed.append((name, result))
+            if gated and result.returncode != 0:
+                break
+        return completed
+
+    def reconcile(self, run_id=RUN_ID):
+        return self.run_cli("reconcile", "--run-id", run_id,
+                            "--authority", str(self.authority_path))
+
+    def append_step(self, record):
+        return lambda: self.run_cli(
+            "append", "--run-id", RUN_ID, "--record", json.dumps(record))
+
+    def record_evidence_and_append(self, name, text, record):
+        (self.evidence / name).write_text(text)
+        return self.run_cli(
+            "append", "--run-id", RUN_ID, "--record", json.dumps(record))
+
+    # -- tests -----------------------------------------------------------
+
+    def test_the_fixed_dispatch_order_preflight_intent_start_result_progress_observation(self):
+        request_id = str(uuid.uuid4())
+        receipt = {"state": "ready", "stage": "input_accepted",
+                   "dispatchId": "dispatch-1", "turnStart": "observed"}
+        fake = self.fake_orca(
+            mutations={"worker-start": [receipt]},
+            worker_show={"dispatch-1": {
+                "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
+                "workerState": "running", "runId": RUN_ID}},
+        )
+        captured = {}
+        preflight = make_record(
+            kind="preflight", action="preflight", request_id="", idempotency="none",
+            state="completed", detail={"blocking": False, "items": []})
+        intent = make_record(
+            kind="intent", state="intent", action="worker-start",
+            request_id=request_id, subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"expected_effect": "dispatch", "progress_event_id": "dispatch-w1",
+                    "command": ["orchestration", "worker-start", "--task",
+                                "orca-task-1", "--spec", "spec.md"]})
+
+        def start():
+            result = self.orca("orchestration", "worker-start", "--task",
+                               "orca-task-1", "--spec", "spec.md",
+                               "--retry-request", request_id)
+            if result.returncode == 0:
+                captured["receipt"] = json.loads(result.stdout)["result"]
+            return result
+
+        def result_step():
+            record = make_record(
+                kind="result", state="completed", action="worker-start",
+                request_id=request_id,
+                subject={"task_id": "orca-task-1", "attempt": 1},
+                detail={"raw_receipt": captured["receipt"],
+                        "attempt_source": "local"})
+            return self.append_step(record)()
+
+        def observe():
+            shown = self.orca("orchestration", "worker-show", "--dispatch",
+                              "dispatch-1")
+            record = make_record(
+                kind="observation", state="observed", action="worker-start",
+                request_id="", idempotency="none",
+                subject={"task_id": "orca-task-1", "dispatch_id": "dispatch-1",
+                         "attempt": 1},
+                evidence_ref="evidence/worker-show.json",
+                detail={"turn_start": "observed"})
+            return self.record_evidence_and_append(
+                "worker-show.json", shown.stdout, record)
+
+        steps = [
+            ("preflight", self.append_step(preflight), True),
+            ("intent", self.append_step(intent), True),
+            ("worker-start", start, True),
+            ("result", result_step, True),
+            ("progress-init", lambda: self.progress_process(
+                "init", {"id": "run-compose", "target_repo": str(self.repo),
+                         "mode": "REAL"}), False),
+            ("progress-task", lambda: self.progress_process(
+                "task", {"id": "local-1", "provisional": True},
+                event="task-provisional"), False),
+            ("progress-bind", lambda: self.progress_process(
+                "task", {"id": "local-1", "provisional": False,
+                         "orca_task_id": "orca-task-1"}, event="task-bound"), False),
+            ("progress-worker", lambda: self.progress_process(
+                "worker", {"id": "w1", "task_id": "local-1",
+                           "dispatch_id": "dispatch-1", "attempt": 1,
+                           "worktree": "wt-1", "start_confirmation": "observed",
+                           "lifecycle": "running"}, event="dispatch-w1"), False),
+            ("observation", observe, True),
+        ]
+        completed = self.compose(steps)
+        self.assertEqual([name for name, _ in completed], [name for name, _, _ in steps])
+        self.assertEqual([result.returncode for _, result in completed],
+                         [0] * len(steps), completed)
+        self.assertEqual(fake.mutation_argv(), [[
+            "orchestration", "worker-start", "--task", "orca-task-1",
+            "--spec", "spec.md", "--retry-request", request_id]])
+        records = self.read()
+        self.assertEqual([record["kind"] for record in records],
+                         ["preflight", "intent", "result", "observation"])
+        self.assertEqual(records[1]["request_id"], request_id)
+        self.assertEqual(records[2]["request_id"], request_id)
+        self.assertEqual(records[2]["detail"]["raw_receipt"], captured["receipt"])
+        self.assertEqual(records[2]["detail"]["attempt_source"], "local",
+                         "an unverified receipt attempt is a local count")
+        self.assertEqual(records[3]["subject"]["dispatch_id"], "dispatch-1")
+        state = self.snapshot()
+        self.assertEqual([event["type"] for event in state["events"]],
+                         ["init", "task", "task", "worker"])
+        worker = state["workers"]["w1"]
+        self.assertEqual((worker["dispatch_id"], worker["attempt"], worker["worktree"]),
+                         ("dispatch-1", 1, "wt-1"))
+        self.assertFalse(state["tasks"]["local-1"]["provisional"])
+        self.assertEqual(state["tasks"]["local-1"]["orca_task_id"], "orca-task-1")
+
+    def test_a_lost_worker_start_response_becomes_a_late_result_and_never_redispatches(self):
+        request_id = str(uuid.uuid4())
+        receipt = {"state": "completed", "dispatchId": "dispatch-1"}
+        fake = self.fake_orca(
+            mutations={"worker-start": [{"fail": "connection reset after the effect"}]},
+            request_show={request_id: {"state": "completed", "receipt": receipt}},
+            worker_pages=[{"workers": [{
+                "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
+                "runId": RUN_ID, "workerState": "running", "settled": True}]}],
+        )
+        intent = make_record(
+            kind="intent", state="intent", action="worker-start",
+            request_id=request_id, subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"expected_effect": "dispatch",
+                    "command": ["orchestration", "worker-start", "--task",
+                                "orca-task-1"]})
+        self.append(intent)
+        lost = self.orca("orchestration", "worker-start", "--task", "orca-task-1",
+                         "--retry-request", request_id)
+        self.assertEqual(lost.returncode, 1)
+        self.assertEqual(len(fake.mutations()), 1)
+        reconciled = self.reconcile()
+        self.assertEqual(reconciled.returncode, 0, reconciled.stderr)
+        report = json.loads(reconciled.stdout)
+        matched = [item for item in report["classifications"]
+                   if item["classification"] == "matched"]
+        self.assertEqual(len(matched), 1, report)
+        self.assertEqual([repair["kind"] for repair in matched[0]["repairs"]],
+                         ["late_result"])
+        self.assertEqual(len(fake.mutations()), 1,
+                         "a completed request is adopted, never dispatched again")
+        results = [record for record in self.read() if record["kind"] == "result"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["state"], "completed")
+        self.assertEqual(results[0]["detail"]["raw_receipt"], receipt)
+        # Without an intent, an absent request is not a judgment at all.
+        other_run = "run_without_intent"
+        no_intent = self.reconcile(other_run)
+        self.assertEqual(no_intent.returncode, 0, no_intent.stderr)
+        no_intent_report = json.loads(no_intent.stdout)
+        self.assertEqual(no_intent_report["counts"]["orphan_intent"], 0)
+        self.assertEqual(no_intent_report["replays"], [])
+        self.assertEqual(len(fake.mutations()), 1)
+        request_shows = [call for call in fake.call_argv() if call[1] == "request-show"]
+        self.assertEqual(len(request_shows), 1,
+                         "an absent request with no intent is never looked up or judged")
+
+    def test_a_failed_intent_write_prevents_the_worker_start_call(self):
+        fake = self.fake_orca()
+        intent = make_record(
+            kind="intent", state="intent", action="worker-start",
+            request_id=str(uuid.uuid4()),
+            subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"expected_effect": "dispatch"})
+        intent["owner"] = "nobody"  # an undocumented field fails validation
+        steps = [
+            ("preflight", self.append_step(make_record(
+                kind="preflight", action="preflight", request_id="",
+                idempotency="none", state="completed", detail={})), True),
+            ("intent", self.append_step(intent), True),
+            ("worker-start", lambda: self.orca(
+                "orchestration", "worker-start", "--task", "orca-task-1",
+                "--retry-request", intent["request_id"]), True),
+        ]
+        completed = self.compose(steps)
+        self.assertEqual([name for name, _ in completed], ["preflight", "intent"])
+        self.assertEqual(completed[-1][1].returncode, 1)
+        self.assertEqual(fake.calls(), [],
+                         "no Orca call may run without a durable intent")
+
+    def test_a_result_write_failure_preserves_the_receipt_records_a_gap_and_never_replays(self):
+        request_id = str(uuid.uuid4())
+        receipt = {"state": "ready", "stage": "input_accepted",
+                   "dispatchId": "dispatch-1"}
+        fake = self.fake_orca(
+            mutations={"worker-start": [receipt]},
+            request_show={request_id: {"state": "completed", "receipt": receipt}},
+            worker_pages=[{"workers": [{
+                "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
+                "runId": RUN_ID, "workerState": "running"}]}],
+        )
+        intent = make_record(
+            kind="intent", state="intent", action="worker-start",
+            request_id=request_id, subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"expected_effect": "dispatch",
+                    "command": ["orchestration", "worker-start", "--task",
+                                "orca-task-1"]})
+        self.append(intent)
+        started = self.orca("orchestration", "worker-start", "--task",
+                            "orca-task-1", "--retry-request", request_id)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        raw = json.loads(started.stdout)["result"]
+        evidence_path = self.evidence / "worker-start-receipt.json"
+        evidence_path.write_text(json.dumps(raw, sort_keys=True))
+        broken = make_record(
+            kind="result", state="completed", action="worker-start",
+            request_id=request_id,
+            subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"raw_receipt": raw})
+        broken["owner"] = "nobody"
+        failed = self.run_cli("append", "--run-id", RUN_ID,
+                              "--record", json.dumps(broken))
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(json.loads(evidence_path.read_text()), raw,
+                         "a failed result write keeps the raw receipt")
+        gap = make_record(
+            kind="gap", state="failed", action="worker-start", request_id=request_id,
+            subject={"task_id": "orca-task-1", "attempt": 1},
+            evidence_ref=str(evidence_path),
+            detail={"reason": "result write failed; raw receipt preserved"})
+        self.append(gap)
+        reconciled = self.reconcile()
+        self.assertEqual(reconciled.returncode, 0, reconciled.stderr)
+        report = json.loads(reconciled.stdout)
+        self.assertEqual(report["counts"]["matched"], 1, report)
+        self.assertEqual(len(fake.mutations()), 1,
+                         "a failed result record never causes a replay")
+        records = self.read()
+        self.assertEqual([record["kind"] for record in records].count("gap"), 1)
+        late = [record for record in records
+                if record["kind"] == "result" and record["state"] == "completed"]
+        self.assertEqual(len(late), 1)
+        self.assertEqual(late[0]["detail"]["raw_receipt"], receipt)
+
+    def test_a_progress_failure_records_a_gap_then_backfills_with_the_same_event_id(self):
+        request_id = str(uuid.uuid4())
+        receipt = {"state": "ready", "stage": "input_accepted",
+                   "dispatchId": "dispatch-1"}
+        self.fake_orca(
+            mutations={"worker-start": [receipt]},
+            request_show={request_id: {"state": "completed", "receipt": receipt}},
+            worker_pages=[{"workers": [{
+                "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
+                "worktree": "wt-1", "runId": RUN_ID, "workerState": "running",
+                "settled": True}]}],
+            task_pages=[{"tasks": [{"taskId": "local-1",
+                                    "orcaTaskId": "orca-task-1"}]}],
+        )
+        intent = make_record(
+            kind="intent", state="intent", action="worker-start",
+            request_id=request_id, subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"expected_effect": "dispatch", "progress_event_id": "dispatch-w1",
+                    "command": ["orchestration", "worker-start", "--task",
+                                "orca-task-1"]})
+        self.append(intent)
+        started = self.orca("orchestration", "worker-start", "--task",
+                            "orca-task-1", "--retry-request", request_id)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        raw = json.loads(started.stdout)["result"]
+        self.append(make_record(
+            kind="result", state="completed", action="worker-start",
+            request_id=request_id,
+            subject={"task_id": "orca-task-1", "attempt": 1},
+            detail={"raw_receipt": raw}))
+        # The first progress write fails because the run was never initialized.
+        failed = self.progress_process(
+            "worker", {"id": "w1", "task_id": "local-1", "dispatch_id": "dispatch-1",
+                       "attempt": 1, "worktree": "wt-1"}, event="dispatch-w1")
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("initialize", failed.stderr)
+        self.append(make_record(
+            kind="gap", state="failed", action="progress", request_id="",
+            idempotency="none",
+            subject={"task_id": "orca-task-1", "dispatch_id": "dispatch-1",
+                     "attempt": 1},
+            detail={"reason": "progress write failed", "event_id": "dispatch-w1"}))
+        # Dispatch continues: the post-receipt observation is still recorded.
+        self.append(make_record(
+            kind="observation", state="observed", action="worker-start",
+            request_id="", idempotency="none",
+            subject={"task_id": "orca-task-1", "dispatch_id": "dispatch-1",
+                     "attempt": 1},
+            detail={"turn_start": "unobserved"}))
+        self.assertEqual([record["kind"] for record in self.read()],
+                         ["intent", "result", "gap", "observation"])
+        # The next checkpoint backfills the row from the ledger and the authority.
+        reconciled = self.reconcile()
+        self.assertEqual(reconciled.returncode, 0, reconciled.stderr)
+        projection = [record for record in self.read()
+                      if record["kind"] == "observation"
+                      and record["detail"].get("repair") == "projection"]
+        self.assertEqual(len(projection), 1)
+        fields = projection[0]["detail"]["projection"]
+        self.assertEqual(fields, {"task_id": "orca-task-1",
+                                  "dispatch_id": "dispatch-1",
+                                  "attempt": 1, "worktree": "wt-1"})
+        self.progress("init", {"id": "run-backfill", "target_repo": str(self.repo),
+                               "mode": "REAL"})
+        self.progress("task", {"id": "local-1", "provisional": True},
+                      event="task-local")
+        self.progress("task", {"id": "local-1", "provisional": False,
+                               "orca_task_id": fields["task_id"]},
+                      event="task-bound")
+        backfill = {"id": "w1", "task_id": "local-1",
+                    "dispatch_id": fields["dispatch_id"],
+                    "attempt": fields["attempt"], "worktree": fields["worktree"]}
+        self.progress("worker", backfill, event="dispatch-w1")
+        before_retry = (self.progress_state / "progress.json").read_bytes()
+        self.progress("worker", backfill, event="dispatch-w1")
+        self.assertEqual((self.progress_state / "progress.json").read_bytes(),
+                         before_retry, "the retry reuses the same event ID")
+        conflict = {**backfill, "worktree": "different"}
+        rejected = self.progress_process("worker", conflict, event="dispatch-w1")
+        self.assertEqual(rejected.returncode, 1)
+        self.assertEqual((self.progress_state / "progress.json").read_bytes(),
+                         before_retry)
+        worker = self.snapshot()["workers"]["w1"]
+        self.assertEqual((worker["dispatch_id"], worker["attempt"],
+                          worker["worktree"]), ("dispatch-1", 1, "wt-1"))
+
+
 class DocumentationParityTests(unittest.TestCase):
     """Both language packs document the same reconciliation contract."""
 
@@ -1935,6 +2323,28 @@ class DocumentationParityTests(unittest.TestCase):
             "unreadable", "replays", "closeout", "counts", "repairs", "decisions",
             "reconcile --run-id", "--no-replay", "--human", "ORCA_CLI_COMMAND",
         ))
+
+    def test_both_references_document_the_full_action_matrix_and_two_hard_rules(self):
+        self.assert_tokens((
+            "send", "reply", "ack", "stop", "abandon", "retain", "release", "merge",
+            "pr-create", "tracker-close", "progress", "preflight",
+            "request_id", "event_id", "joinable", "replay_safe", "readback_only",
+            "lookup_then_create", "last_observed", "last_effective_progress",
+            "turnStart", "bookkeeping",
+        ))
+        anchors = (
+            (SKILL_DIRS[0] / "references" / "ledger.md",
+             ("Idempotency", "Key before the action", "Read-back", "When uncertain",
+              "Two hard rules", "Write the intent before the action",
+              "read authority before deciding", "Fixed dispatch order")),
+            (SKILL_DIRS[1] / "references" / "ledger.md",
+             ("幂等", "动作前键", "回读", "不确定时", "两条硬规则",
+              "动作前写 intent", "不确定时先读权威", "固定派发顺序")),
+        )
+        for path, tokens in anchors:
+            text = path.read_text(encoding="utf-8")
+            for token in tokens:
+                self.assertIn(token, text, str(path) + " is missing " + token)
 
 
 if __name__ == "__main__":

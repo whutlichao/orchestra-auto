@@ -2,7 +2,8 @@
 """Explicit progress recorder and localhost viewer; Python standard library only.
 
 No Orca commands, inbox access, scheduler actions, or file-content service.
-Protocol v1 is documented in references/progress-dashboard.md.
+Protocol v2 is documented in references/progress-dashboard.md; schema-v1 snapshots
+remain readable and the next write migrates them to v2.
 """
 import argparse
 from contextlib import contextmanager
@@ -21,26 +22,40 @@ import time
 import webbrowser
 from urllib.parse import urlsplit
 
-VERSION = 1
+VERSION = 2
+READABLE_VERSIONS = {1, 2}
 ASSET = Path(__file__).with_name('progress.html')
 BANNER = 'Read-only progress: '
+LOCK_TIMEOUT_SECONDS = 2.0
 FIELDS = {
-    'init': {'id', 'target_repo', 'mode', 'phase', 'status', 'title'},
-    'task': {'id', 'title', 'dependencies', 'status', 'blocked_reason', 'pending_decision'},
+    'init': {'id', 'target_repo', 'mode', 'phase', 'status', 'title', 'orca_run_id',
+             'health'},
+    'task': {'id', 'title', 'dependencies', 'status', 'blocked_reason', 'pending_decision',
+             'provisional', 'orca_task_id'},
     'worker': {'id', 'task_id', 'dispatch_id', 'attempt', 'parent_worker_id', 'worktree',
                'start_confirmation', 'lifecycle', 'reported_lifecycle', 'reported_summary'},
     'event': {'type', 'task_id', 'worker_id', 'dispatch_id', 'attempt', 'summary', 'evidence'},
     'delivery': {'task_id', 'implemented', 'integrated', 'merged', 'tracker_closed', 'evidence'},
     'artifact': {'id', 'task_id', 'kind', 'label', 'reference'},
     'end': {'status', 'phase', 'summary'},
-    'run': {'phase', 'status', 'title'},
+    'run': {'phase', 'status', 'title', 'orca_run_id', 'health'},
 }
 TASK_STATES = {'unknown', 'pending', 'ready', 'running', 'blocked', 'waiting_user', 'reported',
                'accepted', 'rejected', 'failed', 'paused', 'cancelled'}
 RUN_STATES = {'unknown', 'active', 'waiting_user', 'failed', 'paused', 'completed', 'cancelled'}
+RUN_HEALTH = {'healthy', 'degraded', 'blocked', 'lost', 'unknown'}
 LIFECYCLES = {'unknown', 'dispatched', 'running', 'waiting_user', 'reported_done', 'failed',
               'lost', 'reclaimable', 'closed'}
 DELIVERY = ('implemented', 'integrated', 'merged', 'tracker_closed')
+PORTABLE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}\Z')
+
+
+class Degraded(Exception):
+    """An intentional, non-blocking degradation; ``--json`` reports it and exits 0."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
 
 
 def now():
@@ -59,7 +74,7 @@ def validate_data(command, data, source):
         if command not in {'worker', 'event'} or (command == 'worker' and set(data) - allowed):
             raise ValueError('worker reports cannot verify coordinator facts or delivery')
     for key, value in data.items():
-        if key in DELIVERY:
+        if key in DELIVERY or key == 'provisional':
             if type(value) is not bool:
                 raise ValueError(key + ' must be boolean')
         elif key == 'attempt':
@@ -70,15 +85,23 @@ def validate_data(command, data, source):
                 raise ValueError(key + ' must be a list of at most 100 references')
             if any(not isinstance(item, str) or len(item) > 2048 for item in value):
                 raise ValueError('references must be short strings')
+        elif key == 'orca_task_id' and value is None:
+            pass
         elif not isinstance(value, str) or len(value) > 4096:
             raise ValueError(key + ' must be a short string')
+        if value is None:
+            continue
         if key == 'id' or key.endswith('_id'):
-            if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value):
+            if not PORTABLE_ID.fullmatch(value):
                 raise ValueError(key + ' must be a portable identifier')
     if 'status' in data:
         choices = TASK_STATES if command == 'task' else RUN_STATES
         if data['status'] not in choices:
             raise ValueError('unknown status')
+    if 'health' in data and data['health'] not in RUN_HEALTH:
+        raise ValueError('unknown run health')
+    if data.get('provisional') is True and data.get('orca_task_id') is not None:
+        raise ValueError('a provisional task must not carry an Orca Task ID')
     for field in ('lifecycle', 'reported_lifecycle'):
         if field in data and data[field] not in LIFECYCLES:
             raise ValueError('unknown lifecycle')
@@ -113,18 +136,20 @@ def guard_target(directory, target):
 
 
 @contextmanager
-def locked(directory):
+def locked(directory, timeout=LOCK_TIMEOUT_SECONDS):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(directory / '.progress.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'a') as lock:
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise ValueError('progress lock busy; retry later with the same event-id')
+                    raise Degraded(
+                        'lock_busy',
+                        'progress lock busy; retry later with the same event-id')
                 time.sleep(0.025)
         yield
 
@@ -134,7 +159,7 @@ def read_state(directory):
     if path.is_symlink():
         raise ValueError('snapshot must not be a symlink')
     state = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(state, dict) or state.get('schema_version') != VERSION:
+    if not isinstance(state, dict) or state.get('schema_version') not in READABLE_VERSIONS:
         raise ValueError('unsupported snapshot schema_version')
     for key in ('run', 'tasks', 'workers', 'deliveries', 'artifacts', 'receipts'):
         if not isinstance(state.get(key), dict):
@@ -142,6 +167,35 @@ def read_state(directory):
     if not isinstance(state.get('events'), list):
         raise ValueError('invalid snapshot events')
     guard_target(directory, state['run']['target_repo'])
+    run = state['run']
+    orca_run_id = run.get('orca_run_id')
+    if orca_run_id is not None and (
+            not isinstance(orca_run_id, str) or not PORTABLE_ID.fullmatch(orca_run_id)):
+        raise ValueError('invalid run.orca_run_id')
+    if 'health' in run and run['health'] not in RUN_HEALTH:
+        raise ValueError('invalid run.health')
+    for task in state['tasks'].values():
+        if 'provisional' in task and type(task['provisional']) is not bool:
+            raise ValueError('invalid task.provisional')
+        orca_task_id = task.get('orca_task_id')
+        if orca_task_id is not None and (
+                not isinstance(orca_task_id, str)
+                or not PORTABLE_ID.fullmatch(orca_task_id)):
+            raise ValueError('invalid task.orca_task_id')
+    for event in state['events']:
+        if 'bookkeeping' in event and type(event['bookkeeping']) is not bool:
+            raise ValueError('invalid event.bookkeeping')
+    return state
+
+
+def migrate_state(state):
+    """Upgrade a v1 snapshot in memory; the next successful write saves it as v2."""
+    state['schema_version'] = VERSION
+    state['run'].setdefault('orca_run_id', None)
+    state['run'].setdefault('health', 'unknown')
+    for task in state['tasks'].values():
+        task.setdefault('provisional', False)
+        task.setdefault('orca_task_id', None)
     return state
 
 
@@ -169,21 +223,37 @@ def required(data, *fields):
         raise ValueError('required fields: ' + ', '.join(fields))
 
 
-def mutate(directory, command, data, event_id, source, effective=False):
+def mutate(directory, command, data, event_id, source, effective=False,
+           bookkeeping=False, timeout=LOCK_TIMEOUT_SECONDS):
     validate_data(command, data, source)
-    if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', event_id):
+    # The fingerprint is the caller's exact input, so an identical retry stays a
+    # no-op across the v1 -> v2 migration; `bookkeeping` is added only when set so
+    # a v1 receipt without it still matches.
+    fingerprint = {'command': command, 'data': data, 'source': source,
+                   'effective': effective}
+    if bookkeeping:
+        fingerprint['bookkeeping'] = True
+    data = dict(data)
+    if not PORTABLE_ID.fullmatch(event_id):
         raise ValueError('event-id must be a portable identifier')
     if effective and source != 'coordinator':
         raise ValueError('only coordinator verification can mark effective progress')
+    if effective and bookkeeping:
+        raise ValueError('bookkeeping writes cannot claim effective progress')
+    # A receipt that cannot report turnStart (or omitted it) is unknown, never a
+    # started turn; a legacy v1 `unsupported` value reads back as unknown too.
+    if command == 'worker' and data.get('start_confirmation') == 'unsupported':
+        data['start_confirmation'] = 'unknown'
     if command == 'init':
         required(data, 'id', 'target_repo', 'mode')
         if data['mode'] not in {'REAL', 'DEMO'}:
             raise ValueError('mode must be REAL or DEMO')
         guard_target(directory, data['target_repo'])
-    with locked(directory):
+    with locked(directory, timeout):
         exists = (directory / 'progress.json').exists()
         state = read_state(directory) if exists else None
-        fingerprint = {'command': command, 'data': data, 'source': source, 'effective': effective}
+        if state is not None:
+            migrate_state(state)
         if state and event_id in state['receipts']:
             if state['receipts'][event_id] != fingerprint:
                 raise ValueError('event-id already used with a different payload')
@@ -193,7 +263,8 @@ def mutate(directory, command, data, event_id, source, effective=False):
             if exists:
                 raise ValueError('state already initialized; use a separate directory for each run/demo')
             state = {'schema_version': VERSION, 'run': {
-                'phase': 'unknown', 'status': 'unknown', **data,
+                'phase': 'unknown', 'status': 'unknown', 'orca_run_id': None,
+                'health': 'unknown', **data,
                 'target_repo': str(Path(data['target_repo']).expanduser().resolve()),
                 'observation_mode': 'explicit-coordinator', 'started_at': time,
                 'last_effective_progress': time if effective else None},
@@ -205,7 +276,8 @@ def mutate(directory, command, data, event_id, source, effective=False):
             required(data, 'id')
             task = state['tasks'].setdefault(data['id'], {
                 'id': data['id'], 'title': data['id'], 'dependencies': [], 'status': 'unknown',
-                'blocked_reason': '', 'pending_decision': ''})
+                'blocked_reason': '', 'pending_decision': '', 'provisional': False,
+                'orca_task_id': None})
             if data['id'] in data.get('dependencies', []):
                 raise ValueError('task cannot depend on itself')
             task.update(data)
@@ -233,7 +305,8 @@ def mutate(directory, command, data, event_id, source, effective=False):
             if 'parent_worker_id' in data and data['parent_worker_id'] not in state['workers']:
                 raise ValueError('parent worker must be registered first')
             worker.update(data)
-            worker['last_observed'] = time
+            if not bookkeeping:
+                worker['last_observed'] = time
             worker['reported_at' if source == 'worker' else 'verified_at'] = time
             if effective:
                 worker['last_effective_progress'] = time
@@ -262,7 +335,8 @@ def mutate(directory, command, data, event_id, source, effective=False):
             if 'worker_id' in data:
                 if data['worker_id'] not in state['workers']:
                     raise ValueError('event worker must exist')
-                state['workers'][data['worker_id']]['last_observed'] = time
+                if not bookkeeping:
+                    state['workers'][data['worker_id']]['last_observed'] = time
                 if effective:
                     state['workers'][data['worker_id']]['last_effective_progress'] = time
         elif command in {'run', 'end'}:
@@ -273,18 +347,22 @@ def mutate(directory, command, data, event_id, source, effective=False):
                 state['run']['ended_at'] = time
             state['run'].update(data)
         state['run']['updated_at'] = time
-        state['run']['last_observed'] = time
-        if effective:
-            state['run']['last_effective_progress'] = time
+        if not bookkeeping:
+            state['run']['last_observed'] = time
+            if effective:
+                state['run']['last_effective_progress'] = time
         event_context = {key: data[key] for key in ('task_id', 'worker_id', 'summary', 'evidence') if key in data}
         if command == 'task':
             event_context['task_id'] = data['id']
         elif command == 'worker':
             event_context.update(worker_id=data['id'], task_id=state['workers'][data['id']]['task_id'])
         event_context.setdefault('summary', command + ' recorded')
-        state['events'].append({'id': event_id, 'at': time, 'type': command,
-                                'source': source, **(data if command == 'event' else event_context),
-                                'entity_id': data.get('id', data.get('task_id', state['run']['id']))})
+        event = {'id': event_id, 'at': time, 'type': command,
+                 'source': source, **(data if command == 'event' else event_context),
+                 'entity_id': data.get('id', data.get('task_id', state['run']['id']))}
+        if bookkeeping:
+            event['bookkeeping'] = True
+        state['events'].append(event)
         state['receipts'][event_id] = fingerprint
         save(directory, state)
         return state
@@ -342,6 +420,12 @@ def serve(directory, port, stale_seconds):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True, help='external audit directory, separate per run')
+    parser.add_argument('--json', action='store_true',
+                        help='machine mode: degraded results exit 0 with degraded/reason')
+    parser.add_argument('--lock-timeout', type=float, default=LOCK_TIMEOUT_SECONDS,
+                        help='seconds to wait for the snapshot lock (default 2)')
+    parser.add_argument('--bookkeeping', action='store_true',
+                        help='reconciliation/backfill write; do not refresh freshness')
     sub = parser.add_subparsers(dest='command', required=True)
     for command in FIELDS:
         item = sub.add_parser(command)
@@ -356,6 +440,8 @@ def main():
     viewer.add_argument('--stale-seconds', type=int, default=300)
     args = parser.parse_args()
     try:
+        if args.lock_timeout < 0:
+            raise ValueError('lock-timeout must be nonnegative')
         directory = state_path(args.state)
         if args.command == 'show':
             print(json.dumps(view(directory, 300), ensure_ascii=False))
@@ -375,7 +461,7 @@ def main():
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
-                raise ValueError('dashboard server failed to start')
+                raise Degraded('viewer_unavailable', 'dashboard server failed to start')
             url = line[len(BANNER):]
             try:
                 opened = webbrowser.open(url)
@@ -393,11 +479,22 @@ def main():
             if len(raw) > 65536:
                 raise ValueError('input exceeds 64 KiB')
             state = mutate(directory, args.command, json.loads(raw), args.event_id,
-                           args.source, args.effective)
+                           args.source, args.effective, args.bookkeeping,
+                           args.lock_timeout)
             print(json.dumps({'schema_version': VERSION, 'run_id': state['run']['id'],
                               'event_id': args.event_id, 'recorded': True}))
+    except Degraded as error:
+        print('Progress warning (continue orchestration): ' + str(error),
+              file=sys.stderr)
+        if args.json:
+            print(json.dumps({'degraded': True, 'reason': error.reason,
+                              'error': str(error)}))
+            return 0
+        return 1
     except (OSError, ValueError, KeyError, TypeError) as error:
         print('Progress warning (continue orchestration): ' + str(error), file=sys.stderr)
+        if args.json:
+            print(json.dumps({'degraded': False, 'error': str(error)}))
         return 1
     return 0
 

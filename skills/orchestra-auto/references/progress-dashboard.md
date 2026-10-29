@@ -3,7 +3,7 @@
 **When to read**: before the first dispatch of every actual orchestration Run, and whenever you
 need to view progress or the reproducible offline demonstration.
 
-Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v1](#protocol-v1),
+Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v2](#protocol-v2),
 [Workflow ownership](#workflow-ownership), [Recovery and boundaries](#recovery-and-boundaries).
 
 ## Operation
@@ -114,32 +114,54 @@ runtime dependencies. Set `PLAYWRIGHT_MODULE` to that external package, then run
 `node tests/progress_dashboard_browser.cjs http://127.0.0.1:8766/ EVIDENCE_DIR` against an isolated
 DEMO server. It covers four viewports, semantic edge cases, refresh state and safe rendering.
 
-## Protocol v1
+## Protocol v2
 
-`progress.json` is a UTF-8 snapshot with `schema_version: 1`, `run`, keyed `tasks`, `workers`,
+`progress.json` is a UTF-8 snapshot with `schema_version: 2`, `run`, keyed `tasks`, `workers`,
 `deliveries`, `artifacts`, ordered `events`, and private idempotency `receipts`. Each successful
 mutation atomically replaces the entire snapshot under a process lock. `receipts` is omitted from
-HTTP/show. Unknown versions fail without modifying the file. Back up this single snapshot for audit;
-the tool never writes to the target repository. Snapshot evolution requires a new documented version.
+HTTP/show. Reads accept schema v1 and v2; every write records v2, and the first v2 write migrates a
+v1 snapshot in place. Unknown versions fail without modifying the file. Back up this single snapshot
+for audit; the tool never writes to the target repository.
+
+Schema v2 adds optional fields: `run.orca_run_id` (the Orca Run binding; a mismatch with the ledger
+Run is divergent), `run.health` (`healthy`/`degraded`/`blocked`/`lost`/`unknown`, a projection —
+the ledger holds health authority), `task.provisional`, `task.orca_task_id`, and `bookkeeping` on
+events. A task written before its Orca Task exists is `provisional: true` with `orca_task_id: null`;
+it is bound after the receipt, and the Orca Task ID is the only join key. An unlisted JSON field is
+still rejected.
 
 All writes have this interface:
 
 ```text
-python3 PROGRESS --state STATE COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
+python3 PROGRESS --state STATE [--json] [--lock-timeout SECONDS] [--bookkeeping] COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
 ```
 
-Reuse an event ID only for an identical retry (same command, source, JSON and effective flag).
-An identical retry is a no-op, including timestamps; a conflicting retry fails. New observations use
-new IDs. The default source is coordinator; this is provenance supplied by a trusted local writer,
-not authentication. Only the coordinator can set `--effective` after observing meaningful progress.
-`last_observed` advances on recorded activity; `last_effective_progress` advances only with this
-explicit verification. No elapsed-time or completion percentage estimate is made.
+Reuse an event ID only for an identical retry (same command, source, JSON, effective and bookkeeping
+flags). An identical retry is a no-op, including timestamps; a conflicting retry fails. New
+observations use new IDs. The default source is coordinator; this is provenance supplied by a trusted
+local writer, not authentication. Only the coordinator can set `--effective` after observing
+meaningful progress. `last_observed` advances on recorded activity; `last_effective_progress`
+advances only with this explicit verification. No elapsed-time or completion percentage estimate is
+made. `--bookkeeping` marks reconciliation and backfill writes: they are still recorded, but they do
+not refresh `last_observed` or `last_effective_progress`, and they cannot be combined with
+`--effective`.
+
+### Exit codes
+
+With `--json`, a write exits `0` on success and on an intentional degradation, and `1` on caller
+input or state corruption. A degradation prints `{"degraded": true, "reason": ...}` on stdout; a
+contended snapshot lock is `degraded/lock_busy`, never a caller error. An error prints
+`{"degraded": false, "error": ...}` and exits `1`. `--lock-timeout` changes the lock wait (default
+2 seconds). Without `--json`, the legacy exit codes remain for one minor version: every failure
+exits `1` with a `Progress warning` on stderr. The coordinator wrapper uses `--json`, records a
+ledger gap for any non-zero or degraded result, and continues; dispatch control flow never branches
+on a progress exit code. A dashboard failure never blocks dispatch.
 
 | Command | JSON summary fields (unlisted keys rejected) |
 | --- | --- |
-| `init` | Required `id`, `target_repo` (existing directory), `mode` (`REAL`/`DEMO`); optional `title`, `phase`, `status` |
-| `run` | `phase`, `status`, `title` updates |
-| `task` | Required `id`; optional `title`, `dependencies` (ID list), `status`, `blocked_reason`, `pending_decision` |
+| `init` | Required `id`, `target_repo` (existing directory), `mode` (`REAL`/`DEMO`); optional `title`, `phase`, `status`, `orca_run_id`, `health` |
+| `run` | `phase`, `status`, `title`, `orca_run_id`, `health` updates |
+| `task` | Required `id`; optional `title`, `dependencies` (ID list), `status`, `blocked_reason`, `pending_decision`, `provisional` (boolean), `orca_task_id` (identifier or null while provisional) |
 | `worker` | Required `id`; first registration also requires existing `task_id`, `dispatch_id`, positive integer `attempt`; optional `parent_worker_id` (registered first), `worktree`, `start_confirmation`, `lifecycle`, `reported_lifecycle`, `reported_summary` |
 | `event` | Required `type`, `summary`; optional existing `task_id`, `worker_id`, `dispatch_id`, `attempt`, `evidence` (reference list) |
 | `delivery` | Required existing `task_id`; independent boolean `implemented`, `integrated`, `merged`, `tracker_closed`; optional `evidence` |
@@ -147,10 +169,15 @@ explicit verification. No elapsed-time or completion percentage estimate is made
 | `end` | Required `status` (`completed`/`failed`/`paused`/`cancelled`); optional `phase`, `summary`; records `ended_at` |
 
 Run status: `unknown`, `active`, `waiting_user`, `failed`, `paused`, `completed`, `cancelled`.
+Run health: `healthy`, `degraded`, `blocked`, `lost`, `unknown`.
 Task status: `unknown`, `pending`, `ready`, `running`, `blocked`, `waiting_user`, `reported`,
 `accepted`, `rejected`, `failed`, `paused`, `cancelled`.
 Worker lifecycle: `unknown`, `dispatched`, `running`, `waiting_user`, `reported_done`, `failed`,
-`lost`, `reclaimable`, `closed`. Start confirmation: `unknown`, `observed`, `unobserved`, `unsupported`.
+`lost`, `reclaimable`, `closed`. Start confirmation: `unknown`, `observed`, `unobserved`; a v1
+snapshot may still carry the legacy `unsupported` value. A receipt with `turnStart: observed` writes
+`observed` in one step; `unsupported` or a missing `turnStart` writes `unknown` and gathers the
+evidence the agent supports; `unobserved` means checked and not observed and stays distinct from
+`unknown`. `state: ready` is never treated as a started turn.
 A missing field is unknown, not inferred success. IDs are portable letters/digits/`_.:-` (1–128
 characters); summary strings are at most 4096 characters; reference lists at most 100 short strings;
 JSON input at most 64 KiB. Tasks may name not-yet-recorded dependencies, displayed as unknown.
@@ -166,14 +193,21 @@ after G-impl, `integrated` after integration evidence, `merged` after the merge 
 `tracker_closed` only after tracker reconciliation. Opening a PR sets none of these automatically.
 Absent facts are null and displayed as unverified; explicit true/false values mean verified yes/no. Corrections can explicitly set false.
 
-Example record sequence. This wrapper always returns success, including under `set -e`; the warning remains visible and the coordinator continues its normal work:
+Example record sequence. This wrapper uses `--json`, always returns success (including under
+`set -e`), and leaves a visible warning for a failure or a degradation so the coordinator can record
+a ledger gap and continue its normal work:
 
 ```bash
 progress_record() {
-  python3 "$PROGRESS" --state "$STATE" "$@" || {
-    printf '%s\n' 'Progress warning; continue orchestration' >&2
-    return 0
-  }
+  local output status
+  status=0
+  output=$(python3 "$PROGRESS" --state "$STATE" --json "$@" 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' 'Progress warning; continue orchestration; record a ledger gap' >&2
+  elif printf '%s' "$output" | grep -q '"degraded": true'; then
+    printf '%s\n' 'Progress degraded; continue orchestration; record a ledger gap' >&2
+  fi
+  return 0
 }
 progress_record task --event-id task-1 --data '{"id":"t1","title":"Protocol","dependencies":[],"status":"ready"}'
 progress_record worker --event-id dispatch-1 --data '{"id":"w1-a1","task_id":"t1","dispatch_id":"d1","attempt":1,"worktree":"protocol-worktree","lifecycle":"dispatched","start_confirmation":"unobserved"}'
@@ -182,6 +216,47 @@ progress_record worker --event-id report-1 --source worker --data '{"id":"w1-a1"
 progress_record delivery --event-id accept-1 --effective --data '{"task_id":"t1","implemented":true,"evidence":["acceptance-report.txt"]}'
 progress_record end --event-id end-1 --data '{"status":"paused","phase":"waiting","summary":"Awaiting integration"}'
 ```
+
+## Fixed dispatch order and record failures
+
+Every dispatch follows one fixed order, and no step skips a durable predecessor:
+
+1. write the preflight receipt; a failed or blocking preflight prevents the dispatch;
+2. write the ledger intent; a failed intent write prevents the call;
+3. execute `worker-start --retry-request <request_id>`;
+4. write the result with the raw receipt summary and an evidence reference; a failed result write
+   preserves the raw receipt in the evidence directory, records a ledger gap and never replays the
+   action;
+5. write progress best-effort; a failed progress write records a ledger gap and dispatch continues,
+   and the next checkpoint retries with the same event ID and backfills a missing worker row from
+   the ledger (dispatch id, attempt, worktree);
+6. run the post-receipt checks (`turnStart`, isolation, inbox) and record an observation. A failed
+   post-receipt check is evidence, not a reason to dispatch again.
+
+A lost `worker-start` response is reconciled from authority, never re-dispatched: a `completed`
+request key replays its recorded outcome, and `absent` is not proof that nothing ran. Missing intent
+means no second dispatch. The same intent and request-id discipline applies to send, reply, ack,
+stop, abandon, retain and release; `references/ledger.md` holds the full action matrix.
+
+Attempt mapping: use the Orca receipt's `attempt` when present. When it is absent, record
+`attempt_source: local` in the ledger result detail and exclude the local count from authoritative
+reconciliation. Convert camelCase receipt fields to snake_case on write and preserve the raw receipt
+in `detail.raw_receipt`; never assert an unverified receipt field as a stable contract.
+
+Record-failure semantics follow one rule: **a record that gates a side effect blocks the side
+effect; a record that describes an outcome never blocks orchestration and is repaired later.** A
+progress write is the second kind — its failure is always a gap, never a dispatch failure — while a
+failed intent, preflight receipt, acceptance or closeout is a hard stop for the action it protects.
+
+Two hard rules:
+
+1. **Write the intent before the action.** The intent carries the `request_id`, action, `run_id`,
+   task/dispatch/attempt when known, target, expected effect, timestamp and actor.
+2. **When uncertain, read authority before deciding.** `request-show` `absent` is not "did not
+   happen"; only positive absence in authority permits the "not executed" judgment.
+
+Worker self-report is enabled only when the spec explicitly carries PROGRESS/STATE paths. A
+`source=worker` write is never acceptance evidence; the coordinator owns acceptance records.
 
 ## Workflow ownership
 
@@ -219,8 +294,10 @@ the last valid snapshot with a visible error and its load time; it never substit
 
 The snapshot is fsynced, replaced atomically, and its directory fsynced. A crash before replace leaves
 the old valid snapshot and perhaps an ignored `.progress-*` temporary file; a crash after replace
-leaves the new snapshot, whose stable event ID makes retries safe. Lock acquisition times out after two seconds with a warning, so a contended recorder cannot
-indefinitely hold the coordinator turn. Retry later with the same event ID. Locks release on process exit.
+leaves the new snapshot, whose stable event ID makes retries safe. Lock acquisition times out after
+two seconds (`--lock-timeout`, a configurable default) with a warning, so a contended recorder
+cannot indefinitely hold the coordinator turn; with `--json` this is `degraded/lock_busy` and exits
+`0`. Retry later with the same event ID. Locks release on process exit.
 Do not delete an active lock file or run an automatic repair. A corrupt/unsupported snapshot fails
 closed without overwrite: preserve it, restore a known-good audit backup into a separate external
 directory and reconcile subsequent facts explicitly. No migration, truncation or guessed reconstruction.
