@@ -32,6 +32,7 @@ SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 #: iterate this list, and a completeness test fails when a shipped file is missing from it, so
 #: a new script cannot land with a green suite and no coverage.
 SCRIPT_FILES = (
+    "health.py",
     "inbox-loop.py",
     "inbox-loop.sh",
     "ledger.py",
@@ -41,7 +42,8 @@ SCRIPT_FILES = (
     "progress.py",
 )
 PYTHON_SCRIPTS = (
-    "inbox-loop.py", "ledger.py", "preflight.py", "progress-demo.py", "progress.py",
+    "health.py", "inbox-loop.py", "ledger.py", "preflight.py", "progress-demo.py",
+    "progress.py",
 )
 
 REFERENCE_FILES = (
@@ -57,6 +59,7 @@ REFERENCE_FILES = (
     "reformat-noise-recovery.md",
     "reply-protocol.md",
     "progress-dashboard.md",
+    "run-health.md",
     "spec-contract.md",
     "worker-start-and-recovery.md",
 )
@@ -1013,6 +1016,74 @@ class EvalMetadataTests(unittest.TestCase):
             self.assertTrue(
                 denies_proof and names_the_level,
                 f"{name}: the _note must state these are not end-to-end proof",
+            )
+
+
+class RunHealthReferenceTests(unittest.TestCase):
+    """The health reference must match the module's state machine and signal table.
+
+    A reference that drifts from ``health.py`` teaches the reader a state machine the code does
+    not implement, which is worse than no reference. This checks the contract anchors — the five
+    states, the precedence order, the eleven signals and the two authorization edges — not full
+    semantic equivalence.
+    """
+
+    STATES = ("healthy", "degraded", "blocked", "lost", "unknown")
+    # The eleven rows of the signal table, in each language's own wording. The module's own
+    # keys are asserted in ``tests/test_health.py``; this file checks the documentation.
+    SIGNALS = {
+        "orchestra-auto": ("heartbeat", "inbox phase", "unacked batch",
+                           "worker-list snapshot", "worker-show observation", "turnStart",
+                           "progress freshness", "last effective progress",
+                           "reclaimable terminal", "waiter-slot leak", "nested roster"),
+        "orchestra-auto-zh": ("heartbeat", "inbox phase", "unacked 批次", "worker-list 快照",
+                              "worker-show 观测", "turnStart", "progress freshness",
+                              "last effective progress", "reclaimable 终端",
+                              "waiter slot 泄漏", "nested roster"),
+    }
+    ANCHORS = {
+        "orchestra-auto": (
+            "lost > blocked > unknown > degraded > healthy",
+            "never `healthy`",
+            "not a health state",
+            "health alone never authorizes it",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+        "orchestra-auto-zh": (
+            "lost > blocked > unknown > degraded > healthy",
+            "绝不 `healthy`",
+            "不是健康状态",
+            "从不授权 release",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+    }
+
+    def test_the_state_machine_and_signal_table_are_documented(self):
+        for name in SKILL_NAMES:
+            text = (REPO_ROOT / "skills" / name / "references" / "run-health.md").read_text()
+            flat = compact(text)
+            for state in self.STATES:
+                self.assertIn(state, text, f"{name}: run-health.md lost the {state} state")
+            for signal in self.SIGNALS[name]:
+                self.assertIn(compact(signal), flat,
+                              f"{name}: run-health.md lost the {signal!r} signal row")
+            for anchor in self.ANCHORS[name]:
+                self.assertIn(compact(anchor), flat,
+                              f"{name}: run-health.md lost the anchor {anchor!r}")
+
+    def test_the_reference_trigger_is_on_the_first_lines(self):
+        for name in SKILL_NAMES:
+            head = "\n".join(
+                (REPO_ROOT / "skills" / name / "references" / "run-health.md")
+                .read_text().splitlines()[:12]
+            )
+            self.assertTrue(
+                any(marker in head for marker in ("When to read", "什么时候读", "何时读取")),
+                f"{name}: run-health.md must state its trigger near the top",
             )
 
 
