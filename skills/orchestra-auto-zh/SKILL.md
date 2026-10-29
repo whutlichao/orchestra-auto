@@ -45,7 +45,7 @@ description: >-
 | `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
 | `references/long-horizon-tickets.md` | G-tickets 已验收完整票图且本轮要实施；或流程错误后需要 retro 时 |
 | `references/inbox-and-waiting.md` | 每个 Run 首次派活前（身份绑定、收件器、唤醒如何安装与开关、失联恢复）；每次唤醒后装回下一次等待；worker 的消息收不到时 |
-| `references/ledger.md` | 记录所保护的副作用动作前后；对账崩溃窗口，或报告未决 intent 与待处理项时 |
+| `references/ledger.md` | 记录所保护的副作用动作前后；崩溃窗口后用 `ledger reconcile` 对账，及其动作矩阵 |
 | `references/worker-start-and-recovery.md` | `turnStart` 未确认、权限提示或 worker 失联 |
 | `references/gates-docs-planning.md` | 手上是设计票 / 规格票 / 拆分票，准备过 G-docs / G-wayfinder / G-spec / G-tickets |
 | `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
