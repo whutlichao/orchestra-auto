@@ -25,6 +25,7 @@ so both bundles share one schema implementation.
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
 import os
@@ -275,13 +276,31 @@ def _command_reply(result, what):
     return reply, ""
 
 
+#: The ledger caps a record at 64 KiB, so a chatty reply is summarised rather than
+#: copied. The receipt must still be writable, or a passing preflight would be blocked by
+#: an oversized observation.
+MAX_OBSERVED_REPLY = 4096
+
+
+def _bounded_reply(reply):
+    """Return ``reply`` when small, else a summary that names its size and digest."""
+    text = json.dumps(reply, sort_keys=True, ensure_ascii=False)
+    if len(text) <= MAX_OBSERVED_REPLY:
+        return reply
+    return {
+        "truncated": True,
+        "bytes": len(text.encode("utf-8")),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
 def _check_status(runner):
     argv = ["orca", "status", "--json"]
     result = _run(runner, argv)
     reply, problem = _command_reply(result, "orca status --json")
     observed = {"returncode": result["returncode"]}
     if reply is not None:
-        observed["reply"] = reply
+        observed["reply"] = _bounded_reply(reply)
     if problem:
         return _item("cli-app-up", "fail", "orca status --json", observed, problem)
     return _item(
@@ -297,7 +316,7 @@ def _check_command_surface(runner, run_id):
     reply, problem = _command_reply(result, "orca orchestration worker-list")
     observed = {"returncode": result["returncode"]}
     if reply is not None:
-        observed["reply"] = reply
+        observed["reply"] = _bounded_reply(reply)
     if problem:
         return _item("cli-command-surface", "fail", command, observed, problem)
     return _item(

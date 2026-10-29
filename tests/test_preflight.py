@@ -461,6 +461,17 @@ class MechanicalItemTests(PreflightTestCase):
         self.assertEqual(self.item(stale, "guide-freshness")["result"], "fail")
         self.assertIn("round", self.item(stale, "guide-freshness")["note"].lower())
 
+    def test_a_huge_reply_is_summarised_so_the_receipt_still_fits(self):
+        huge = ok({"workers": [{"note": "x" * 40000}],
+                   "page": {"hasMore": False, "nextCursor": None}})
+        receipt = self.check(runner=self.runner(command_surface=huge))
+        self.assertTrue(receipt["record"]["written"], receipt["record"]["error"])
+        self.assertTrue(receipt["blocking"]["allowed"])
+        observed = self.item(receipt, "cli-command-surface")["observed"]["reply"]
+        self.assertTrue(observed["truncated"])
+        self.assertGreater(observed["bytes"], 40000)
+        self.assertEqual(len(observed["sha256"]), 64)
+
     def test_a_baseline_from_a_different_commit_must_be_labelled(self):
         same = self.check(baselines=[
             {"label": "tests", "source_commit": BASE_COMMIT},
