@@ -39,12 +39,15 @@ description: >-
 | 文件 | 什么时候读 |
 | --- | --- |
 | `references/dispatch-preflight.md` | 每次派活前（§4.0.1 打勾）、拿到回执后（§4.0.2 启动与隔离证据）、以及收尾时（§4.0.3 格式化噪声） |
+| `references/prose-contract.md` | 验收时、审查任一语言包时，或两份文档对「从某个信号能推出什么结论」看似不一致时 |
 | `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
 | `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型 |
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
 | `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
 | `references/long-horizon-tickets.md` | G-tickets 已验收完整票图且本轮要实施；或流程错误后需要 retro 时 |
 | `references/inbox-and-waiting.md` | 每个 Run 首次派活前（身份绑定、收件器、唤醒如何安装与开关、失联恢复）；每次唤醒后装回下一次等待；worker 的消息收不到时 |
+| `references/ledger.md` | 记录所保护的副作用动作前后；崩溃窗口后用 `ledger reconcile` 对账，及其动作矩阵 |
+| `references/run-health.md` | 每次唤醒后、报告 Run 状态前，或 worker 失联时：评估健康、信号表与迁移规则 |
 | `references/worker-start-and-recovery.md` | `turnStart` 未确认、权限提示或 worker 失联 |
 | `references/gates-docs-planning.md` | 手上是设计票 / 规格票 / 拆分票，准备过 G-docs / G-wayfinder / G-spec / G-tickets |
 | `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
@@ -122,11 +125,14 @@ worktree 名派活时再取 slug。
 
 ### 4.0 派活前 preflight
 
-每个实际编排 Run 在首次派活前初始化进度记录并自动打开看板；按[进度看板](references/progress-dashboard.md)执行并在后续节点持续记录。启动或记录失败时警告并继续，不影响派活或唯一 inbox。纯问答和编辑本 skill 不启动。
+每个实际编排 Run 在首次派活前初始化进度记录并自动打开看板，按[进度看板](references/progress-dashboard.md)在后续节点持续记录；启动或记录失败时警告并继续，不影响派活或唯一 inbox。纯问答和编辑本 skill 不启动。
+
+每次派活前先用 `scripts/preflight.py check` 写下一份持久化的 ledger `kind: preflight` 回执。阻断项失败即拒绝派活，除非 override 记录了 `by` 与 `reason`；回执写不进去同样拒绝，且不运行 `worker-start`。
 
 [派活前检查](references/dispatch-preflight.md) 有三个检查点，只有第一个能阻止派活：
 **§4.0.1 派活前**（逐项打勾；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，
-以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据，以及长程 worker 的隔离报告）、
+以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据、review 豁免复核、
+看板回填/gap、inbox 健康，以及长程 worker 的隔离报告）、
 **§4.0.3 收尾时**（`worker_done` 之后、宣称门禁通过之前的格式化噪声）。启动证据与隔离报告
 是派活后的事实：它们不可能让 tick sheet 变红，因为 Dispatch 存在之前根本没有 worker 可观察。
 
@@ -168,7 +174,7 @@ Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆�
 
 ### 4.5 通信闭环
 
-派活前读 [通信与恢复协议](references/inbox-and-waiting.md)：唯一收件器、仓库外台账、按 message ID 去重且整批处理完才 ack，以及让它持续生效的那一条——收件器**在唤醒事件上结束进程**，这个结束就是下一次 turn 的起点。按该文件 §3 作为 harness 能呈现的长调用装上，不要用 `nohup`；每次唤醒后处理批次并装回下一次等待，唤醒之后没有新等待就是静默停摆。没有作业完成通道时，保持 turn 有界等待（单次 ≤60 秒），三轮无进展后按证据恢复。细节见 [派活闭环](references/dispatch-loop.md)。
+派活前读 [通信与恢复协议](references/inbox-and-waiting.md)：唯一收件器、仓库外台账、按 message ID 去重且整批处理完才 ack，以及让它持续生效的那一条——收件器**在唤醒事件上结束进程**，这个结束就是下一次 turn 的起点。按该文件 §3 作为 harness 能呈现的长调用装上，不要用 `nohup`；每次唤醒后处理批次、装回下一次等待（唤醒之后没有新等待就是静默停摆），并用 `--status --json` 读收件器（该文件 §1.1）：`0` 健康/静止、`1` 致命、`2` 目录不存在、`3` 降级或阻塞，旧式纯文本 `--status` 保留一个 minor 版本的 `0`/`1`。没有作业完成通道时，保持 turn 有界等待（单次 ≤60 秒），三轮无进展后按证据恢复。细节见 [派活闭环](references/dispatch-loop.md)。
 
 ## 5. 应答协议：决策问人，细节代答
 

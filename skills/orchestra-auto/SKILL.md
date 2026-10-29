@@ -45,18 +45,20 @@ user input → §1 pin the delivery endpoint and channel → §2 hard-rule self-
               (worker-release, reclaimable drained) → §7 closing report; stop at the agreed delivery endpoint
 ```
 
-Files under `references/` are read conditionally; SKILL.md keeps the routing and the core
-constraints. Each reference states its own trigger in its opening lines:
+Files under `references/` are read conditionally; SKILL.md keeps the routing and the core constraints. Each reference states its own trigger in its opening lines:
 
 | File | When to read it |
 | --- | --- |
 | `references/dispatch-preflight.md` | Before every dispatch (§4.0.1 tick sheet), right after the receipt (§4.0.2 start and isolation evidence), and at teardown (§4.0.3 formatter noise) |
+| `references/prose-contract.md` | During acceptance or a review of either bundle, or when two documents seem to disagree about what may be concluded from a signal |
 | `references/dispatch-loop.md` | Every B/C dispatch for the full worker-start flags, turn-start confirmation, guide fetch, or communication-loop detail |
 | `references/spec-contract.md` | When writing a worker's spec, on any channel and for any ticket type |
 | `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
 | `references/gate-acceptance.md` | When a ticket closes and you pick a gate; when merging a project PR or settling a worker |
 | `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |
 | `references/inbox-and-waiting.md` | Before each Run's first dispatch (identity binding, inbox, installing the wake and its switches, lost-contact recovery); after every wake, to install the next wait; also when a worker's message never shows up |
+| `references/ledger.md` | Before the action a record protects and after it; `ledger reconcile` after a crash window, and the action matrix it applies |
+| `references/run-health.md` | After every wake, before reporting a Run's state, or when a worker goes quiet: evaluate health, the signal table and the transition rules |
 | `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
 | `references/gates-docs-planning.md` | This ticket is a design / spec / ticket-splitting ticket heading for G-docs / G-wayfinder / G-spec / G-tickets |
 | `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
@@ -86,12 +88,12 @@ type** (§4.3), written as its real absolute path, confirmed readable before dis
 name is a slug you take at dispatch time; it is not part of the delivery endpoint.
 
 `worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is
-missing or unrecognized; pass the selected value explicitly. More rationale and the full dispatch
-narrative: [dispatch loop](references/dispatch-loop.md).
+missing or unrecognized; pass the selected value explicitly. The routing table above points at the
+[dispatch loop](references/dispatch-loop.md) for the rationale and every flag.
 
-Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be unsupported,
-report per §9 and stop rather than guessing or substituting. §4.3's table gives start/title criteria only, never
-defaults or disabled state.
+Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be
+unsupported, report per §9 and stop rather than guessing or substituting. §4.3's table gives
+start/title criteria only, never defaults or disabled state.
 
 ## 1. Channel and delivery endpoint
 
@@ -165,18 +167,16 @@ Documentation tickets run their own gates. Small size never changes the role bou
 
 ### 4.0 Pre-dispatch preflight
 
-Before the first dispatch of every actual Run, initialize the progress record and open the dashboard automatically per [progress dashboard](references/progress-dashboard.md) and keep
-recording at the later checkpoints; failures warn and continue without blocking dispatch or the single inbox, and pure Q&A or skill edits do not start it.
+Before the first dispatch of every actual Run, initialize the progress record and open the dashboard automatically per [progress dashboard](references/progress-dashboard.md), then keep recording at the later checkpoints; failures warn and continue without blocking dispatch or the single inbox, and pure Q&A or skill edits do not start it.
 
-[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a dispatch. **§4.0.1 pre-dispatch**: tick every line
-(mechanical criteria: the `Test tier:` line, the `code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**:
-start evidence and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
+Every pre-dispatch run writes a durable ledger `kind: preflight` receipt first through `scripts/preflight.py check`. A failed blocking item rejects the dispatch unless an override records `by` and `reason`; a receipt that cannot be written rejects it too, and no `worker-start` runs.
+
+[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a dispatch. **§4.0.1 pre-dispatch**: tick every line (mechanical criteria: the `Test tier:` line, the `code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**: start evidence, the review-exemption recheck, dashboard backfill/gap, inbox health and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
 
 ### 4.1 Read-only exploration
 
 Gather the facts needed to write the spec on main first (three parallel reads at most).
-**Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is
-the signal to dispatch, not a licence to skip it.
+**Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is the signal to dispatch, not a licence to skip it.
 
 ### 4.2 Fetch the orchestration guide
 
@@ -223,11 +223,12 @@ and the `Not run this ticket` line. A worker sees only the spec, so anything lef
 Read [communication and recovery](references/inbox-and-waiting.md) before dispatching: one inbox
 consumer per Run, a ledger outside the repository, dedupe by message ID with ack only after the
 whole batch, and the part that keeps it alive — the consumer **ends on a wake event**, so its end
-is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never as
-`nohup`, and after every wake handle the batch and install the next wait: a wake with no new wait
-behind it is a silent stall. Without a job-completion channel, keep the turn in ≤60-second waits
-with evidence-based recovery after three no-progress rounds.
-Detail: [dispatch loop](references/dispatch-loop.md).
+is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never
+`nohup`; after every wake handle the batch, install the next wait (a wake with no new wait behind
+it is a silent stall), and read the inbox with `--status --json` (§1.1 there): `0` healthy/resting,
+`1` fatal, `2` missing, `3` degraded/blocked, while legacy plain `--status` keeps `0`/`1` for one
+minor version. Without a job-completion channel, keep the turn in ≤60-second waits and recover on
+evidence after three no-progress rounds. Detail: [dispatch loop](references/dispatch-loop.md).
 
 ## 5. Reply protocol: decisions go to the human, details are answered for them
 
@@ -285,15 +286,14 @@ gate blocked the merge.
 
 ## 8. Planning dependency initialization (on demand)
 
-Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their
-repository configuration is missing, check the planning setup. Reuse existing tracker and docs
-configuration; confirm any new governance files, labels or PRs belong to the round's scope. A
-worker lands what is needed in an isolated worktree; the coordinator accepts it.
+Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their repository
+configuration is missing, check the planning setup. Reuse the existing tracker and docs configuration;
+confirm new governance files, labels or PRs belong to the round. When genuinely needed, a worker lands it in an isolated worktree and the coordinator accepts it.
 
 ## 9. Failure and reporting discipline
 
 When the CLI will not start, a `worker-start` receipt is `state: failed`, a breaker trips, or the Orca
 app restarts, follow [failure and reporting](references/failure-and-reporting.md) instead of
-improvising. The recurring shape of every rule there: gather evidence before deciding, report the exact
-error, and never relaunch unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
+improvising: gather evidence before deciding, report the exact error, and never relaunch
+unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
 [long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.

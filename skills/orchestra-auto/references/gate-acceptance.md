@@ -3,6 +3,16 @@
 **When to read this**: when a ticket is closing, to pick and run the gate its type calls for; and
 again when merging a project PR or settling a worker's lifecycle.
 
+## Contents
+
+- [Choosing gates by ticket type](#choosing-gates-by-ticket-type)
+- [G-impl — implementation tickets](#g-impl--implementation-tickets)
+- [G-merge — door-aware merge gate for project PRs](#g-merge--door-aware-merge-gate-for-project-prs)
+- [§6.5 Merge execution and teardown](#65-merge-execution-and-teardown)
+- [§6.6 Acceptance records and the four levels](#66-acceptance-records-and-the-four-levels)
+- [§6.7 Closeout: the checklist, pending one-way doors and the release gate](#67-closeout-the-checklist-pending-one-way-doors-and-the-release-gate)
+- [Worker lifecycle and send-backs](#worker-lifecycle-and-send-backs)
+
 ## 6. Gate acceptance
 
 The coordinator verifies observable results and evidence itself, and on failure lists what is
@@ -131,6 +141,139 @@ are clean, and that the remote and upstream are explicit. Then verify with
 not hold, preserve the scene and report "merged remotely, local sync blocked", pausing later
 merges; do not auto-stash, reset, check out, or create a local merge commit. A network error may
 be retried once after diagnosis.
+
+### §6.6 Acceptance records and the four levels
+
+A gate result is durable or it did not happen. Record it as a ledger `kind: acceptance` record
+before you release the worker or tell anyone the gate passed; a failed write is reported as a
+failed write, never as a pass, and is retried with the same `record_id`.
+
+```bash
+ACCEPTANCE="$SKILLS_ROOT/orchestra-auto/scripts/acceptance.py"
+python3 "$ACCEPTANCE" record --run-id "$RUN" --record "$ACCEPTANCE_JSON"
+python3 "$ACCEPTANCE" show --run-id "$RUN" --ticket 39
+```
+
+One record per PR carries `ticket`, `gate`, `attempt`, `accepted_sha`, `accepted_at`,
+`pr {number, head_at_acceptance, base}`, `checks [{name, command, result, evidence_ref}]`,
+`review {axis[], result, evidence_ref}`, the four `levels`, `decided_by` (`coordinator` or
+`human`), `decided_at` and `answer_location`. `validate(record)` rejects a level that is `true`
+without an `evidence_ref`; the CLI validates before it writes and exits non-zero with the error
+list when it refuses. `--authority FILE` additionally cross-checks claimed levels against a
+recorded PR-host/tracker/git read.
+
+**Minimum evidence.** A claim without its evidence is a send-back, not a nuance.
+
+| Claim | What proves it |
+| --- | --- |
+| merge | PR host `MERGED`, the merge SHA, and `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| tracker close | a tracker read-back showing `closed`, with the read time |
+| start | `turnStart: observed`, or the attempt's artifact / status-projection reference |
+| tests | the command, the result and the log reference. A `grep` only proves a string exists, so it is never a test run |
+| review | both axes (`standards`, `spec`) and the review reference; a waiver records its reason in the spec **and** the Answer |
+
+`worker_done` proves settlement only. It is never start evidence and never produces an
+acceptance: a level made `true` on it is rejected.
+
+**Four levels.** `implemented`, `integrated`, `merged` and `tracker_closed` are separate claims,
+recorded per PR. The ticket-level level is true only when **every** linked PR record supports
+it — a ticket may legitimately span several PRs, and one weak PR lowers the ticket's level
+rather than being averaged away. Two records that disagree about the same PR are `divergent`,
+and no level is claimed for that PR. `never_merge` is a terminal state for the merged level and
+belongs to a human: `{"value": false, "terminal": "never_merge", "decided_by": "human"}` with a
+reason, so a spike stops looking incomplete. A revert or a reopen **appends** an observation
+(`acceptance.py observe`) that sets the affected level false and keeps the original evidence as
+history; nothing is overwritten.
+
+**Pending, not frozen.** The four-level questions in issue #20 are open. Record them as ledger
+`pending` items (`acceptance.py open-questions`) with their evidence, keep the affected
+semantics `provisional`, and close the ticket without waiting for a human reply. A later human
+decision appends an observation (`resolve-question`); it never rewrites the earlier records.
+
+### §6.7 Closeout: the checklist, pending one-way doors and the release gate
+
+A closeout is a reconciliation, not a memory. `scripts/closeout.py` derives it from authority:
+`plan(facts)` is a pure planner over authority facts, and `reconcile` reads authority through
+adapters and persists one `kind: closeout` ledger record. Storage is `ledger.py`, the acceptance
+schema is `acceptance.py`, and the release decision consumes `health.authorize_release` — none of
+them is re-implemented.
+
+```bash
+CLOSEOUT="$SKILLS_ROOT/orchestra-auto/scripts/closeout.py"
+python3 "$CLOSEOUT" plan --run-id "$RUN" --facts facts.json
+python3 "$CLOSEOUT" reconcile --run-id "$RUN" --authority recorded.json \
+  --answer-location "$ANSWER"
+python3 "$CLOSEOUT" show --run-id "$RUN"
+```
+
+**Ten rows, each with its authority, repeatability and action.**
+
+| # | Fact | Authority | Repeatable | Action |
+| --- | --- | --- | --- | --- |
+| 1 | the accepted SHA per PR | ledger acceptance record | **no** | must be persisted at acceptance; it cannot be reconstructed later |
+| 2 | PR `MERGED`, base and merge SHA | PR host API | yes | read back and write an observation |
+| 3 | the merge covers the accepted head | `git merge-base --is-ancestor` | yes | failure → divergent, escalate |
+| 4 | main contains the merge | `git rev-parse` / ancestry | yes | record the ancestry result |
+| 5 | local main is synced | `git status` / `rev-parse` / upstream, ff-only | yes | blocked → pause later merges |
+| 6 | every ticket is integrated | integration branch ancestry / PR `Closes` | yes | record the result per ticket |
+| 7 | tracker state | tracker read-back | yes | record the close or reopen |
+| 8 | worker lifecycle | `worker-show` / `worker-list` / release receipt | yes | enumerate reclaimable workers |
+| 9 | dashboard projection | `progress.json` | yes (non-authoritative) | gap only; never evidence |
+| 10 | one-way-door pending | ledger `pending` | yes | check again when due |
+
+Only row 1 is non-repeatable; the plan reports it as `non_repeatable`. A fact that cannot be
+read is `unknown`, never a silent pass, and an unreadable authority blocks the declaration just
+like a failed check. Row 5 **blocks later merges** while local main is unsynced (`merge_blocked`)
+rather than only lowering the checklist. Row 8 enumerates every reclaimable or
+`release_unknown` worker, and names those that need `worker-show` read-back first. Row 9 records
+a gap and nothing else: `progress.json` is a projection, so a dashboard failure or a stale
+projection never blocks a closeout and is never cited as evidence.
+
+**A closeout is a point-in-time reconciliation.** The ten rows together are one snapshot;
+that a snapshot differs from the previous one is not itself a failure to be reconciled.
+
+**Pending one-way doors stay visible without a coordinator turn.** A human merge records a ledger
+`pending` item (`pending_type: human_merge`, `pr`, `accepted_sha`, `owner`, `condition`,
+`check_after`). No turn is needed for it to be seen: `ledger.py show --run-id "$RUN" --kind
+pending` and `ledger.py summary` list it, and the dashboard shows "awaiting human merge". The
+next turn reconciles it against the PR host, the merge SHA, main sync and the tracker; only when
+all four are true does `reconcile` append one resolution observation and stop blocking. A
+pending item whose checks are still false stays visible with the check that failed. Row 10 gates
+**one-way-door** pending items only; the other pending items (the open four-level questions, for
+example) stay visible in the ledger but do not block a declaration, because the spec lets those
+close without a human reply.
+
+**Release precondition.** Release requires a settled Dispatch, not `ready` and not health, and a
+persisted closeout record: on success at least the acceptance records plus the
+dispatch → task → attempt → worktree mapping, on failure at least a failure classification and
+its evidence references. `release_unknown` first reads `worker-show` and `worker-list`; an
+unsettled worker is never released, whatever the health state says. A closeout record that could
+not be written is **not** a pass: release and the gate declaration wait until the write is
+repaired, and the undurable record is kept at `closeout-pending/` for the retry.
+
+**Crash recovery.** The order is Orca → ledger → snapshot; the projection is a clue, not
+authority. A crash between the merge and the tracker reconciliation is repaired from rows 2, 3,
+4 and 7: the PR host still reports `MERGED` with the merge SHA, git still proves ancestry and
+containment, and the tracker's own read-back says whether the ticket closed. The missing facts
+are recorded as a failure closeout with its classification and evidence references rather than
+being filled in from memory.
+
+**Revert and reopen consume the T09 observation.** A revert or reopen appends an observation
+once (`acceptance.py observe`); the closeout consumes it and lowers rows 2/3/4 (a revert) or row
+7 (a reopen). The closeout never appends a second observation for the same fact.
+
+**Tracker close is read back.** When a merge keyword closes the ticket, the closeout reads the
+state back and records it. When it does not, the coordinator closes it only within existing
+authorization; an exception escalates instead of becoming an unrestricted tracker write.
+
+**The record carries the Answer location.** Every closeout record stores `answer_location` (and
+each accepted record's own location on row 1), so a later attempt finds the Answer instead of
+re-deriving it.
+
+**Release replay safety is version-scoped.** Release replay semantics beyond the current CLI help
+are an assumption. The closeout records the verification source and the timestamp it was
+verified at, together with the version scope; no unverified release field is written as a stable
+contract.
 
 ### Worker lifecycle and send-backs
 

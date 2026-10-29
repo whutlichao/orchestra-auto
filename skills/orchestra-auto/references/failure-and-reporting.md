@@ -27,6 +27,12 @@ a circuit breaker trips, or the Orca app restarts mid-run.
   handles from titles, impersonate a worker, or unconditionally create a new Run. Do not create a
   duplicate editor before the old Dispatch is inventoried and its ownership is clear; if recovery
   is impossible, preserve the artifacts and report the binding blockage.
+  The inbox consumer records the outcome (`consumer_fenced` or `run_binding_lost`), the error
+  text and the two refusals as `binding` in its state, carries it in the wake's observation, and
+  still ends in an ordinary error wake. Health reads that record: a fenced consumer is `blocked`,
+  a lost binding without a verified owner is `unknown`, and both escalate rather than authorize a
+  retry. The protocol and the evidence threshold are in
+  [inbox and waiting](inbox-and-waiting.md) §1.2 and [run health](run-health.md).
 - Authorized implementation work is not skipped because the task is small or the repo lacks a
   `WORK_SCOPE` section; pure Q&A, reports and stages beyond this round's delivery endpoint are not
   dispatched. When the scope is unclear, explore read-only first and re-judge per §1.

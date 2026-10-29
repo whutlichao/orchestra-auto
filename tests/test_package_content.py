@@ -21,12 +21,39 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAMES = ("orchestra-auto", "orchestra-auto-zh")
 SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
+
+#: Every script or static asset that ships in a bundle. The byte-parity and compile checks
+#: iterate this list, and a completeness test fails when a shipped file is missing from it, so
+#: a new script cannot land with a green suite and no coverage.
+SCRIPT_FILES = (
+    "acceptance.py",
+    "closeout.py",
+    "health.py",
+    "inbox-loop.py",
+    "inbox-loop.sh",
+    "ledger.py",
+    "preflight.py",
+    "progress-demo.py",
+    "progress.html",
+    "progress.py",
+)
+PYTHON_SCRIPTS = (
+    "acceptance.py",
+    "closeout.py", "health.py", "inbox-loop.py", "ledger.py", "preflight.py",
+    "progress-demo.py", "progress.py",
+)
+
+#: The eval count both bundles carried before this documentation-parity ticket. The new scenarios are
+#: asserted as a suffix on top of it, so the total is checked against the files instead of being
+#: repeated by hand in the README or the launch kit.
+BASELINE_EVAL_COUNT = 31
 
 REFERENCE_FILES = (
     "dispatch-loop.md",
@@ -36,12 +63,61 @@ REFERENCE_FILES = (
     "gate-acceptance.md",
     "gates-docs-planning.md",
     "inbox-and-waiting.md",
+    "ledger.md",
     "long-horizon-tickets.md",
+    "progress-dashboard.md",
+    "prose-contract.md",
     "reformat-noise-recovery.md",
     "reply-protocol.md",
-    "progress-dashboard.md",
+    "run-health.md",
     "spec-contract.md",
     "worker-start-and-recovery.md",
+)
+
+# The critical clauses of the orchestration-stability contract, in each language's own wording.
+# The anchor test checks that these *phrases* survive in both bundles; it does not check that the two
+# texts mean the same thing everywhere, which no phrase list can establish.
+PROSE_ANCHORS = {
+    "orchestra-auto": (
+        "absent is not proof",
+        "a dashboard failure never blocks dispatch",
+        "worker_done is not acceptance",
+        "release only after settlement and a closeout record",
+        "ready is not a started turn",
+        "unknown is not failure",
+    ),
+    "orchestra-auto-zh": (
+        "absent 不是没发生",
+        "看板故障绝不阻断派发",
+        "worker_done 不是验收",
+        "仅结算且有收尾记录后才 release",
+        "ready 不是已启动轮次",
+        "unknown 不是失败",
+    ),
+}
+
+# The scenarios this ticket adds, in the order both bundles must carry them. ``crash-window`` is ONE
+# scenario covering all three windows (W1/W2/W3); the ticket allows either that or three separate
+# scenarios, and this choice keeps a reader from reading a partial window list as four scenarios.
+NEW_EVAL_SCENARIOS = (
+    "crash-window-reconciliation",
+    "reinstall-with-unacked-batches",
+    "concurrent-singleton-startup",
+    "old-or-incompatible-dashboard-fallback",
+    "dashboard-failure-does-not-block-dispatch",
+    "revert-reopen-closeout",
+    "binding-loss",
+)
+CRASH_WINDOW_SCENARIO = "crash-window-reconciliation"
+
+# Phrases a scenario must never carry: a scenario is a prompt, so it cannot have run a test. The
+# match is a claim about execution, not a mention of testing in the abstract.
+UNRUN_TEST_CLAIMS = (
+    re.compile(r"\b(?:i|we)\s+ran\b", re.IGNORECASE),
+    re.compile(r"\b(?:tests?|suite)\s+(?:pass(?:ed)?|is green|are green)\b", re.IGNORECASE),
+    re.compile(r"\bci\s+is\s+green\b", re.IGNORECASE),
+    re.compile(r"(?:我|我们)(?:已经)?(?:跑|运行)了"),
+    re.compile(r"测试(?:已)?通过"),
 )
 
 # The safety invariants the spec calls out, with the term each language uses for it. Reordering and
@@ -101,6 +177,29 @@ def tracked_text_files():
         if path.suffix not in TEXT_SUFFIXES:
             continue
         yield relative, path
+
+
+def shipped_script_files(directory):
+    """The files actually sitting in a bundle's ``scripts/`` directory."""
+    return {
+        path.name for path in (directory / "scripts").iterdir()
+        if path.is_file() and path.name != ".DS_Store"
+    }
+
+
+def unregistered_scripts(directory):
+    """Shipped scripts that no byte-parity or compile check would ever look at.
+
+    Kept as a function rather than inlined in the assertion so the guard itself can be
+    exercised against a directory that contains a deliberately unregistered file.
+    """
+    return shipped_script_files(directory) - set(SCRIPT_FILES)
+
+
+def unregistered_python_scripts(directory):
+    """Python scripts missing from the ``py_compile`` list."""
+    shipped = {name for name in shipped_script_files(directory) if name.endswith(".py")}
+    return shipped - set(PYTHON_SCRIPTS)
 
 
 def read_frontmatter(text):
@@ -169,7 +268,7 @@ class StructureTests(unittest.TestCase):
             self.assertEqual(present, sorted(REFERENCE_FILES), f"{name} references")
 
     def test_scripts_match_across_variants(self):
-        for filename in ("inbox-loop.py", "inbox-loop.sh", "progress.py", "progress-demo.py", "progress.html"):
+        for filename in SCRIPT_FILES:
             english = (SKILL_DIRS[0] / "scripts" / filename).read_bytes()
             chinese = (SKILL_DIRS[1] / "scripts" / filename).read_bytes()
             self.assertEqual(english, chinese, f"{filename} differs between variants")
@@ -371,14 +470,16 @@ class ReferenceIntegrityTests(unittest.TestCase):
         README's claim that every relative link resolves actually true.
         """
         def heading_slugs(path):
-            # GitHub-style anchor for a heading: lowercase, punctuation dropped, spaces hyphens.
+            # GitHub-style anchor for a heading: lowercase, punctuation dropped, then each
+            # whitespace character becomes one hyphen. Removing punctuation can leave two
+            # spaces, and GitHub does not collapse them, so an em dash yields two hyphens.
             slugs = set()
             for line in path.read_text().splitlines():
                 if not line.startswith("#"):
                     continue
                 heading = re.sub(r"^#+\s*", "", line).strip().lower()
                 heading = re.sub(r"[^\w\s-]", "", heading, flags=re.UNICODE)
-                slugs.add(re.sub(r"\s+", "-", heading))
+                slugs.add(re.sub(r"\s", "-", heading))
             return slugs
 
         offenders = []
@@ -452,6 +553,24 @@ class ReferenceIntegrityTests(unittest.TestCase):
                     f"{name}/{filename}: no trigger statement near the top",
                 )
 
+    def test_long_references_carry_a_contents_list(self):
+        """CONTRIBUTING.md: a long reference gets a short table of contents.
+
+        A reference is read on demand, not end to end, so a file that runs past a couple of
+        screens needs a list of its own headings. The threshold keeps the rule to the files
+        where the list earns its lines.
+        """
+        headings = {"orchestra-auto": "## Contents", "orchestra-auto-zh": "## 目录"}
+        for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
+            for path in sorted((directory / "references").glob("*.md")):
+                lines = path.read_text().splitlines()
+                if len(lines) < 200:
+                    continue
+                self.assertIn(
+                    headings[name], lines,
+                    f"{name}/{path.name}: a reference this long needs {headings[name]!r}",
+                )
+
 
 def squash(text):
     """Collapse whitespace so an assertion survives re-wrapping."""
@@ -467,6 +586,11 @@ def compact(text):
     the assertion depend on the wording and nothing else.
     """
     return "".join(text.split())
+
+
+def plain(text):
+    """Drop Markdown code ticks so an anchor survives ``absent`` being marked as code."""
+    return text.replace("`", "")
 
 
 def markdown_sections(text):
@@ -640,6 +764,62 @@ class ContractRegressionTests(unittest.TestCase):
                 self.assertIn(phrase, squash(before),
                               f"{name}: the review exemption lost its condition {phrase!r}")
 
+    def test_dispatch_preflight_documents_the_receipt_contract(self):
+        """A receipt item the reference never describes can drift from the sheet.
+
+        The machine anchors below are the same tokens ``preflight.py`` emits: the twelve
+        tick-line ids and classes, the independent ``live-settings`` item, the receipt
+        fields, and the three post-receipt observations. The post-receipt observations
+        must sit in §4.0.2, not §4.0.1: they are ledger observations, never pre-dispatch
+        gates.
+        """
+        tokens = (
+            "kind: preflight",
+            "`live-settings`",
+            "`guide-freshness`",
+            "`cli-app-up`",
+            "`cli-command-surface`",
+            "`baseline-source-commit`",
+            "mechanical",
+            "judgment",
+            "blocking",
+            "overrides",
+            "`by`",
+            "`reason`",
+            "post_dispatch",
+            "version-scoped",
+            "1.4.244",
+            "2026-10-29",
+        )
+        post_dispatch_tokens = (
+            "`review-exemption-recheck`",
+            "`dashboard-backfill`",
+            "`inbox-health`",
+        )
+        for name in SKILL_NAMES:
+            _entrypoint, references = self.corpus(name)
+            text = references["dispatch-preflight.md"]
+            flat = squash(text)
+            for token in tokens:
+                self.assertIn(token, flat, f"{name}: preflight receipt lost {token!r}")
+            sections = markdown_sections(text)
+            before = find_section(sections, "4.0.1", name)
+            after = find_section(sections, "4.0.2", name)
+            for token in post_dispatch_tokens:
+                self.assertIn(token, after,
+                              f"{name}: §4.0.2 lost the post-receipt observation {token!r}")
+                self.assertNotIn(token, before,
+                                  f"{name}: {token!r} must not be a pre-dispatch gate")
+            self.assertEqual(
+                len([line for line in before.splitlines() if line.startswith("- [ ]")]),
+                12,
+                f"{name}: the tick sheet must keep exactly twelve lines",
+            )
+            self.assertNotIn(
+                "`live-settings`", before,
+                f"{name}: live-settings is an independent blocking item, not a tick line",
+            )
+
     def test_wayfinder_frontier_is_not_completion(self):
         """An empty frontier has three causes; only one of them finishes the stage."""
         expectations = {
@@ -696,6 +876,69 @@ class ContractRegressionTests(unittest.TestCase):
                           f"{name}: a false close-out must be named as forbidden")
             self.assertIn(expected["reconcile"], squash(references["gate-acceptance.md"]),
                           f"{name}: the post-merge tracker reconciliation is missing")
+
+    def test_acceptance_records_document_the_same_rules_in_both_bundles(self):
+        """The record, its evidence rules and the four-level extension are one contract.
+
+        The acceptance record is a local schema; if the two language bundles describe it
+        differently, a coordinator reading the Chinese bundle would accept what the English
+        one refuses. Each side is checked for the same decisions: the record fields, the
+        minimum-evidence rules (including "a grep is not a test run" and "worker_done proves
+        settlement only"), the multi-PR all-linked-PRs rule, the never-merge terminal and
+        the reopen-appends rule, and the pending/provisional treatment of issue #20.
+        """
+        expectations = {
+            "orchestra-auto": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "without an `evidence_ref`",
+                "merge": "PR host `MERGED`",
+                "tracker": "read-back",
+                "start": "`turnStart: observed`",
+                "grep": "A `grep` only proves a string exists",
+                "worker_done": "`worker_done` proves settlement only",
+                "waiver": "the spec **and** the Answer",
+                "multi_pr": "**every** linked PR record supports",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` is a terminal state",
+                "revert": "**appends** an observation",
+                "pending": "keep the affected semantics `provisional`",
+                "script": "scripts/acceptance.py",
+            },
+            "orchestra-auto-zh": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "却没有 `evidence_ref`",
+                "merge": "PR host 的 `MERGED`",
+                "tracker": "读回",
+                "start": "`turnStart: observed`",
+                "grep": "只证明字符串存在",
+                "worker_done": "`worker_done` 只证明结算",
+                "waiver": "spec **和** Answer",
+                "multi_pr": "**每个**关联 PR 记录都支持",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` 是 merged 级的终态",
+                "revert": "**追加** observation",
+                "pending": "`provisional`",
+                "script": "scripts/acceptance.py",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["gate-acceptance.md"])
+            self.assertIn(expected["section"], text,
+                          f"{name}: gate-acceptance.md has no acceptance-record section")
+            for field in expected["fields"]:
+                self.assertIn(field, text,
+                              f"{name}: the acceptance record loses the field {field!r}")
+            for key in ("no_true_without_evidence", "merge", "tracker", "start", "grep",
+                        "worker_done", "waiver", "multi_pr", "divergent", "never_merge",
+                        "revert", "pending", "script"):
+                self.assertIn(expected[key], text,
+                              f"{name}: the acceptance rule {key!r} is missing from "
+                              "gate-acceptance.md")
 
     def test_pre_skill_is_chosen_by_stage_not_by_channel(self):
         """A stage chooses its pre-skill; the old channel-to-skill mapping must be gone."""
@@ -852,7 +1095,331 @@ class ContractRegressionTests(unittest.TestCase):
                               f"{name}: {scenario_name} has no self-contained pre-skill fixture")
 
 
+class ProseAnchorTests(unittest.TestCase):
+    """The six critical clauses must survive in both bundles, as anchors only.
+
+    This is a phrase check by construction. It proves the clauses are published side by side;
+    it does **not** prove the two texts mean the same thing everywhere else, and it cannot. A
+    translator can keep every anchor while drifting in the paragraph between them, so the
+    reviewer's job does not disappear. The value of the check is the opposite direction of
+    failure: a bundle that loses a clause outright is caught mechanically, on every run.
+    """
+
+    def test_both_bundles_carry_the_six_prose_anchors(self):
+        for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
+            entrypoint = plain((directory / "SKILL.md").read_text())
+            contract_file = directory / "references" / "prose-contract.md"
+            self.assertTrue(
+                contract_file.is_file(),
+                f"{name}: references/prose-contract.md is missing; the anchors have no home",
+            )
+            # Case is not part of the clause: a clause may open a sentence and be capitalised.
+            body = plain(contract_file.read_text()).lower()
+            for anchor in PROSE_ANCHORS[name]:
+                self.assertIn(
+                    anchor.lower(), body,
+                    f"{name}: prose-contract.md lost the anchor {anchor!r}",
+                )
+            self.assertTrue(
+                any(anchor.lower() in entrypoint.lower() for anchor in PROSE_ANCHORS[name][:1])
+                or "prose-contract.md" in entrypoint,
+                f"{name}: SKILL.md never routes the reader to the prose contract",
+            )
+
+    def test_the_anchor_test_states_its_own_limits(self):
+        """The check must not read as a semantic-equivalence proof.
+
+        A green anchor test is easy to over-read, so the reference file and the README both say
+        what it actually measures. This pins that wording in all three places: it cannot be
+        dropped in a later edit that keeps the anchors and quietly upgrades the claim.
+        """
+        expectations = {
+            "orchestra-auto": ("checks anchors, not full semantic equivalence",
+                               "not a translation", "not proof"),
+            "orchestra-auto-zh": ("只查锚点", "不等于完整语义等价", "不是翻译"),
+        }
+        for name, phrases in expectations.items():
+            text = compact(plain(
+                (REPO_ROOT / "skills" / name / "references" / "prose-contract.md").read_text()
+            ))
+            for phrase in phrases:
+                self.assertIn(compact(phrase), text,
+                              f"{name}: prose-contract.md must state its limits: {phrase!r}")
+
+        readme_cases = {
+            "README.md": ("checks anchors, not full semantic equivalence"),
+            "README.zh-CN.md": ("只查锚点", "不等于完整语义等价"),
+        }
+        for filename, phrases in readme_cases.items():
+            text = compact((REPO_ROOT / filename).read_text())
+            for phrase in phrases:
+                self.assertIn(compact(phrase), text,
+                              f"{filename}: the README must state the anchor test's limits")
+
+    def test_both_bundles_number_the_same_six_clauses(self):
+        """Six numbered clauses per bundle: folding two into one changes the contract.
+
+        The anchors themselves are language-specific, so the counts and the numbering are what
+        can be compared. A bundle that merges two clauses into one sentence, or adds a seventh
+        without the other side, is caught here.
+        """
+        numbered = re.compile(r"^(\d+)\. \*\*", re.MULTILINE)
+        for name in SKILL_NAMES:
+            text = (REPO_ROOT / "skills" / name / "references" / "prose-contract.md").read_text()
+            numbers = [int(value) for value in numbered.findall(text)]
+            self.assertEqual(numbers, [1, 2, 3, 4, 5, 6],
+                             f"{name}: the prose contract must carry six numbered clauses")
+            self.assertEqual(len(PROSE_ANCHORS[name]), 6,
+                             f"{name}: the anchor list and the reference disagree on the count")
+
+
+class NewEvalScenarioTests(unittest.TestCase):
+    """The parity scenarios for the stability workstreams, in both bundles.
+
+    ``crash-window-reconciliation`` is ONE scenario that names all three windows W1/W2/W3, so the
+    total is 31 + 7 = 38 rather than 31 + 9. The ticket allows either; the choice is recorded here
+    and asserted against the files, and the README and the launch kit assert the same number
+    against the same files instead of restating it by hand.
+
+    Every scenario is machine-independent and is a *prompt*: none of them claims a test ran.
+    """
+
+    def evals_for(self, name):
+        payload = json.loads(
+            (REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text()
+        )
+        return payload["evals"]
+
+    def test_both_bundles_carry_the_new_scenarios_in_the_same_order(self):
+        english = [entry["name"] for entry in self.evals_for("orchestra-auto")]
+        chinese = [entry["name"] for entry in self.evals_for("orchestra-auto-zh")]
+        self.assertEqual(english, chinese,
+                         "the two bundles must list the same scenarios in the same order")
+        self.assertEqual(
+            english[BASELINE_EVAL_COUNT:], list(NEW_EVAL_SCENARIOS),
+            "the new scenarios must be appended after the baseline set, in the declared order",
+        )
+
+    def test_the_eval_count_matches_the_declared_crash_window_choice(self):
+        """The total is derived from the file, not remembered.
+
+        ONE crash-window scenario covering W1/W2/W3 makes the total 31 + 7 = 38. Choosing three
+        separate windows would make it 40; the constant below is the single place that records
+        which choice was made, and the assertion ties it to what actually ships.
+        """
+        expected_total = BASELINE_EVAL_COUNT + len(NEW_EVAL_SCENARIOS)
+        for name in SKILL_NAMES:
+            self.assertEqual(
+                len(self.evals_for(name)), expected_total,
+                f"{name}: expected {expected_total} scenarios "
+                f"(31 baseline + {len(NEW_EVAL_SCENARIOS)} new); the file disagrees",
+            )
+
+    def test_the_crash_window_scenario_names_all_three_windows(self):
+        expectations = {
+            "orchestra-auto": ("W1", "W2", "W3", "orphan_intent", "orphan_effect", "unknown"),
+            "orchestra-auto-zh": ("W1", "W2", "W3", "orphan_intent", "orphan_effect", "unknown"),
+        }
+        for name, tokens in expectations.items():
+            entry = next(
+                entry for entry in self.evals_for(name)
+                if entry["name"] == CRASH_WINDOW_SCENARIO
+            )
+            blob = plain(" ".join([entry["prompt"], entry["expected_output"]]
+                                  + [assertion["text"] for assertion in entry["assertions"]]
+                                  + [assertion["name"] for assertion in entry["assertions"]]))
+            for token in tokens:
+                self.assertIn(token, blob,
+                              f"{name}: {CRASH_WINDOW_SCENARIO} never names {token!r}")
+
+    def test_each_new_scenario_carries_assertions_and_a_worked_answer(self):
+        for name in SKILL_NAMES:
+            by_name = {entry["name"]: entry for entry in self.evals_for(name)}
+            for scenario in NEW_EVAL_SCENARIOS:
+                self.assertIn(scenario, by_name, f"{name}: missing scenario {scenario}")
+                entry = by_name[scenario]
+                self.assertTrue(entry["prompt"].strip(), f"{name}/{scenario}: empty prompt")
+                self.assertTrue(entry["expected_output"].strip(),
+                                f"{name}/{scenario}: empty expected_output")
+                self.assertGreaterEqual(len(entry["assertions"]), 3,
+                                        f"{name}/{scenario}: fewer than three assertions")
+                for assertion in entry["assertions"]:
+                    self.assertTrue(assertion["name"], f"{name}/{scenario}: unnamed assertion")
+                    self.assertTrue(assertion["text"], f"{name}/{scenario}: empty assertion text")
+
+    def test_no_new_scenario_claims_an_unrun_test(self):
+        """A scenario is a prompt. It cannot have run the suite, and must not say it did.
+
+        The scan reads the ``prompt`` and ``expected_output`` only. An assertion's text may
+        legitimately *quote* the claim it rejects — "a missed-callsite check, not just 'tests
+        pass'" — and scanning it would flag the correction instead of the defect.
+        """
+        for name in SKILL_NAMES:
+            for entry in self.evals_for(name):
+                blob = " ".join([entry["prompt"], entry["expected_output"]])
+                for pattern in UNRUN_TEST_CLAIMS:
+                    self.assertIsNone(
+                        pattern.search(blob),
+                        f"{name}/{entry['name']}: claims a test ran when a prompt cannot run one "
+                        f"({pattern.pattern})",
+                    )
+
+    def test_the_new_scenarios_are_machine_independent(self):
+        forbidden = ("/Users/", "/home/", "profile-state.db", "orca-data.json",
+                     "ORCA_PROGRESS_HOME=/", "AUDIT_ROOT=/")
+        for name in SKILL_NAMES:
+            for entry in self.evals_for(name):
+                if entry["name"] not in NEW_EVAL_SCENARIOS:
+                    continue
+                blob = entry["prompt"] + entry["expected_output"]
+                for needle in forbidden:
+                    self.assertNotIn(
+                        needle, blob,
+                        f"{name}/{entry['name']}: bakes in a machine-specific value {needle!r}",
+                    )
+
+
+def scenario_totals():
+    """The shipped scenario count per bundle, read from the files themselves."""
+    return {
+        name: len(json.loads(
+            (REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text()
+        )["evals"])
+        for name in SKILL_NAMES
+    }
+
+
+def reference_totals():
+    """The shipped reference count per bundle, read from the directories."""
+    return {
+        name: len(list((REPO_ROOT / "skills" / name / "references").glob("*.md")))
+        for name in SKILL_NAMES
+    }
+
+
+class DocCountTests(unittest.TestCase):
+    """Counts in the README and the launch kit come from the files, not from memory.
+
+    The old numbers ("30 scenarios", "20 prompt-level scenarios", "twelve files", "90 OK") were
+    hand-maintained copies that had already drifted from the files they described. Each claim
+    below is recomputed from the bundle and then asserted against the prose, so a count can only
+    be wrong in one direction: the test fails.
+    """
+
+    def test_readme_states_the_shipped_reference_count(self):
+        totals = reference_totals()
+        english = (REPO_ROOT / "README.md").read_text()
+        chinese = (REPO_ROOT / "README.zh-CN.md").read_text()
+        words = {12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
+                 16: "sixteen", 17: "seventeen", 18: "eighteen"}
+        count = totals["orchestra-auto"]
+        self.assertIn(f"{words[count]} files", english,
+                      f"README.md must say {count} reference files, matching the bundle")
+        self.assertIn(f"{count} 个文件", chinese,
+                      f"README.zh-CN.md must say {count} reference files, matching the bundle")
+
+    def test_readme_entrypoint_size_table_matches_the_files(self):
+        """The activation-cost table is a measurement, so it must be measured here.
+
+        The table used to carry the bytes of an older revision of both entrypoints. A reader
+        deciding whether the package is cheap to activate deserves the current number; the test
+        recomputes it from the shipped files rather than trusting the prose.
+        """
+        for name, filename in (("orchestra-auto", "README.md"),
+                               ("orchestra-auto-zh", "README.zh-CN.md")):
+            size = (REPO_ROOT / "skills" / name / "SKILL.md").stat().st_size
+            text = (REPO_ROOT / filename).read_text()
+            self.assertIn(f"{size:,}", text,
+                          f"{filename}: the entrypoint size table does not carry {size:,} bytes")
+            self.assertIn(f"{size // 4:,}", text,
+                          f"{filename}: the token estimate is not {size // 4:,} (bytes ÷ 4)")
+
+    def test_launch_kit_counts_match_the_bundles(self):
+        totals = scenario_totals()
+        english = (REPO_ROOT / "launch-kit" / "launch-kit.md").read_text()
+        chinese = (REPO_ROOT / "launch-kit" / "launch-kit.zh-CN.md").read_text()
+        self.assertIn(f"{totals['orchestra-auto']} scenarios per language", english)
+        self.assertIn(f"{totals['orchestra-auto']} prompt-level scenarios", english)
+        self.assertIn(f"{totals['orchestra-auto-zh']} 个场景", chinese)
+        # The Chinese launch kit keeps one English quote block verbatim (the X channel draft), so
+        # the English count appears there too.
+        self.assertIn(f"{totals['orchestra-auto']} prompt-level scenarios", chinese)
+
+    def test_readme_does_not_restate_a_suite_total_as_a_number(self):
+        """A recorded total rots on the next test that lands; a command does not.
+
+        The README used to record "90 OK (1 skipped)" and a badge repeating the same count. Any
+        number here would be stale the moment this ticket adds tests, so the section must point
+        at the command instead, and the badge must not carry a count at all.
+        """
+        stale = re.compile(r"\b\d+ OK\b|\b\d+ tests? OK\b|\b\d+ 个测试\b|tests-\d+%20passing")
+        for filename in ("README.md", "README.zh-CN.md"):
+            text = (REPO_ROOT / filename).read_text()
+            match = stale.search(text)
+            self.assertIsNone(
+                match,
+                f"{filename}: records a suite total ({match.group(0) if match else ''}); "
+                "point at `python3 -m unittest discover` instead",
+            )
+
+
+class ScriptRegistrationTests(unittest.TestCase):
+    """A new script must fail the suite until it is registered.
+
+    ``SCRIPT_FILES`` and ``PYTHON_SCRIPTS`` are the lists the byte-parity and ``py_compile``
+    checks iterate. A script that ships without an entry would pass every check by simply
+    never being looked at, which is the failure mode this class closes: the guard below is the
+    same function the real assertion uses, exercised against a directory that contains one
+    unregistered file.
+    """
+
+    def test_the_registration_guard_catches_an_unregistered_script(self):
+        """The guard must actually bite; a vacuous check is worse than none."""
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary) / "scripts"
+            scripts.mkdir()
+            (scripts / "ledger.py").write_text("# registered\n")
+            (scripts / "brand-new.py").write_text("# not registered\n")
+            (scripts / "brand-new.sh").write_text("# not registered\n")
+            self.assertEqual(unregistered_scripts(Path(temporary)), {"brand-new.py", "brand-new.sh"})
+            self.assertEqual(unregistered_python_scripts(Path(temporary)), {"brand-new.py"})
+
+    def test_every_python_script_is_in_the_compile_list(self):
+        for directory in SKILL_DIRS:
+            self.assertEqual(
+                unregistered_python_scripts(directory), set(),
+                f"{directory}: a Python script is missing from PYTHON_SCRIPTS",
+            )
+
+    def test_the_compile_list_names_only_scripts_that_ship(self):
+        """A stale entry would make ``py_compile`` pass over a file that is not there."""
+        for directory in SKILL_DIRS:
+            present = shipped_script_files(directory)
+            self.assertLessEqual(set(PYTHON_SCRIPTS), present,
+                                 f"{directory}: PYTHON_SCRIPTS names a script that is not shipped")
+
+
 class EvalMetadataTests(unittest.TestCase):
+    def test_eval_yaml_cases_match_across_variants(self):
+        """``eval.yaml`` is an external-runner allowlist; both bundles must offer the same cases.
+
+        It is not generated from ``evals.json`` (the case names and the distilled prompts differ),
+        so parity is the only check available: the case list, its order and its expectation counts
+        must match, or an external runner grades the two bundles differently.
+        """
+        case = re.compile(r"^  - name: (\S+)$", re.MULTILINE)
+        expectations = re.compile(r"^    expectations:$", re.MULTILINE)
+        parsed = {}
+        for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
+            text = (directory / "eval.yaml").read_text()
+            parsed[name] = (case.findall(text), len(expectations.findall(text)))
+        self.assertEqual(parsed["orchestra-auto"][0], parsed["orchestra-auto-zh"][0],
+                         "the two eval.yaml files must list the same cases in the same order")
+        self.assertEqual(parsed["orchestra-auto"][1], parsed["orchestra-auto-zh"][1],
+                         "the two eval.yaml files must expect the same number of cases")
+        self.assertEqual(len(parsed["orchestra-auto"][0]), parsed["orchestra-auto"][1],
+                         "an eval.yaml case without an expectations block is a silent no-op")
+
     def test_eval_files_parse_and_use_the_expected_shape(self):
         for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
             payload = json.loads((directory / "evals" / "evals.json").read_text())
@@ -943,16 +1510,93 @@ class EvalMetadataTests(unittest.TestCase):
             )
 
 
+class RunHealthReferenceTests(unittest.TestCase):
+    """The health reference must match the module's state machine and signal table.
+
+    A reference that drifts from ``health.py`` teaches the reader a state machine the code does
+    not implement, which is worse than no reference. This checks the contract anchors — the five
+    states, the precedence order, the eleven signals and the two authorization edges — not full
+    semantic equivalence.
+    """
+
+    STATES = ("healthy", "degraded", "blocked", "lost", "unknown")
+    # The eleven rows of the signal table, in each language's own wording. The module's own
+    # keys are asserted in ``tests/test_health.py``; this file checks the documentation.
+    SIGNALS = {
+        "orchestra-auto": ("heartbeat", "inbox phase", "unacked batch",
+                           "worker-list snapshot", "worker-show observation", "turnStart",
+                           "progress freshness", "last effective progress",
+                           "reclaimable terminal", "waiter-slot leak", "nested roster"),
+        "orchestra-auto-zh": ("heartbeat", "inbox phase", "unacked 批次", "worker-list 快照",
+                              "worker-show 观测", "turnStart", "progress freshness",
+                              "last effective progress", "reclaimable 终端",
+                              "waiter slot 泄漏", "nested roster"),
+    }
+    ANCHORS = {
+        "orchestra-auto": (
+            "lost > blocked > unknown > degraded > healthy",
+            "never `healthy`",
+            "not a health state",
+            "health alone never authorizes it",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+        "orchestra-auto-zh": (
+            "lost > blocked > unknown > degraded > healthy",
+            "绝不 `healthy`",
+            "不是健康状态",
+            "从不授权 release",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+    }
+
+    def test_the_state_machine_and_signal_table_are_documented(self):
+        for name in SKILL_NAMES:
+            text = (REPO_ROOT / "skills" / name / "references" / "run-health.md").read_text()
+            flat = compact(text)
+            for state in self.STATES:
+                self.assertIn(state, text, f"{name}: run-health.md lost the {state} state")
+            for signal in self.SIGNALS[name]:
+                self.assertIn(compact(signal), flat,
+                              f"{name}: run-health.md lost the {signal!r} signal row")
+            for anchor in self.ANCHORS[name]:
+                self.assertIn(compact(anchor), flat,
+                              f"{name}: run-health.md lost the anchor {anchor!r}")
+
+    def test_the_reference_trigger_is_on_the_first_lines(self):
+        for name in SKILL_NAMES:
+            head = "\n".join(
+                (REPO_ROOT / "skills" / name / "references" / "run-health.md")
+                .read_text().splitlines()[:12]
+            )
+            self.assertTrue(
+                any(marker in head for marker in ("When to read", "什么时候读", "何时读取")),
+                f"{name}: run-health.md must state its trigger near the top",
+            )
+
+
 class ScriptTests(unittest.TestCase):
     def test_python_scripts_compile(self):
-        for path in REPO_ROOT.rglob("inbox-loop.py"):
-            if any(part in IGNORED_DIRECTORIES for part in path.parts):
-                continue
-            result = subprocess.run(
-                [sys.executable, "-m", "py_compile", str(path)],
-                capture_output=True, text=True,
+        for name in SKILL_NAMES:
+            for filename in PYTHON_SCRIPTS:
+                path = REPO_ROOT / "skills" / name / "scripts" / filename
+                result = subprocess.run(
+                    [sys.executable, "-m", "py_compile", str(path)],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
+
+    def test_every_shipped_script_is_registered(self):
+        """A script that is shipped but unregistered would pass the suite untested."""
+        for directory in SKILL_DIRS:
+            self.assertEqual(
+                shipped_script_files(directory), set(SCRIPT_FILES),
+                f"{directory}: shipped scripts and SCRIPT_FILES disagree; register every "
+                "script in SCRIPT_FILES and PYTHON_SCRIPTS",
             )
-            self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
 
     def test_shell_scripts_pass_a_syntax_check(self):
         for path in REPO_ROOT.rglob("inbox-loop.sh"):
@@ -999,6 +1643,12 @@ class LeakScanTests(unittest.TestCase):
          "a credential-style environment variable name"),
         ("token-literal", re.compile(r"\b(?:sk|ghp|gho|xox[baprs])_[A-Za-z0-9]{16,}\b"),
          "an API token literal"),
+        # Internal process identifiers: a Run, Task, Dispatch, message or attempt id minted by
+        # this or a previous orchestration run. They are not documentation, they identify a
+        # particular operation, and they cannot be checked by anyone outside it. The template
+        # placeholders (`run_xxx`, `<run_id>`) deliberately do not match: they carry no hex.
+        ("internal-run-id", re.compile(r"\b(?:run|task|ctx|dispatch|msg|request|delivery|attempt)_[0-9a-f]{8,}\b"),
+         "an internal Run/Task/Dispatch/message identifier"),
     )
 
     # The scanner defines the generic patterns it searches for, so the source necessarily contains
@@ -1008,6 +1658,7 @@ class LeakScanTests(unittest.TestCase):
     ALLOWED = frozenset({
         ("tests/test_package_content.py", "profile-db"),
         ("tests/test_package_content.py", "credential-var"),
+        ("tests/test_package_content.py", "internal-run-id"),
     })
 
     # The scanner's own source is the only file that gets a self-exemption, and it is named here
@@ -1147,6 +1798,20 @@ class LeakScanTests(unittest.TestCase):
         for probe in ("MY_SERVICE_API_KEY", "EXAMPLE_HOOK_TOKEN", "DEPLOY_SECRET"):
             self.assertIsNotNone(pattern.search(probe), f"missed {probe}")
         for benign in ("uuid.uuid4().hex", "deliveries", "token = uuid.uuid4().hex"):
+            self.assertIsNone(pattern.search(benign), f"false positive on {benign}")
+
+    def test_internal_id_pattern_matches_a_real_id_but_not_a_placeholder(self):
+        """An identifier shape is only useful if it separates an id from documentation.
+
+        The placeholders that legitimate documentation uses (`run_xxx`, `<run_id>`, `task-1`, a
+        bare `dispatch`) must not fire, or the rule becomes noise and gets switched off.
+        """
+        pattern = next(p for n, p, _r in self.FORBIDDEN if n == "internal-run-id")
+        for probe in ("run_deadbeef1234", "task_00ff00ff00ff", "msg_0123456789ab",
+                      "ctx_feedfacecafe", "attempt_00000000"):
+            self.assertIsNotNone(pattern.search(probe), f"missed {probe}")
+        for benign in ("run_xxx", "run_yyy.json", "<run_id>", "task-1", "dispatch",
+                       "run-example", "the dispatch id", "task_1"):
             self.assertIsNone(pattern.search(benign), f"false positive on {benign}")
 
     def test_evals_and_scripts_are_free_of_forbidden_patterns(self):

@@ -3,8 +3,15 @@
 **When to read**: before the first dispatch of every actual orchestration Run, and whenever you
 need to view progress or the reproducible offline demonstration.
 
-Contents: [Operation](#operation), [Visual dashboard](#reading-the-visual-dashboard), [Protocol v1](#protocol-v1),
-[Workflow ownership](#workflow-ownership), [Recovery and boundaries](#recovery-and-boundaries).
+## Contents
+
+- [Operation](#operation)
+- [Reading the visual dashboard](#reading-the-visual-dashboard)
+- [Protocol v2](#protocol-v2)
+- [Singleton dashboard registry](#singleton-dashboard-registry)
+- [Fixed dispatch order and record failures](#fixed-dispatch-order-and-record-failures)
+- [Workflow ownership](#workflow-ownership)
+- [Recovery and boundaries](#recovery-and-boundaries)
 
 ## Operation
 
@@ -34,12 +41,13 @@ python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; co
 Replace `PROGRESS` with the absolute path inside the currently installed copy of this skill. Before
 the first dispatch, run the init and open commands above with the real Run ID, a new audit directory
 outside the repository and the actual target repository; do not use the example ID or paths. `open`
-selects a free port, starts the read-only server in the background and attempts to open the default
-browser, printing its URL and PID as JSON; give the URL to the user. If the browser cannot open, tell
-the user to visit the printed URL manually. The page refreshes every three seconds; keep recording at
+registers the Run with the per-user dashboard service, starts that single service when none is
+running, and attempts to open the default browser, printing `{url, pid, degraded, reason,
+browser_opened}` as JSON; give the URL to the user. If the browser cannot open, tell the user to
+visit the printed URL manually. The page refreshes every three seconds; keep recording at
 the checkpoints below, and recording works whether or not the server is running. Leave the dashboard
-available to inspect the final state; stop it with `kill PID` on the printed PID, which leaves the
-snapshot intact. `show` prints the current snapshot without starting a server. `serve --port 0`
+available to inspect the final state; stop it with `kill PID` on the printed singleton PID, which leaves every
+snapshot intact; the next `open` starts a new service and re-registers the Run. `show` prints the current snapshot without starting a server. `serve --port 0`
 selects and prints an available address. `--stale-seconds 300` controls freshness;
 unknown timestamps are unknown, old observations are stale, and a coordinator-recorded `lost`
 lifecycle is displayed independently. Fresh activity does not mean meaningful progress.
@@ -109,37 +117,65 @@ start confirmation and freshness are separate. Full identities/worktrees and sum
 into expandable details. HTTP(S) references without credentials are links; all other values remain
 text, and no file contents are served.
 
+The page also states the **warning is not a start failure** notice: a recording or dashboard warning
+means "continue orchestration", records a gap and never turns a dispatch into a failed start.
+
 Optional browser regression checks require an externally installed Playwright and Chromium, not
-runtime dependencies. Set `PLAYWRIGHT_MODULE` to that external package, then run
-`node tests/progress_dashboard_browser.cjs http://127.0.0.1:8766/ EVIDENCE_DIR` against an isolated
-DEMO server. It covers four viewports, semantic edge cases, refresh state and safe rendering.
+runtime dependencies, and they are not the mandatory gate — the CLI/HTTP contract above is.
+Set `PLAYWRIGHT_MODULE` to that external package, then run
+`node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=FIRST&second=SECOND' EVIDENCE_DIR`
+against a singleton service with two registered Runs. The script routes `**/snapshot*`, switches the
+selected Run through the Run list, and covers four viewports, semantic edge cases, refresh state and
+safe rendering; when Playwright is absent it is simply not run and nothing in the suite fails for it.
 
-## Protocol v1
+## Protocol v2
 
-`progress.json` is a UTF-8 snapshot with `schema_version: 1`, `run`, keyed `tasks`, `workers`,
+`progress.json` is a UTF-8 snapshot with `schema_version: 2`, `run`, keyed `tasks`, `workers`,
 `deliveries`, `artifacts`, ordered `events`, and private idempotency `receipts`. Each successful
 mutation atomically replaces the entire snapshot under a process lock. `receipts` is omitted from
-HTTP/show. Unknown versions fail without modifying the file. Back up this single snapshot for audit;
-the tool never writes to the target repository. Snapshot evolution requires a new documented version.
+HTTP/show. Reads accept schema v1 and v2; every write records v2, and the first v2 write migrates a
+v1 snapshot in place. Unknown versions fail without modifying the file. Back up this single snapshot
+for audit; the tool never writes to the target repository.
+
+Schema v2 adds optional fields: `run.orca_run_id` (the Orca Run binding; a mismatch with the ledger
+Run is divergent), `run.health` (`healthy`/`degraded`/`blocked`/`lost`/`unknown`, a projection —
+the ledger holds health authority), `task.provisional`, `task.orca_task_id`, and `bookkeeping` on
+events. A task written before its Orca Task exists is `provisional: true` with `orca_task_id: null`;
+it is bound after the receipt, and the Orca Task ID is the only join key. An unlisted JSON field is
+still rejected.
 
 All writes have this interface:
 
 ```text
-python3 PROGRESS --state STATE COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
+python3 PROGRESS --state STATE [--json] [--lock-timeout SECONDS] [--bookkeeping] COMMAND --event-id STABLE_ID --source coordinator|worker [--effective] --data JSON
 ```
 
-Reuse an event ID only for an identical retry (same command, source, JSON and effective flag).
-An identical retry is a no-op, including timestamps; a conflicting retry fails. New observations use
-new IDs. The default source is coordinator; this is provenance supplied by a trusted local writer,
-not authentication. Only the coordinator can set `--effective` after observing meaningful progress.
-`last_observed` advances on recorded activity; `last_effective_progress` advances only with this
-explicit verification. No elapsed-time or completion percentage estimate is made.
+Reuse an event ID only for an identical retry (same command, source, JSON, effective and bookkeeping
+flags). An identical retry is a no-op, including timestamps; a conflicting retry fails. New
+observations use new IDs. The default source is coordinator; this is provenance supplied by a trusted
+local writer, not authentication. Only the coordinator can set `--effective` after observing
+meaningful progress. `last_observed` advances on recorded activity; `last_effective_progress`
+advances only with this explicit verification. No elapsed-time or completion percentage estimate is
+made. `--bookkeeping` marks reconciliation and backfill writes: they are still recorded, but they do
+not refresh `last_observed` or `last_effective_progress`, and they cannot be combined with
+`--effective`.
+
+### Exit codes
+
+With `--json`, a write exits `0` on success and on an intentional degradation, and `1` on caller
+input or state corruption. A degradation prints `{"degraded": true, "reason": ...}` on stdout; a
+contended snapshot lock is `degraded/lock_busy`, never a caller error. An error prints
+`{"degraded": false, "error": ...}` and exits `1`. `--lock-timeout` changes the lock wait (default
+2 seconds). Without `--json`, the legacy exit codes remain for one minor version: every failure
+exits `1` with a `Progress warning` on stderr. The coordinator wrapper uses `--json`, records a
+ledger gap for any non-zero or degraded result, and continues; dispatch control flow never branches
+on a progress exit code. A dashboard failure never blocks dispatch.
 
 | Command | JSON summary fields (unlisted keys rejected) |
 | --- | --- |
-| `init` | Required `id`, `target_repo` (existing directory), `mode` (`REAL`/`DEMO`); optional `title`, `phase`, `status` |
-| `run` | `phase`, `status`, `title` updates |
-| `task` | Required `id`; optional `title`, `dependencies` (ID list), `status`, `blocked_reason`, `pending_decision` |
+| `init` | Required `id`, `target_repo` (existing directory), `mode` (`REAL`/`DEMO`); optional `title`, `phase`, `status`, `orca_run_id`, `health` |
+| `run` | `phase`, `status`, `title`, `orca_run_id`, `health` updates |
+| `task` | Required `id`; optional `title`, `dependencies` (ID list), `status`, `blocked_reason`, `pending_decision`, `provisional` (boolean), `orca_task_id` (identifier or null while provisional) |
 | `worker` | Required `id`; first registration also requires existing `task_id`, `dispatch_id`, positive integer `attempt`; optional `parent_worker_id` (registered first), `worktree`, `start_confirmation`, `lifecycle`, `reported_lifecycle`, `reported_summary` |
 | `event` | Required `type`, `summary`; optional existing `task_id`, `worker_id`, `dispatch_id`, `attempt`, `evidence` (reference list) |
 | `delivery` | Required existing `task_id`; independent boolean `implemented`, `integrated`, `merged`, `tracker_closed`; optional `evidence` |
@@ -147,10 +183,15 @@ explicit verification. No elapsed-time or completion percentage estimate is made
 | `end` | Required `status` (`completed`/`failed`/`paused`/`cancelled`); optional `phase`, `summary`; records `ended_at` |
 
 Run status: `unknown`, `active`, `waiting_user`, `failed`, `paused`, `completed`, `cancelled`.
+Run health: `healthy`, `degraded`, `blocked`, `lost`, `unknown`.
 Task status: `unknown`, `pending`, `ready`, `running`, `blocked`, `waiting_user`, `reported`,
 `accepted`, `rejected`, `failed`, `paused`, `cancelled`.
 Worker lifecycle: `unknown`, `dispatched`, `running`, `waiting_user`, `reported_done`, `failed`,
-`lost`, `reclaimable`, `closed`. Start confirmation: `unknown`, `observed`, `unobserved`, `unsupported`.
+`lost`, `reclaimable`, `closed`. Start confirmation: `unknown`, `observed`, `unobserved`; a v1
+snapshot may still carry the legacy `unsupported` value. A receipt with `turnStart: observed` writes
+`observed` in one step; `unsupported` or a missing `turnStart` writes `unknown` and gathers the
+evidence the agent supports; `unobserved` means checked and not observed and stays distinct from
+`unknown`. `state: ready` is never treated as a started turn.
 A missing field is unknown, not inferred success. IDs are portable letters/digits/`_.:-` (1–128
 characters); summary strings are at most 4096 characters; reference lists at most 100 short strings;
 JSON input at most 64 KiB. Tasks may name not-yet-recorded dependencies, displayed as unknown.
@@ -166,14 +207,21 @@ after G-impl, `integrated` after integration evidence, `merged` after the merge 
 `tracker_closed` only after tracker reconciliation. Opening a PR sets none of these automatically.
 Absent facts are null and displayed as unverified; explicit true/false values mean verified yes/no. Corrections can explicitly set false.
 
-Example record sequence. This wrapper always returns success, including under `set -e`; the warning remains visible and the coordinator continues its normal work:
+Example record sequence. This wrapper uses `--json`, always returns success (including under
+`set -e`), and leaves a visible warning for a failure or a degradation so the coordinator can record
+a ledger gap and continue its normal work:
 
 ```bash
 progress_record() {
-  python3 "$PROGRESS" --state "$STATE" "$@" || {
-    printf '%s\n' 'Progress warning; continue orchestration' >&2
-    return 0
-  }
+  local output status
+  status=0
+  output=$(python3 "$PROGRESS" --state "$STATE" --json "$@" 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' 'Progress warning; continue orchestration; record a ledger gap' >&2
+  elif printf '%s' "$output" | grep -q '"degraded": true'; then
+    printf '%s\n' 'Progress degraded; continue orchestration; record a ledger gap' >&2
+  fi
+  return 0
 }
 progress_record task --event-id task-1 --data '{"id":"t1","title":"Protocol","dependencies":[],"status":"ready"}'
 progress_record worker --event-id dispatch-1 --data '{"id":"w1-a1","task_id":"t1","dispatch_id":"d1","attempt":1,"worktree":"protocol-worktree","lifecycle":"dispatched","start_confirmation":"unobserved"}'
@@ -182,6 +230,139 @@ progress_record worker --event-id report-1 --source worker --data '{"id":"w1-a1"
 progress_record delivery --event-id accept-1 --effective --data '{"task_id":"t1","implemented":true,"evidence":["acceptance-report.txt"]}'
 progress_record end --event-id end-1 --data '{"status":"paused","phase":"waiting","summary":"Awaiting integration"}'
 ```
+
+## Singleton dashboard registry
+
+One read-only dashboard service per user; `open` is the only command that starts or adopts it.
+`$ORCA_PROGRESS_HOME` (default `~/.orca/progress`, directory mode `0700`, outside every repository,
+override with `--registry`) holds:
+
+```text
+$ORCA_PROGRESS_HOME
+├── server.json          # {pid, port, protocol_version, started_at, binary_version}
+├── startup.lock         # flock held only during startup
+├── starting.json        # {pid, port}: the startup crash window
+└── runs/
+    └── run_xxx.json     # {run_id, state_path, registered_at, label}
+```
+
+`progress.json` stays the persistent source of truth; the service is stateless and its loss is a gap,
+never a Run event. Registry descriptors hold Run IDs, state paths, registration times and optional
+labels only: no credentials, no message or terminal content. `$ORCA_PROGRESS_HOME` must not sit inside
+a repository, and the recorder and the registry share one state-path validator (symlinks and
+repository paths are refused for both).
+
+**Startup algorithm.** Under `flock(startup.lock)` with a 10 s timeout (`--startup-timeout`):
+
+1. Read `server.json` and probe `GET /health` with a 500 ms timeout.
+2. Healthy and protocol-compatible: register the Run with it and open `/?run=<id>`. A second `open`
+   for an already registered Run updates its descriptor instead of creating a duplicate.
+3. Legacy (no `/health`) or incompatible (`protocol_version` below the client minimum): never send
+   it a kill or a delete; fall back and record a gap, and tell the user to stop the old service.
+4. Timeout or 5xx: treat the service as hung; never kill or delete it; fall back and record a gap.
+5. Connection refused: the recorded service is definitely gone; delete only `server.json` and start
+   a new service.
+6. Otherwise start `serve --registry $ORCA_PROGRESS_HOME --port 0`, write `starting.json` with the
+   child pid and port, and wait up to 5 s for `/health`; then write `server.json` atomically (temp,
+   fsync, rename, directory fsync), register the Run and remove `starting.json`.
+
+A later caller that finds `starting.json` probes it and adopts a healthy child, recording it in
+`server.json`; it removes `starting.json` only when the recorded child is definitely dead. A
+crash-window child that never becomes ready is stopped by the caller that started it. A startup-lock
+timeout is degraded: no second service is ever started.
+
+**Interfaces.** The script exposes `registry.register(run)`, `registry.discover()`,
+`registry.probe()` and `registry.open(run) -> {url, pid, degraded, reason}`; the HTTP layer only
+renders read-only snapshots. `GET /health` returns `{ok, protocol_version, pid, started_at, runs}`;
+`protocol_version` starts at `1`. `GET /?run=<id>` renders the page and `GET /snapshot?run=<id>`
+returns that Run's snapshot; an unknown Run is an error, never another Run's data.
+
+**HTTP surface and Run isolation.** The service exposes exactly three GET routes and no write API:
+
+| Route | Answer |
+| --- | --- |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs}`: the service plus the registered Run IDs, never their state paths |
+| `GET /?run=<id>` | the page: a Run list built from `/health` plus the selected Run's tasks, workers, deliveries, events, freshness and health projection, and the "warning is not a start failure" notice |
+| `GET /snapshot?run=<id>` | that Run's read-only snapshot, and nothing from any other Run |
+
+Run isolation is one descriptor lookup per request: each snapshot reads only the selected Run's
+`progress.json` through the shared state-path validator, responses name Run IDs and never a state
+path, and cross-Run access is limited to the Run ID list in `/health` and on the page. A descriptor
+that cannot be read, or whose `progress.json` is missing or corrupt, answers `503` with
+`Snapshot unavailable` and a Run list entry marked unavailable; the descriptor is never deleted and
+never repaired, and an unknown Run ID answers `404`. The page keeps the Run list when one Run is
+unavailable instead of silently showing another Run's data. The service keeps no per-Run state, so
+it is restartable: `progress.json` remains the source of truth and an outage is only a gap.
+
+**Security boundary.** The service binds `127.0.0.1` (IPv4) only and never a wildcard or IPv6
+address; every route is GET only and any other method answers `405` with `Allow: GET`, including
+`POST` to a top-level form. Every response, errors included, carries
+`Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`. The page loads no external asset; only
+same-origin JSON is fetched. The `Host` header must be `localhost` or `127.0.0.1`, optionally with
+the serving port, otherwise the request is refused with `403` before routing — that is the
+DNS-rebinding guard, so a rebound page cannot read the dashboard. The service reads only registered
+`state_path`s: it never maps a request path to a file, never serves file contents, never accepts a
+path as input, and path traversal, symlinked state paths and repository ancestors are refused by the
+shared validator. `$ORCA_PROGRESS_HOME` stays `0700` and descriptors carry no credentials. This is a
+single-user, local-trust service: it has no authentication and must not be exposed or forwarded.
+
+**Compatibility and fallback.** An old service without `/health` is legacy: never register with it,
+never kill it. Any `serve --state` fallback (lock timeout, legacy/incompatible/hung service, viewer
+failure, DEMO) is unregistered, reports `degraded: true` with a `reason`, and is exempt from the
+singleton invariant. `serve --state` remains for DEMO, tests and single-Run use and never writes
+`server.json`.
+
+**Exit codes and budget.** With `--json`, `open` exits `0` on success and on an intentional
+degradation (including a viewer that cannot start) and `1` on caller input; without `--json` the
+legacy codes remain and a viewer that cannot start exits `1`. `open` is not on the dispatch critical
+path: call it after the dispatch decision or as a best-effort post-step with a 15 s budget and
+continue on timeout. Every registry or startup failure records a ledger gap and never blocks
+dispatch; no path holds the startup lock while waiting for an Orca call, and `open` makes no Orca
+call at all.
+
+## Fixed dispatch order and record failures
+
+Every dispatch follows one fixed order, and no step skips a durable predecessor:
+
+1. write the preflight receipt; a failed or blocking preflight prevents the dispatch;
+2. write the ledger intent; a failed intent write prevents the call;
+3. execute `worker-start --retry-request <request_id>`;
+4. write the result with the raw receipt summary and an evidence reference; a failed result write
+   preserves the raw receipt in the evidence directory, records a ledger gap and never replays the
+   action;
+5. write progress best-effort; a failed progress write records a ledger gap and dispatch continues,
+   and the next checkpoint retries with the same event ID and backfills a missing worker row from
+   the ledger (dispatch id, attempt, worktree);
+6. run the post-receipt checks (`turnStart`, isolation, inbox) and record an observation. A failed
+   post-receipt check is evidence, not a reason to dispatch again.
+
+A lost `worker-start` response is reconciled from authority, never re-dispatched: a `completed`
+request key replays its recorded outcome, and `absent` is not proof that nothing ran. Missing intent
+means no second dispatch. The same intent and request-id discipline applies to send, reply, ack,
+stop, abandon, retain and release; `references/ledger.md` holds the full action matrix.
+
+Attempt mapping: use the Orca receipt's `attempt` when present. When it is absent, record
+`attempt_source: local` in the ledger result detail and exclude the local count from authoritative
+reconciliation. Convert camelCase receipt fields to snake_case on write and preserve the raw receipt
+in `detail.raw_receipt`; never assert an unverified receipt field as a stable contract.
+
+Record-failure semantics follow one rule: **a record that gates a side effect blocks the side
+effect; a record that describes an outcome never blocks orchestration and is repaired later.** A
+progress write is the second kind — its failure is always a gap, never a dispatch failure — while a
+failed intent, preflight receipt, acceptance or closeout is a hard stop for the action it protects.
+
+Two hard rules:
+
+1. **Write the intent before the action.** The intent carries the `request_id`, action, `run_id`,
+   task/dispatch/attempt when known, target, expected effect, timestamp and actor.
+2. **When uncertain, read authority before deciding.** `request-show` `absent` is not "did not
+   happen"; only positive absence in authority permits the "not executed" judgment.
+
+Worker self-report is enabled only when the spec explicitly carries PROGRESS/STATE paths. A
+`source=worker` write is never acceptance evidence; the coordinator owns acceptance records.
 
 ## Workflow ownership
 
@@ -219,8 +400,10 @@ the last valid snapshot with a visible error and its load time; it never substit
 
 The snapshot is fsynced, replaced atomically, and its directory fsynced. A crash before replace leaves
 the old valid snapshot and perhaps an ignored `.progress-*` temporary file; a crash after replace
-leaves the new snapshot, whose stable event ID makes retries safe. Lock acquisition times out after two seconds with a warning, so a contended recorder cannot
-indefinitely hold the coordinator turn. Retry later with the same event ID. Locks release on process exit.
+leaves the new snapshot, whose stable event ID makes retries safe. Lock acquisition times out after
+two seconds (`--lock-timeout`, a configurable default) with a warning, so a contended recorder
+cannot indefinitely hold the coordinator turn; with `--json` this is `degraded/lock_busy` and exits
+`0`. Retry later with the same event ID. Locks release on process exit.
 Do not delete an active lock file or run an automatic repair. A corrupt/unsupported snapshot fails
 closed without overwrite: preserve it, restore a known-good audit backup into a separate external
 directory and reconcile subsequent facts explicitly. No migration, truncation or guessed reconstruction.

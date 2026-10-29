@@ -2,6 +2,16 @@
 
 **什么时候读**：票据收尾、要按票型选门禁并执行验收时；以及合并项目 PR、结算 worker 生命周期时。
 
+## 目录
+
+- [按票型选门禁](#按票型选门禁)
+- [G-impl — 实施票](#g-impl--实施票)
+- [G-merge — 项目 PR 的门感知合并门禁](#g-merge--项目-pr-的门感知合并门禁)
+- [§6.5 合并执行与收尾](#65-合并执行与收尾)
+- [§6.6 验收记录与四级状态](#66-验收记录与四级状态)
+- [§6.7 收尾：清单、单向门 pending 与 release 前置](#67-收尾清单单向门-pending-与-release-前置)
+- [Worker 生命周期与打回](#worker-生命周期与打回)
+
 ## 6. 门禁验收
 
 coordinator 自行核验可观察结果与证据，失败就列明缺项打回。UI / 运行时改动要在隔离数据
@@ -96,6 +106,120 @@ CI；仓库没有可用 CI 时，才在本地跑一次等价的全量门禁作�
 `git merge-base --is-ancestor <merge_sha> HEAD` 核对，记录本地 HEAD。
 条件不满足时保留现场，报告“远端已合并，本地同步阻塞”，暂停后续合并；不自动 stash、
 reset、checkout 或创建本地 merge commit。网络错误查明后可重试一次。
+
+### §6.6 验收记录与四级状态
+
+门禁结论要么持久落盘，要么等于没发生。在 release worker 或告诉任何人门禁通过之前，先把它记成
+台账 `kind: acceptance` 记录；写入失败就报告为写入失败，绝不当作通过，并用同一个 `record_id`
+重试。
+
+```bash
+ACCEPTANCE="$SKILLS_ROOT/orchestra-auto/scripts/acceptance.py"
+python3 "$ACCEPTANCE" record --run-id "$RUN" --record "$ACCEPTANCE_JSON"
+python3 "$ACCEPTANCE" show --run-id "$RUN" --ticket 39
+```
+
+每个 PR 一条记录，携带 `ticket`、`gate`、`attempt`、`accepted_sha`、`accepted_at`、
+`pr {number, head_at_acceptance, base}`、`checks [{name, command, result, evidence_ref}]`、
+`review {axis[], result, evidence_ref}`、四个 `levels`、`decided_by`（`coordinator` 或
+`human`）、`decided_at` 与 `answer_location`。`validate(record)` 拒绝任何为 `true` 却没有
+`evidence_ref` 的级别；CLI 先校验再写入，拒绝时以非零退出并输出错误清单。加
+`--authority FILE` 时会再用记录的 PR host/tracker/git 读取结果交叉核对已声明的级别。
+
+**最低证据**：缺少证据的声明是打回，不是细节。
+
+| 声明 | 证据 |
+| --- | --- |
+| 合并 | PR host 的 `MERGED`、merge SHA，以及 `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| tracker 关闭 | tracker 读回为 `closed`，并带读回时间 |
+| 启动 | `turnStart: observed`，或该 attempt 的产物 / 状态投影引用 |
+| 测试 | 命令、结果与日志引用。`grep` 只证明字符串存在，绝不等于跑过测试 |
+| review | 两个轴（`standards`、`spec`）与 review 引用；豁免要在 spec **和** Answer 里都写明理由 |
+
+`worker_done` 只证明结算。它既不是启动证据，也绝不产生验收：凭它把某级置为 `true` 会被拒绝。
+
+**四级状态**：`implemented`、`integrated`、`merged`、`tracker_closed` 是四个独立的声明，按 PR
+分别记录。票级级别只有在**每个**关联 PR 记录都支持时才为真——一张票可以合理地跨多个 PR，任何一个
+PR 弱就拉低票级，不能被平均掉。同一 PR 的两条记录互相矛盾时标为 `divergent`，该 PR 不声明任何
+级别。`never_merge` 是 merged 级的终态，归人类决定：`{"value": false, "terminal":
+"never_merge", "decided_by": "human"}` 并附理由，spike 才不会再显得永远未完成。revert 或
+reopen **追加** observation（`acceptance.py observe`），把受影响级别置 false，并把原证据保留为
+历史；任何东西都不被覆盖。
+
+**pending 而非冻结**：issue #20 里关于四级的问题仍未定。把它们记为台账 `pending` 项
+（`acceptance.py open-questions`）并附证据，受影响语义保持 `provisional`，票据无需等人类回复即可
+收尾。后来的人类决定追加 observation（`resolve-question`），绝不改写已有记录。
+
+### §6.7 收尾：清单、单向门 pending 与 release 前置
+
+收尾是对账，不是凭记忆。`scripts/closeout.py` 从权威推导：`plan(facts)` 是对权威事实的纯
+规划函数，`reconcile` 通过适配器读权威并持久化一条 `kind: closeout` 台账记录。存储用
+`ledger.py`，验收 schema 用 `acceptance.py`，release 判定消费 `health.authorize_release`——
+三者都不在这里重写。
+
+```bash
+CLOSEOUT="$SKILLS_ROOT/orchestra-auto/scripts/closeout.py"
+python3 "$CLOSEOUT" plan --run-id "$RUN" --facts facts.json
+python3 "$CLOSEOUT" reconcile --run-id "$RUN" --authority recorded.json \
+  --answer-location "$ANSWER"
+python3 "$CLOSEOUT" show --run-id "$RUN"
+```
+
+**十行清单，每行标注权威、可重复性与动作。**
+
+| # | 事实 | 权威 | 可重复 | 动作 |
+| --- | --- | --- | --- | --- |
+| 1 | 每个 PR 的 accepted SHA | 台账 acceptance 记录 | **否** | 必须在验收时持久化；事后无法重建 |
+| 2 | PR 的 `MERGED`、base 与 merge SHA | PR host API | 是 | 读回并写 observation |
+| 3 | merge 覆盖 accepted head | `git merge-base --is-ancestor` | 是 | 失败 → divergent / 上报 |
+| 4 | main 含该 merge | `git rev-parse` / ancestry | 是 | 记录 ancestry 结果 |
+| 5 | 本地 main 已同步 | `git status` / `rev-parse` / upstream，ff-only | 是 | 阻塞 → 暂停后续合并 |
+| 6 | 每张票已集成 | 集成分支 ancestry / PR `Closes` | 是 | 逐票记录结果 |
+| 7 | tracker 状态 | tracker 读回 | 是 | 记录关闭或重开 |
+| 8 | worker 生命周期 | `worker-show` / `worker-list` / release 回执 | 是 | 枚举 reclaimable |
+| 9 | dashboard 投影 | `progress.json` | 是（非权威） | 只记 gap，绝不当证据 |
+| 10 | 单向门 pending | 台账 `pending` | 是 | 到期后再次检查 |
+
+只有第 1 行不可重复，规划结果用 `non_repeatable` 标出。读不到的权威是 `unknown`，绝不静默
+当作通过；读不到的权威与失败检查一样阻断宣告。本地 main 未同步时第 5 行**阻断后续合并**
+（`merge_blocked`），而不只是拉低清单。第 8 行枚举所有 reclaimable 或 `release_unknown`
+的 worker，并列出需要先用 `worker-show` 读回的那些。第 9 行只记 gap：`progress.json` 是投影，
+看板故障或投影陈旧既不会阻断收尾，也绝不会被当作证据引用。
+
+**收尾是某一时点的对账。** 十行合起来是一个快照；与上一次快照不同，本身不是需要修复的失败。
+
+**单向门 pending 无需 coordinator turn 即可见。** 需要人类合并时记录一条台账 `pending` 项
+（`pending_type: human_merge`、`pr`、`accepted_sha`、`owner`、`condition`、`check_after`）。
+无需任何 turn 就能看到它：`ledger.py show --run-id "$RUN" --kind pending` 与 `ledger.py
+summary` 都会列出，看板显示“等待人类合并”。下一次 turn 再对账 PR host、merge SHA、main 同步
+与 tracker；四项全为真时 `reconcile` 才追加一条解决 observation，并停止阻断。检查仍为假的
+pending 项保持可见，并带着失败的那一项检查。第 10 行只对**单向门** pending 项设门：其他
+pending 项（例如四级状态的开放问题）仍在台账可见，但不阻断宣告，因为规格允许它们在无人类回复时
+收尾。
+
+**release 前置。** release 需要已结算的 Dispatch——不是 `ready`，也不是健康状态——以及持久化的
+收尾记录：成功时至少要有验收记录与 dispatch → task → attempt → worktree 映射，失败时至少要有失败
+分类及其证据引用。`release_unknown` 先读 `worker-show` 与 `worker-list`；无论健康状态如何，绝
+不 release 未结算的 worker。写不成的收尾记录**不**算通过：release 与门禁宣告都等写入修复，
+未持久的记录留在 `closeout-pending/` 以便重试。
+
+**崩溃恢复。** 顺序是 Orca → 台账 → 快照；投影只是线索，不是权威。合并与 tracker 对账之间
+崩溃时，用第 2、3、4、7 行修复：PR host 仍报告 `MERGED` 与 merge SHA，git 仍能证明 ancestry
+与包含关系，tracker 自己的读回说明票是否关闭。缺失的事实以失败收尾记录下来，带分类与证据引用，
+而不是凭记忆补上。
+
+**revert 与 reopen 消费 T09 的 observation。** revert 或 reopen 只追加一次 observation
+（`acceptance.py observe`）；收尾消费它并拉低第 2/3/4 行（revert）或第 7 行（reopen）。收尾绝不
+为同一事实再追加第二条 observation。
+
+**tracker 关闭要读回。** 合并关键词关票时，收尾读回状态并记录。没有关闭时，coordinator 只在既有
+授权内关闭；例外上报，而不是把自己变成不受限的 tracker 写者。
+
+**记录带 Answer 位置。** 每条收尾记录都存 `answer_location`（第 1 行还存每条验收记录自己的位置），
+后续 attempt 直接找到 Answer，而不是重新推导。
+
+**release 重放安全按版本范围记录。** 当前 CLI 帮助之外的 release 重放语义仍是假设。收尾记录验证
+来源、验证时间与该版本范围；未验证的 release 字段绝不写成稳定契约。
 
 ### Worker 生命周期与打回
 

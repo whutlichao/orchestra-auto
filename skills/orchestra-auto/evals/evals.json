@@ -836,6 +836,185 @@
           "text": "Follows the user's or repository's explicit rule when one requires the fact in the repository"
         }
       ]
+    },
+    {
+      "id": 31,
+      "name": "crash-window-reconciliation",
+      "prompt": "You are coordinating an Orca orchestration and the process died in the middle of a `worker-start`. The ledger holds an intent for that dispatch and nothing else. You run `ledger reconcile` against the recorded authority.\n\nOutput only:\n1. W1_CLASS: the classification for the window before the action\n2. W2_CLASSES: the classifications possible after the action\n3. W3_CLASS: the classification when a receipt or an authority source is unreadable\n4. ACTIONS: what reconciliation may append, and what it may never do\n5. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "W1 is `orphan_intent`: the intent is durable, there is no receipt and the authority shows no effect, so the probe decides before anything is repeated. W2 is any of `matched`, `divergent` or `orphan_effect`, because a receipt or a visible authority effect exists. W3 is `unknown`: a receipt or an authority source could not be read, so the classification says so instead of guessing. Reconciliation may append a late result or observation, a gap, a projection update, a divergence marker, a pending record and one closeout; it never merges, closes a ticket, or stops, releases or retries a worker. Only a replay with the same request id is sanctioned; a merge, a tracker close, an unproven retry and an unsettled release are decisions for the coordinator.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "w1_is_orphan_intent",
+          "text": "Classifies the pre-action window as orphan_intent: durable intent, no receipt, no authority effect"
+        },
+        {
+          "name": "w2_has_all_three_outcomes",
+          "text": "Names matched, divergent and orphan_effect as the post-action classifications"
+        },
+        {
+          "name": "w3_is_unknown",
+          "text": "Classifies an unreadable receipt or authority source as unknown rather than success or failure"
+        },
+        {
+          "name": "no_auto_retry_of_destructive_actions",
+          "text": "Does not auto-merge, auto-close, or auto-release from reconciliation; those are decisions"
+        },
+        {
+          "name": "repairs_are_bounded",
+          "text": "Allows only the recorded repairs plus a same-request-id replay, and names the one closeout"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "name": "reinstall-with-unacked-batches",
+      "prompt": "A Run's inbox loop was uninstalled after a timeout. Two delivery batches are saved on disk: an older normal batch whose ack receipt is `failed`, and a newer heartbeat-only batch. You install the loop again.\n\nOutput only:\n1. WAKE: whether the install wakes you, and for which batch\n2. ACK: how each batch is acknowledged, if at all\n3. SECOND_INSTALL: what happens on the install after that\n4. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "The install reconciles saved deliveries against successful receipts and wakes exactly once, for the oldest batch that was never announced, printing one machine-readable line with `reason=delivery`; it persists `reconciled_delivery_id` so the fact is not lost. A failed ack receipt leaves that batch unacked: retry the ack with the same request id and keep the delivery file, never record it as a success. Only a batch whose every message is a heartbeat is auto-acknowledged, so the heartbeat-only batch is acked locally without a wake. The second install stays quiet because `reconciled_delivery_id` records the first reconciliation.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "one_wake_for_oldest_unannounced",
+          "text": "Wakes exactly once, for the oldest saved batch that was never announced"
+        },
+        {
+          "name": "reconciled_id_persisted",
+          "text": "Persists reconciled_delivery_id so the reconciliation is not repeated"
+        },
+        {
+          "name": "failed_ack_stays_unacked",
+          "text": "Leaves a batch with a failed ack receipt unacked and retries the ack with the same request id"
+        },
+        {
+          "name": "second_install_quiet",
+          "text": "Does not wake again on the next install for an already reconciled batch"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "name": "concurrent-singleton-startup",
+      "prompt": "Two coordinator turns call the progress `open` command for two different Runs at the same moment for the same user account. No dashboard service is running yet.\n\nOutput only:\n1. SERVICES: how many services end up running\n2. WINNER: what the winning caller does\n3. LOSER: what the other caller does\n4. LOCK_TIMEOUT: what a startup-lock timeout means\n5. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "Exactly one service runs: the startup lock serializes starts, and a later caller that finds a healthy service registers with it instead of starting another. If the winner has not written `server.json` yet, the loser waits on the lock or retries the probe, adopts a healthy child recorded in `starting.json`, and removes `starting.json` only when the child is definitely dead. A startup-lock timeout is degraded: no second service is ever started, the caller falls back to `serve --state` and records a gap. No path holds the startup lock while waiting on an Orca call.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "one_service_only",
+          "text": "States that exactly one service runs for both Runs"
+        },
+        {
+          "name": "loser_registers_with_the_service",
+          "text": "Has the later caller register with the healthy service or adopt the recorded child"
+        },
+        {
+          "name": "lock_timeout_is_degraded",
+          "text": "Treats a startup-lock timeout as a degraded fallback, not a second start"
+        },
+        {
+          "name": "no_second_service_ever",
+          "text": "Says no path starts a second service"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "name": "old-or-incompatible-dashboard-fallback",
+      "prompt": "Before starting the dashboard you find `server.json` describing a running service. That service answers `GET /` but has no `/health`. A second, different host build answers `/health` with `protocol_version: 1` while your client requires `2`.\n\nOutput only:\n1. LEGACY: what you do with a service that has no `/health`\n2. INCOMPATIBLE: what you do with a service below the client minimum\n3. RESULT: how you continue, and what you record\n4. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "Both cases fall back and neither service is killed or deleted. A legacy service without `/health` is never registered with; an incompatible `protocol_version` below the client minimum is also left running. The caller falls back to `serve --state`, which is unregistered, reports `degraded: true` with a `reason`, is exempt from the singleton invariant, and never writes `server.json`. A ledger gap is recorded, orchestration continues, and the user is told to stop the old service.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "legacy_never_registered",
+          "text": "Never registers with a service that has no /health"
+        },
+        {
+          "name": "never_kill_or_delete",
+          "text": "Neither kills nor deletes the legacy or incompatible service"
+        },
+        {
+          "name": "fallback_is_degraded_with_reason",
+          "text": "Falls back to serve --state with degraded: true and a reason, unregistered"
+        },
+        {
+          "name": "gap_recorded_and_dispatch_continues",
+          "text": "Records a ledger gap and tells the user to stop the old service, without blocking dispatch"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "name": "dashboard-failure-does-not-block-dispatch",
+      "prompt": "At the pre-dispatch checkpoint the progress write fails with a lock timeout, and the `open` command does not return within its budget. The preflight receipt is already green.\n\nOutput only:\n1. DISPATCH: whether the dispatch proceeds\n2. RECORD: what you record about the failure\n3. RETRY: what happens to the failed write\n4. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "The dispatch proceeds. A failed progress write records a ledger gap and dispatch continues on the same path; `open` is a best-effort post-step with a 15 s budget and is never on the dispatch critical path. Dispatch never branches on the progress exit codes, and a lock timeout is degraded rather than a caller error. The next checkpoint retries the failed write with the same event id.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "dispatch_continues",
+          "text": "Proceeds with the dispatch despite the progress and open failures"
+        },
+        {
+          "name": "gap_recorded",
+          "text": "Records a ledger gap for the failed write"
+        },
+        {
+          "name": "no_branch_on_exit_code",
+          "text": "Does not branch dispatch control flow on progress exit codes"
+        },
+        {
+          "name": "retry_same_event_id",
+          "text": "Retries the failed write with the same event id at the next checkpoint"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "name": "revert-reopen-closeout",
+      "prompt": "A merged PR is reverted two days after acceptance, and the ticket that the merge keyword closed is reopened. You now run the closeout.\n\nOutput only:\n1. OBSERVATION: which observations are appended, and how many\n2. ROWS: which checklist rows the closeout lowers\n3. SECOND_OBSERVATION: whether the closeout appends another one\n4. LEVELS: which acceptance levels the revert and reopen affect\n5. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "A revert and a reopen each append one observation through `acceptance.py observe`. The closeout consumes those observations and lowers rows 2, 3 and 4 for a revert and row 7 for a reopen; it never appends a second observation for the same fact. The four levels stay distinct — implemented, integrated, merged and tracker-closed — and the revert or reopen lowers the claim rather than leaving an old, higher level standing. A `never_merge` terminal state is unchanged by either.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "observation_appended_once",
+          "text": "Appends exactly one observation per fact (revert, reopen) before the closeout"
+        },
+        {
+          "name": "closeout_consumes_observation",
+          "text": "Has the closeout consume the recorded observation rather than appending its own"
+        },
+        {
+          "name": "rows_lowered",
+          "text": "Lowers rows 2/3/4 on a revert and row 7 on a reopen"
+        },
+        {
+          "name": "four_levels_stay_distinct",
+          "text": "Keeps implemented, integrated, merged and tracker-closed as separate levels"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "name": "binding-loss",
+      "prompt": "A worker reports `outcome: run_binding_lost`. `worker-show` returns no verified owner for the Run, and the inbox loop reports `consumer_fenced`.\n\nOutput only:\n1. HEALTH: the health state and reason you record\n2. NEXT: what you do next\n3. NEW_RUN: whether you create a new Run\n4. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "`consumer_fenced` is `blocked` with `reason: binding_loss`, escalated while ownership is `unproven`. A `run_binding_lost` without a verified owner is `unknown` with `reason: ownership_unobserved`, and it is escalated rather than retried. A binding loss is never a retry trigger, and no block is an observation about the Run. You re-establish the binding, not the Run: never create a new Run unconditionally, and read the existing handle first.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "fenced_is_blocked_and_escalated",
+          "text": "Records consumer_fenced as blocked/binding_loss and escalates while ownership is unproven"
+        },
+        {
+          "name": "unverified_owner_is_unknown",
+          "text": "Records run_binding_lost without a verified owner as unknown with ownership_unobserved"
+        },
+        {
+          "name": "no_new_run_unconditionally",
+          "text": "Does not create a new Run unconditionally; re-establishes the binding"
+        },
+        {
+          "name": "binding_loss_not_a_retry_trigger",
+          "text": "Treats binding loss as an observation, never as a reason to retry an action"
+        }
+      ]
     }
   ]
 }
