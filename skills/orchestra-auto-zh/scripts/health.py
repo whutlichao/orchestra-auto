@@ -950,6 +950,12 @@ def evaluate_to_ledger(run_id, snapshot, config=None, record_id=None,
     ledger = ledger_module or load_ledger()
     previous = _previous_health(ledger, run_id, ledger_home)
     previous_state = previous["detail"].get("health_state") if previous else None
+    if previous_state not in STATES:
+        # A health record from another producer may not carry a readable state. It is not
+        # evidence of a transition, so this evaluation starts a fresh chain instead of
+        # failing on an unreadable predecessor.
+        previous = None
+        previous_state = None
     entered_at = None
     transition_result = None
     if previous is not None:

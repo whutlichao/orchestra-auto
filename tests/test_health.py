@@ -1157,6 +1157,17 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
             self.health.evaluate_to_ledger(RUN_ID, snapshot, ledger_module=ledger)
         self.assertEqual(ledger.appended, [], "nothing was written")
 
+    def test_an_unreadable_previous_health_record_does_not_break_the_evaluation(self):
+        class ForeignLedger(self.FakeLedger):
+            def read(self, run_id, filters=None, home=None):
+                return [{"kind": "health", "detail": {"something": "else"}}]
+
+        payload = self.health.evaluate_to_ledger(
+            RUN_ID, self.healthy_signals(run_id=RUN_ID), ledger_module=ForeignLedger())
+        self.assertEqual(payload["state"], "healthy")
+        self.assertIsNone(payload["previous_state"])
+        self.assertIsNone(payload["transition"])
+
     def test_a_snapshot_from_another_run_is_refused(self):
         snapshot = self.healthy_signals(run_id="run_other")
         with self.assertRaises(ValueError):
