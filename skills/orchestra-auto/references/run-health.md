@@ -54,7 +54,11 @@ Three rules in that table are easy to get wrong:
 - **`observation.agentWait`.** A present `null` is a positive observation: Orca looked and found
   no wait. An object means the worker is waiting on a decision, which is `blocked`. An **absent**
   field means Orca never looked, which is `unknown`. A waiting worker is healthy — resting after
-  a wake is not failure, and `ready` is not a started turn.
+  a wake is not failure, and `ready` is not a started turn. In a **signals snapshot** the same
+  fact is the key `worker_show.agent_wait`: `null`, an object, or absent, with those meanings.
+  The snapshot's other keys are `worker_show.status` (and `worker_done`), `heartbeat.cadence_seconds`
+  with `last_heartbeat_at`, and `observed_at` per block — the whole shape is the local contract
+  the CLI reads, never a claim about a live Orca receipt.
 
 `progress.json` may project `run.health`, but the ledger holds health authority. A stale
 projection is recorded as a gap and never raises the state.

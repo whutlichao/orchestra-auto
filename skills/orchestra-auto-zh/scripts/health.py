@@ -116,6 +116,10 @@ PENDING_CLASSES = (
     "decision", "one_way_door", "escalation", "approval", "head_of_line", "pending",
 )
 
+#: The ledger caps one record at 64 KiB; the health record embeds the snapshot, so the
+#: snapshot is bounded well below that to leave room for the findings.
+MAX_SNAPSHOT_BYTES = 32 * 1024
+
 RFC3339_UTC = "%Y-%m-%dT%H:%M:%SZ"
 
 #: Health records are retried from memory when the ledger write fails; the coordinator
@@ -851,11 +855,16 @@ def _evidence_refs(result):
 
 def health_record(run_id, snapshot, result, record_id=None, decided_by="coordinator",
                   entered_at=None, previous_state=None, transition_result=None):
-    """Build the ``kind: health`` schema-v1 record for one evaluation."""
+    """Build the ``kind: health`` schema-v1 record for one evaluation.
+
+    ``observed_at`` is when this evaluation ran; ``detail.entered_at`` is when the recorded
+    state began, which stays put while the state does not change.
+    """
     observed_at = _parse(snapshot.get("observed_at"), "observed_at")
     if observed_at is None:
         _invalid("the signals snapshot needs an observed_at instant")
-    instant = entered_at or observed_at.strftime(RFC3339_UTC)
+    moment = observed_at.strftime(RFC3339_UTC)
+    instant = entered_at or moment
     decider = decided_by if decided_by in ("human", "coordinator") else "coordinator"
     refs = _evidence_refs(result)
     detail = {
@@ -882,7 +891,7 @@ def health_record(run_id, snapshot, result, record_id=None, decided_by="coordina
         "idempotency": "none",
         "state": "observed",
         "evidence_ref": refs[0] if refs else "",
-        "observed_at": instant,
+        "observed_at": moment,
         "actor": decider,
         "detail": detail,
     }
@@ -936,6 +945,8 @@ def evaluate_to_ledger(run_id, snapshot, config=None, record_id=None,
     if snapshot.get("run_id") is not None and snapshot["run_id"] != run_id:
         _invalid("the signals snapshot belongs to another run")
     result = evaluate(snapshot, config)
+    if len(json.dumps(snapshot, ensure_ascii=False)) > MAX_SNAPSHOT_BYTES:
+        _invalid("the signals snapshot is too large to record")
     ledger = ledger_module or load_ledger()
     previous = _previous_health(ledger, run_id, ledger_home)
     previous_state = previous["detail"].get("health_state") if previous else None

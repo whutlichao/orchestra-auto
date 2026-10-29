@@ -935,6 +935,42 @@ class CliTests(SnapshotMixin, unittest.TestCase):
         self.assertEqual(printed["entered_at"], at(60),
                          "the state was entered earlier and the record must say so")
 
+    def test_the_windows_are_configurable_through_the_cli(self):
+        snapshot = self.healthy_signals(
+            run_id=RUN_ID,
+            turnStart={"status": "unobserved", "dispatched_at": at(2)},
+        )
+        signals = self.write_snapshot(snapshot)
+        defaults = self.cli(["evaluate", "--run-id", RUN_ID, "--signals", str(signals)])
+        self.assertEqual(defaults.returncode, 0, defaults.stderr)
+        self.assertEqual(json.loads(defaults.stdout)["next_action"], "collect_evidence")
+
+        config = self.write_snapshot(
+            {"turn_start_window_seconds": 1, "turn_start_escalate_seconds": 2}, "config.json"
+        )
+        injected = self.cli(
+            ["evaluate", "--run-id", RUN_ID, "--signals", str(signals),
+             "--config", str(config)]
+        )
+        self.assertEqual(injected.returncode, 0, injected.stderr)
+        self.assertEqual(
+            json.loads(injected.stdout)["next_action"], "escalate",
+            "the 120 s / 10 min values are defaults, not hardcoded constants",
+        )
+
+    def test_the_record_distinguishes_the_evaluation_instant_from_when_the_state_began(self):
+        degraded_a = self.healthy_signals(
+            run_id=RUN_ID, observed_at=at(60), watch={"enabled": False})
+        degraded_b = self.healthy_signals(run_id=RUN_ID, observed_at=NOW,
+                                          watch={"enabled": False})
+        self.cli(["evaluate", "--run-id", RUN_ID, "--signals",
+                  str(self.write_snapshot(degraded_a, "a.json"))])
+        self.cli(["evaluate", "--run-id", RUN_ID, "--signals",
+                  str(self.write_snapshot(degraded_b, "b.json"))])
+        latest = self.ledger_records()[-1]
+        self.assertEqual(latest["observed_at"], NOW)
+        self.assertEqual(latest["detail"]["entered_at"], at(60))
+
     def test_a_failed_health_record_write_keeps_the_evaluation_and_retries(self):
         snapshot = self.healthy_signals(run_id=RUN_ID)
         path = self.write_snapshot(snapshot)
@@ -1112,6 +1148,14 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
         record = ledger.appended[-1]
         self.assertEqual(record["detail"]["entered_at"], NOW)
         self.assertEqual(record["detail"]["previous_state"], "healthy")
+
+    def test_a_snapshot_too_large_to_record_is_refused_before_the_write(self):
+        ledger = self.FakeLedger()
+        snapshot = self.healthy_signals(run_id=RUN_ID)
+        snapshot["nested_roster"] = {"applicable": True, "report": {"blob": "x" * 40000}}
+        with self.assertRaises(ValueError):
+            self.health.evaluate_to_ledger(RUN_ID, snapshot, ledger_module=ledger)
+        self.assertEqual(ledger.appended, [], "nothing was written")
 
     def test_a_snapshot_from_another_run_is_refused(self):
         snapshot = self.healthy_signals(run_id="run_other")

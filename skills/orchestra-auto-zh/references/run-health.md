@@ -48,7 +48,10 @@ JSON 对象；写明数值是为了让人能推理，不是让测试依赖某个
   `worker-read`、状态投影、产物），不要判派活失败；超过窗口再升级。
 - **`observation.agentWait`**。字段存在且为 `null` 是正向观测：Orca 查过，没有等待。对象表示
   worker 在等决策，即 `blocked`。字段**缺失**表示 Orca 从未查过，是 `unknown`。等待中的
-  worker 是健康的——唤醒后休息不是失败，`ready` 也不是已开始的回合。
+  worker 是健康的——唤醒后休息不是失败，`ready` 也不是已开始的回合。在 **signals 快照**里同一
+  事实是 `worker_show.agent_wait` 键：`null`、对象或缺失，含义同上。快照的其余键是
+  `worker_show.status`（及 `worker_done`）、`heartbeat.cadence_seconds` 与 `last_heartbeat_at`、
+  以及每个块的 `observed_at`——整个形状是 CLI 读取的本地契约，不是对实时 Orca 回执的断言。
 
 `progress.json` 可以投影 `run.health`，但健康权威在台账。投影陈旧只记一个 gap，从不抬高状态。
 
