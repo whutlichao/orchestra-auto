@@ -28,6 +28,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAMES = ("orchestra-auto", "orchestra-auto-zh")
 SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 
+#: Every script or static asset that ships in a bundle. The byte-parity and compile checks
+#: iterate this list, and a completeness test fails when a shipped file is missing from it, so
+#: a new script cannot land with a green suite and no coverage.
+SCRIPT_FILES = (
+    "inbox-loop.py",
+    "inbox-loop.sh",
+    "ledger.py",
+    "progress-demo.py",
+    "progress.html",
+    "progress.py",
+)
+PYTHON_SCRIPTS = ("inbox-loop.py", "ledger.py", "progress-demo.py", "progress.py")
+
 REFERENCE_FILES = (
     "dispatch-loop.md",
     "dispatch-preflight.md",
@@ -36,6 +49,7 @@ REFERENCE_FILES = (
     "gate-acceptance.md",
     "gates-docs-planning.md",
     "inbox-and-waiting.md",
+    "ledger.md",
     "long-horizon-tickets.md",
     "reformat-noise-recovery.md",
     "reply-protocol.md",
@@ -169,7 +183,7 @@ class StructureTests(unittest.TestCase):
             self.assertEqual(present, sorted(REFERENCE_FILES), f"{name} references")
 
     def test_scripts_match_across_variants(self):
-        for filename in ("inbox-loop.py", "inbox-loop.sh", "progress.py", "progress-demo.py", "progress.html"):
+        for filename in SCRIPT_FILES:
             english = (SKILL_DIRS[0] / "scripts" / filename).read_bytes()
             chinese = (SKILL_DIRS[1] / "scripts" / filename).read_bytes()
             self.assertEqual(english, chinese, f"{filename} differs between variants")
@@ -945,14 +959,27 @@ class EvalMetadataTests(unittest.TestCase):
 
 class ScriptTests(unittest.TestCase):
     def test_python_scripts_compile(self):
-        for path in REPO_ROOT.rglob("inbox-loop.py"):
-            if any(part in IGNORED_DIRECTORIES for part in path.parts):
-                continue
-            result = subprocess.run(
-                [sys.executable, "-m", "py_compile", str(path)],
-                capture_output=True, text=True,
+        for name in SKILL_NAMES:
+            for filename in PYTHON_SCRIPTS:
+                path = REPO_ROOT / "skills" / name / "scripts" / filename
+                result = subprocess.run(
+                    [sys.executable, "-m", "py_compile", str(path)],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
+
+    def test_every_shipped_script_is_registered(self):
+        """A script that is shipped but unregistered would pass the suite untested."""
+        for directory in SKILL_DIRS:
+            present = {
+                path.name for path in (directory / "scripts").iterdir()
+                if path.is_file() and path.name != ".DS_Store"
+            }
+            self.assertEqual(
+                present, set(SCRIPT_FILES),
+                f"{directory}: shipped scripts and SCRIPT_FILES disagree; register every "
+                "script in SCRIPT_FILES and PYTHON_SCRIPTS",
             )
-            self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
 
     def test_shell_scripts_pass_a_syntax_check(self):
         for path in REPO_ROOT.rglob("inbox-loop.sh"):
