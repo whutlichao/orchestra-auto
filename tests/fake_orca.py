@@ -16,6 +16,9 @@ tests need):
 * ``orchestration request-show --request <id>`` with fixture states
   ``completed`` / ``pending`` / ``absent``, or a scripted failure;
 * ``orchestration worker-show --dispatch <id>`` and ``orchestration task-list``;
+* the preflight probes ``status --json`` (app up) and ``agent hooks status --json``
+  (the current profile's ``result.settingsPath``), both scripted fixtures rather than
+  claims about a live Orca shape;
 * the mutation classes ``worker-start``, ``send``, ``reply`` (plus the other
   lifecycle verbs) so joinable-replay tests can observe that an action ran, in
   what order, and with which ``--retry-request`` key.
@@ -102,6 +105,18 @@ def flag(name, default=None):
         if index + 1 < len(argv):
             return argv[index + 1]
     return default
+
+if argv and argv[0] == "status":
+    response = CONFIG.get("status")
+    if isinstance(response, dict) and "fail" in response:
+        fail(response["fail"])
+    emit(response if response is not None else {"app": "up"})
+
+if argv[:3] == ["agent", "hooks", "status"]:
+    response = CONFIG.get("agent_hooks_status")
+    if isinstance(response, dict) and "fail" in response:
+        fail(response["fail"])
+    emit(response if response is not None else {"settingsPath": ""})
 
 if not argv or argv[0] != "orchestration":
     fail("unexpected command: " + " ".join(argv))
@@ -249,6 +264,8 @@ class FakeOrca:
         delay=0.0,
         check_keepalive=False,
         lock_probe=None,
+        status=None,
+        agent_hooks_status=None,
     ):
         self.directory = Path(directory)
         self.config = {
@@ -261,6 +278,11 @@ class FakeOrca:
             "fail": dict(fail or {}),
             "delay": delay,
             "check_keepalive": check_keepalive,
+            "status": dict(status) if isinstance(status, dict) else status,
+            "agent_hooks_status": (
+                dict(agent_hooks_status)
+                if isinstance(agent_hooks_status, dict) else agent_hooks_status
+            ),
         }
         self.lock_probe = Path(lock_probe) if lock_probe else None
         self.path = self.directory / "orca"

@@ -123,11 +123,14 @@ worktree 名派活时再取 slug。
 
 ### 4.0 派活前 preflight
 
-每个实际编排 Run 在首次派活前初始化进度记录并自动打开看板；按[进度看板](references/progress-dashboard.md)执行并在后续节点持续记录。启动或记录失败时警告并继续，不影响派活或唯一 inbox。纯问答和编辑本 skill 不启动。
+每个实际编排 Run 在首次派活前初始化进度记录并自动打开看板，按[进度看板](references/progress-dashboard.md)在后续节点持续记录；启动或记录失败时警告并继续，不影响派活或唯一 inbox。纯问答和编辑本 skill 不启动。
+
+每次派活前先用 `scripts/preflight.py check` 写下一份持久化的 ledger `kind: preflight` 回执。阻断项失败即拒绝派活，除非 override 记录了 `by` 与 `reason`；回执写不进去同样拒绝，且不运行 `worker-start`。
 
 [派活前检查](references/dispatch-preflight.md) 有三个检查点，只有第一个能阻止派活：
 **§4.0.1 派活前**（逐项打勾；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，
-以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据，以及长程 worker 的隔离报告）、
+以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据、review 豁免复核、
+看板回填/gap、inbox 健康，以及长程 worker 的隔离报告）、
 **§4.0.3 收尾时**（`worker_done` 之后、宣称门禁通过之前的格式化噪声）。启动证据与隔离报告
 是派活后的事实：它们不可能让 tick sheet 变红，因为 Dispatch 存在之前根本没有 worker 可观察。
 
