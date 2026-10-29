@@ -814,26 +814,26 @@
     },
     {
       "id": 30,
-      "name": "single-post-pr-backfill",
-      "prompt": "You are running orchestra-auto. A worker has pushed its code and opened the PR, and is about to record the PR number plus one CI reading in the ticket Answer.\n\nOutput only:\n1. COMMIT: how that bookkeeping is committed and pushed\n2. CI: who follows up this documentation change and the final CI\n3. WHY: one or two sentences\nDo not run commands.",
-      "expected_output": "The PR number and the CI reading are written once: a single post-PR backfill commit, never one commit and push per reading. That documentation-only commit is not CI-chased; the coordinator owns the final CI check at acceptance and merge. WHY: the PR number only exists after the PR is created, so a commit per reading only produces doc-only pushes and another full CI run.",
+      "name": "no-post-pr-backfill-commit",
+      "prompt": "You are running orchestra-auto. A worker has pushed its final code and opened the PR. The PR number, the PR body path and one CI reading are now known, and the ticket's Answer lives inside the repository.\n\nOutput only:\n1. COMMIT: whether the worker adds a commit to carry those facts\n2. LEDGER: where the worker records them\n3. CI: who follows up this change and the final CI\n4. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "The worker adds no commit: the deliverable files were final before the PR was created, so a commit carrying the PR number, the body path or the CI reading would push a tree identical to the accepted one — no information gained, one more full CI round. The facts go to GitHub and the run's out-of-repo ledger; the in-repo Answer reports what was delivered and the branch, and leaves acceptance to the coordinator. The final PR HEAD's CI remains the coordinator's check at acceptance and merge, and the worker does not push to chase it. When the user or the repository explicitly requires those facts inside the tree — a changelog entry naming the PR, a release manifest, a tracker field, an Answer that must name it — that rule wins.",
       "files": [],
       "assertions": [
         {
-          "name": "single_post_pr_commit",
-          "text": "Writes the PR number and the CI reading in one post-PR backfill commit"
+          "name": "no_post_pr_commit",
+          "text": "Adds no project commit to carry the PR number, body path or CI reading"
         },
         {
-          "name": "no_commit_per_reading",
-          "text": "Adds no commit or push for each individual CI reading"
-        },
-        {
-          "name": "docs_only_not_ci_chased",
-          "text": "Does not chase CI for the documentation-only backfill commit"
+          "name": "facts_recorded_out_of_repo",
+          "text": "Records the PR number, body path and CI reading in GitHub and the out-of-repo ledger, with the in-repo Answer reporting delivery and branch"
         },
         {
           "name": "coordinator_owns_final_ci",
-          "text": "Leaves the final CI check to the coordinator instead of pushing again for it"
+          "text": "Leaves the final PR HEAD's CI to the coordinator at acceptance and merge"
+        },
+        {
+          "name": "explicit_rule_overrides",
+          "text": "Follows the user's or repository's explicit rule when one requires the fact in the repository"
         }
       ]
     }

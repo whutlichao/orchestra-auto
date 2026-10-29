@@ -458,6 +458,17 @@ def squash(text):
     return " ".join(text.split())
 
 
+def compact(text):
+    """Drop whitespace entirely for phrase checks that must survive CJK line breaks.
+
+    ``squash`` keeps one space between words, which is right for an English phrase. A Chinese
+    sentence has no word boundary to wrap on, so a template that reflows mid-phrase breaks a
+    phrase check that kept the space; dropping whitespace on both sides of the comparison makes
+    the assertion depend on the wording and nothing else.
+    """
+    return "".join(text.split())
+
+
 def markdown_sections(text):
     """Split Markdown into ``(heading, body)`` pairs, ignoring '#' inside fenced code."""
     sections, current, fenced = [], None, False
@@ -518,35 +529,64 @@ class ContractRegressionTests(unittest.TestCase):
             self.assertNotIn("`state: ready` ≠ `turnStart`", entrypoint,
                              f"{name}: the duplicated ready rule came back")
 
-    def test_spec_contract_keeps_the_backfill_to_one_post_pr_commit(self):
-        """The PR number cannot ride the code commit, so bookkeeping gets exactly one commit.
+    def test_spec_contract_forbids_a_post_pr_backfill_commit(self):
+        """The PR number cannot ride the code commit, so bookkeeping leaves the repository.
 
-        A template that asks the worker to "write the PR number back into the Answer" without
-        bounding it invites one push per reading: the number exists only after the PR, and each
-        CI observation then becomes another documentation-only commit and another full CI run.
-        The rule is one post-PR commit carrying the number and the reading, no CI chase for
-        documentation-only commits, and a final CI owned by the coordinator.
+        A template that asks the worker to "write the PR number back into the Answer" invites
+        one push per reading: the number exists only after the PR, and each CI observation then
+        becomes another documentation-only commit and another full CI run. An earlier fix
+        bounded that to a single post-PR commit; this rule removes it — the number, the body path
+        and the reading live in GitHub and the out-of-repo ledger, and the final PR HEAD's CI
+        stays the coordinator's check. An explicit user or repository rule that needs the facts
+        in the tree still wins, so the template must say so.
+
+        The scenario that teaches the rule is checked alongside the template: a worker reads the
+        spec, but the next coordinator learns the rule from the scenario, so reverting either
+        one must fail here.
         """
-        expectations = {
+        contract = {
             "orchestra-auto": {
-                "required": ("single post-PR commit", "documentation-only commits are not CI-chased",
-                             "coordinator's to accept", "one post-PR backfill commit",
-                             "never a commit per reading"),
-                "forbidden": "write the PR number and body path back into the Answer",
+                "required": ("no project commit is added", "out-of-repo ledger",
+                             "coordinator's check before the merge", "follow that rule instead",
+                             "in-repo Answer therefore reports what was delivered",
+                             "explicitly requires those facts in the tree"),
+                "forbidden": ("post-PR backfill commit", "single post-PR commit"),
             },
             "orchestra-auto-zh": {
-                "required": ("PR 创建后一笔提交", "文档-only 提交不追 CI", "coordinator 验收",
-                             "唯一一笔回填提交", "不为回填追加提交"),
-                "forbidden": "PR 号及 body 路径回填 Answer",
+                "required": ("不为携带这些事实追加项目提交", "仓库外台账",
+                             "coordinator 在合并前验收", "以该规则为准",
+                             "仓库内 Answer 只记录交付了什么与所在分支",
+                             "明确要求把该事实写进仓库"),
+                "forbidden": ("唯一一笔回填提交", "PR 创建后一笔提交"),
             },
         }
-        for name, expected in expectations.items():
+        scenario = "no-post-pr-backfill-commit"
+        retired = "single-post-pr-backfill"
+        for name, expected in contract.items():
             _entrypoint, references = self.corpus(name)
-            text = squash(references["spec-contract.md"])
+            text = compact(references["spec-contract.md"])
             for phrase in expected["required"]:
-                self.assertIn(phrase, text, f"{name}: the backfill rule lost {phrase!r}")
-            self.assertNotIn(expected["forbidden"], text,
-                             f"{name}: the unbounded 'write it back' instruction came back")
+                self.assertIn(compact(phrase), text,
+                              f"{name}: the no-backfill rule lost {phrase!r}")
+            for phrase in expected["forbidden"]:
+                self.assertNotIn(compact(phrase), text,
+                                 f"{name}: the post-PR backfill instruction came back as {phrase!r}")
+
+            payload = json.loads((REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text())
+            names = [entry["name"] for entry in payload["evals"]]
+            self.assertIn(scenario, names, f"{name}: the eval teaching the no-backfill rule is gone")
+            self.assertNotIn(retired, names,
+                             f"{name}: the retired single-commit scenario came back")
+            teaching = next(entry for entry in payload["evals"] if entry["name"] == scenario)
+            for field in ("prompt", "expected_output"):
+                self.assertNotIn("backfill commit", teaching[field].lower(),
+                                 f"{name}: {scenario}'s {field} asks for a backfill commit")
+            self.assertEqual(
+                [assertion["name"] for assertion in teaching["assertions"]],
+                ["no_post_pr_commit", "facts_recorded_out_of_repo",
+                 "coordinator_owns_final_ci", "explicit_rule_overrides"],
+                f"{name}: {scenario} lost an assertion of the rule",
+            )
 
     def test_dispatch_preflight_separates_the_three_checkpoints(self):
         """A pre-dispatch fact and a post-dispatch fact must not share one gate.

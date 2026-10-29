@@ -35,10 +35,18 @@ documentation tickets against their own documentation gates:
    Heartbeat at the preamble's cadence; on ask timeout resume the same message ID — do not ask
    twice and do not decide on a human's behalf.
    Closing order: check follow-ups → write the Answer and evidence → commit, push and create or
-   update the PR for project changes → record the PR number and the CI reading once, in a single
-   post-PR commit; no additional commit per reading, and documentation-only commits are not
-   CI-chased — the final CI is the coordinator's to accept → send worker_done from your own
-   terminal using the live preamble's exact command → verify the success receipt → end the turn.
+   update the PR for project changes → record the PR number, the PR body path and the CI reading
+   for the PR head in GitHub and this run's out-of-repo ledger; no project commit is added to
+   carry those facts, and the deliverable files are already final before the PR is created →
+   send worker_done from your own terminal using the live preamble's exact command → verify the
+   success receipt → end the turn.
+   Those facts exist only after the PR does, so a commit to carry them can only be a second push
+   whose tree is identical to the accepted one — no information gained, one more full CI round.
+   The ticket's in-repo Answer therefore reports what was delivered and the branch it sits on; the
+   PR reference lives on GitHub and in the ledger. The final PR HEAD's CI remains the
+   coordinator's check before the merge, and the worker does not push to chase it. When the user
+   or the repository actually requires those facts inside the tree — a changelog entry naming the
+   PR, a release manifest, a tracker field, an Answer that must name it — follow that rule instead.
    worker_done must carry the real Task ID, Dispatch ID, an explicit succeeded/failed, and a
    three-sentence summary of changes, findings and what is left; files-modified/report-path only
    with real values. Failure must be reported too; a plain final is not a substitute.
@@ -66,7 +74,7 @@ Target: <files/modules>
 Change: <the concrete result to produce>
 Constraints: <boundaries not to cross; use deep-module vocabulary for terms>
 Ownership: <what this ticket may edit; the canonical ticket lives in the worktree and you own its status transitions and Answer appends>
-Observable acceptance: <the applicable test commands and observable results; red→green evidence for fixes; the two-axis code-review section when needed. When project files change: parse and use the local pr skill to write the PR body, push the branch, create or update the PR with --body-file, and write the PR number and body path into the Answer (one post-PR backfill commit, never a commit per reading). Finally send and verify the worker_done receipt>
+Observable acceptance: <the applicable test commands and observable results; red→green evidence for fixes; the two-axis code-review section when needed. When project files change: parse and use the local pr skill to write the PR body, push the branch, create or update the PR with --body-file, then record the PR number, the body path and the CI reading in GitHub and the out-of-repo ledger with no project commit added for them (follow the user's or the repository's own rule when it explicitly requires those facts in the tree). Finally send and verify the worker_done receipt>
 Question channel: orchestration ask (AskUserQuestion is banned).
 ```
 
