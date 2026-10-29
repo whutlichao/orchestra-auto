@@ -180,6 +180,91 @@ history; nothing is overwritten.
 semantics `provisional`, and close the ticket without waiting for a human reply. A later human
 decision appends an observation (`resolve-question`); it never rewrites the earlier records.
 
+### §6.7 Closeout: the checklist, pending one-way doors and the release gate
+
+A closeout is a reconciliation, not a memory. `scripts/closeout.py` derives it from authority:
+`plan(facts)` is a pure planner over authority facts, and `reconcile` reads authority through
+adapters and persists one `kind: closeout` ledger record. Storage is `ledger.py`, the acceptance
+schema is `acceptance.py`, and the release decision consumes `health.authorize_release` — none of
+them is re-implemented.
+
+```bash
+CLOSEOUT="$SKILLS_ROOT/orchestra-auto/scripts/closeout.py"
+python3 "$CLOSEOUT" plan --run-id "$RUN" --facts facts.json
+python3 "$CLOSEOUT" reconcile --run-id "$RUN" --authority recorded.json \
+  --answer-location "$ANSWER"
+python3 "$CLOSEOUT" show --run-id "$RUN"
+```
+
+**Ten rows, each with its authority, repeatability and action.**
+
+| # | Fact | Authority | Repeatable | Action |
+| --- | --- | --- | --- | --- |
+| 1 | the accepted SHA per PR | ledger acceptance record | **no** | must be persisted at acceptance; it cannot be reconstructed later |
+| 2 | PR `MERGED`, base and merge SHA | PR host API | yes | read back and write an observation |
+| 3 | the merge covers the accepted head | `git merge-base --is-ancestor` | yes | failure → divergent, escalate |
+| 4 | main contains the merge | `git rev-parse` / ancestry | yes | record the ancestry result |
+| 5 | local main is synced | `git status` / `rev-parse` / upstream, ff-only | yes | blocked → pause later merges |
+| 6 | every ticket is integrated | integration branch ancestry / PR `Closes` | yes | record the result per ticket |
+| 7 | tracker state | tracker read-back | yes | record the close or reopen |
+| 8 | worker lifecycle | `worker-show` / `worker-list` / release receipt | yes | enumerate reclaimable workers |
+| 9 | dashboard projection | `progress.json` | yes (non-authoritative) | gap only; never evidence |
+| 10 | one-way-door pending | ledger `pending` | yes | check again when due |
+
+Only row 1 is non-repeatable; the plan reports it as `non_repeatable`. A fact that cannot be
+read is `unknown`, never a silent pass, and an unreadable authority blocks the declaration just
+like a failed check. Row 5 **blocks later merges** while local main is unsynced (`merge_blocked`)
+rather than only lowering the checklist. Row 8 enumerates every reclaimable or
+`release_unknown` worker, and names those that need `worker-show` read-back first. Row 9 records
+a gap and nothing else: `progress.json` is a projection, so a dashboard failure or a stale
+projection never blocks a closeout and is never cited as evidence.
+
+**A closeout is a point-in-time reconciliation.** The ten rows together are one snapshot;
+that a snapshot differs from the previous one is not itself a failure to be reconciled.
+
+**Pending one-way doors stay visible without a coordinator turn.** A human merge records a ledger
+`pending` item (`pending_type: human_merge`, `pr`, `accepted_sha`, `owner`, `condition`,
+`check_after`). No turn is needed for it to be seen: `ledger.py show --run-id "$RUN" --kind
+pending` and `ledger.py summary` list it, and the dashboard shows "awaiting human merge". The
+next turn reconciles it against the PR host, the merge SHA, main sync and the tracker; only when
+all four are true does `reconcile` append one resolution observation and stop blocking. A
+pending item whose checks are still false stays visible with the check that failed. Row 10 gates
+**one-way-door** pending items only; the other pending items (the open four-level questions, for
+example) stay visible in the ledger but do not block a declaration, because the spec lets those
+close without a human reply.
+
+**Release precondition.** Release requires a settled Dispatch, not `ready` and not health, and a
+persisted closeout record: on success at least the acceptance records plus the
+dispatch → task → attempt → worktree mapping, on failure at least a failure classification and
+its evidence references. `release_unknown` first reads `worker-show` and `worker-list`; an
+unsettled worker is never released, whatever the health state says. A closeout record that could
+not be written is **not** a pass: release and the gate declaration wait until the write is
+repaired, and the undurable record is kept at `closeout-pending/` for the retry.
+
+**Crash recovery.** The order is Orca → ledger → snapshot; the projection is a clue, not
+authority. A crash between the merge and the tracker reconciliation is repaired from rows 2, 3,
+4 and 7: the PR host still reports `MERGED` with the merge SHA, git still proves ancestry and
+containment, and the tracker's own read-back says whether the ticket closed. The missing facts
+are recorded as a failure closeout with its classification and evidence references rather than
+being filled in from memory.
+
+**Revert and reopen consume the T09 observation.** A revert or reopen appends an observation
+once (`acceptance.py observe`); the closeout consumes it and lowers rows 2/3/4 (a revert) or row
+7 (a reopen). The closeout never appends a second observation for the same fact.
+
+**Tracker close is read back.** When a merge keyword closes the ticket, the closeout reads the
+state back and records it. When it does not, the coordinator closes it only within existing
+authorization; an exception escalates instead of becoming an unrestricted tracker write.
+
+**The record carries the Answer location.** Every closeout record stores `answer_location` (and
+each accepted record's own location on row 1), so a later attempt finds the Answer instead of
+re-deriving it.
+
+**Release replay safety is version-scoped.** Release replay semantics beyond the current CLI help
+are an assumption. The closeout records the verification source and the timestamp it was
+verified at, together with the version scope; no unverified release field is written as a stable
+contract.
+
 ### Worker lifecycle and send-backs
 
 Handle every settled Dispatch under the current Orca completion accounting: dispatch a follow-up,

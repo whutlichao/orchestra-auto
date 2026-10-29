@@ -113,7 +113,7 @@ let browser;
   }
   let snapshot = fixture(),
     response = "valid";
-  await page.route("**/snapshot", async (route) => {
+  await page.route("**/snapshot*", async (route) => {
     if (response === "error")
       return route.fulfill({
         status: 503,
