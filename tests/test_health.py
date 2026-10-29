@@ -751,6 +751,233 @@ class ConfigTests(SnapshotMixin, unittest.TestCase):
                     self.health.evaluate(self.healthy_signals(), {"stall_rounds": bad})
 
 
+class StallAndBindingWiringTests(SnapshotMixin, unittest.TestCase):
+    """The two interfaces ticket #38 wires the inbox observation into.
+
+    Stall detection keeps its existing shape — ``last_effective_progress`` with
+    ``rounds_without_progress`` — and gains the consumer-mode facts the specification names:
+    only non-heartbeat markers count, and the ``--status --json`` unacked count is part of the
+    same signal. Binding loss is an optional input like ``pending``: a recorded
+    ``consumer_fenced`` or lost Run binding stops the Run and escalates when ownership cannot be
+    established, and an unobserved field is ``unknown`` rather than a green light.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.health = load_health()
+
+    def finding(self, result, signal):
+        for item in result["reasons"]:
+            if item["signal"] == signal:
+                return item
+        return None
+
+    def test_the_consumer_marker_vocabulary_matches_the_inbox_loop(self):
+        """The loop and the evaluator must not drift on what progress means."""
+        loop = importlib.util.spec_from_file_location(
+            "inbox_loop_for_markers", SKILL_DIRS[0] / "scripts" / "inbox-loop.py")
+        module = importlib.util.module_from_spec(loop)
+        loop.loader.exec_module(module)
+        self.assertEqual(set(self.health.PROGRESS_MARKERS),
+                         set(module.PROGRESS_MARKERS),
+                         "health and the consumer disagree about effective progress")
+        self.assertNotIn("heartbeat", module.CONSUMER_MARKERS,
+                         "a heartbeat is liveness, never progress")
+        self.assertLessEqual(set(module.CONSUMER_MARKERS),
+                             set(self.health.CONSUMER_MARKERS),
+                             "the consumer may only report markers health knows")
+        self.assertEqual(set(self.health.BINDING_REFUSALS),
+                         set(module.BINDING_REFUSALS),
+                         "health and the consumer disagree about what binding loss refuses")
+
+    def test_a_consumer_mode_stall_without_the_unacked_count_is_unknown(self):
+        result = self.health.evaluate(self.healthy_signals(
+            last_effective_progress={"mode": "consumer",
+                                     "rounds_without_progress": 0,
+                                     "markers": []}
+        ))
+        self.assertEqual(result["state"], "unknown",
+                         "in consumer mode the unacked count is part of the signal")
+        self.assertEqual(
+            self.finding(result, "last_effective_progress")["reason"],
+            "consumer_unacked_missing",
+        )
+
+    def test_unknown_progress_markers_never_count_as_progress(self):
+        result = self.health.evaluate(self.healthy_signals(
+            last_effective_progress={
+                "rounds_without_progress": 3,
+                "markers": ["heartbeat", "banana"],
+                "unacked": 0,
+                "empty_waits": 0,
+            }
+        ))
+        self.assertEqual(result["state"], "degraded")
+        finding = self.finding(result, "last_effective_progress")
+        self.assertEqual(finding["detail"]["ignored_markers"], ["heartbeat", "banana"])
+        self.assertEqual(finding["detail"]["markers"], [])
+
+    def test_an_unreadable_marker_list_is_unknown(self):
+        result = self.health.evaluate(self.healthy_signals(
+            last_effective_progress={"rounds_without_progress": 0, "markers": "message"}
+        ))
+        self.assertEqual(result["state"], "unknown")
+        self.assertEqual(self.finding(result, "last_effective_progress")["reason"],
+                         "unreadable_markers")
+
+    def test_the_observation_becomes_the_signals_snapshot(self):
+        observation = {
+            "kind": "inbox_observation",
+            "observed_at": NOW,
+            "run": RUN_ID,
+            "reason": "delivery",
+            "phase": "wake",
+            "saved": 1,
+            "unacked": 1,
+            "unacked_delivery_ids": ["d1"],
+            "blocked": {"deliveryId": "d1", "reason": "unacknowledged"},
+            "watch": "on",
+            "last_effective_progress": {
+                "mode": "consumer",
+                "at": None,
+                "markers": ["message"],
+                "rounds_without_progress": 0,
+                "empty_waits": 0,
+                "unacked": 1,
+            },
+        }
+
+        signals = self.health.observation_signals(observation)
+
+        self.assertEqual(signals["observed_at"], NOW)
+        self.assertEqual(signals["run_id"], RUN_ID)
+        self.assertEqual(signals["unacked"], {"unacked": 1, "batches": ["d1"]})
+        self.assertEqual(signals["watch"], {"enabled": True})
+        self.assertEqual(signals["last_effective_progress"]["mode"], "consumer")
+        self.assertEqual(signals["last_effective_progress"]["unacked"], 1)
+        self.assertNotIn("inbox", signals,
+                         "a resting wake is not an inbox phase observation")
+        result = self.health.evaluate(signals)
+        self.assertEqual(result["state"], "blocked")
+        unknown = {item["signal"] for item in result["reasons"]
+                   if item["state"] == "unknown"}
+        self.assertIn("heartbeat", unknown)
+        self.assertIn("worker_show", unknown)
+        self.assertIn("inbox", unknown)
+        self.assertNotIn("watch", unknown, "the observation recorded the watch switch")
+        self.assertNotIn("unacked", unknown)
+        self.assertNotIn("last_effective_progress", unknown,
+                         "the consumer did observe the stall counters")
+
+    def test_an_error_observation_maps_to_an_inbox_error(self):
+        signals = self.health.observation_signals({
+            "observed_at": NOW, "phase": "error", "error": "check exited 1",
+        })
+        self.assertEqual(signals["inbox"],
+                         {"phase": "error", "updated_at": NOW, "error": "check exited 1"})
+        result = self.health.evaluate(signals)
+        self.assertEqual(result["state"], "blocked")
+        inbox = next(item for item in result["reasons"] if item["signal"] == "inbox")
+        self.assertEqual(inbox["reason"], "inbox_error")
+
+    def test_an_observation_without_a_readable_phase_is_unknown_not_healthy(self):
+        signals = self.health.observation_signals({"observed_at": NOW, "phase": 7})
+        self.assertNotIn("inbox", signals)
+        with self.assertRaises(ValueError):
+            self.health.observation_signals([])
+
+    def test_the_observation_binding_block_is_carried_through(self):
+        signals = self.health.observation_signals({
+            "observed_at": NOW,
+            "binding": {"outcome": "consumer_fenced", "ownership": "unproven",
+                        "refused": ["impersonate_handle", "create_new_run"]},
+        })
+        self.assertEqual(signals["binding"]["outcome"], "consumer_fenced")
+        result = self.health.evaluate(signals)
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["next_action"], "escalate")
+
+    def test_a_heartbeat_is_liveness_and_never_effective_progress(self):
+        self.assertNotIn("heartbeat", self.health.PROGRESS_MARKERS)
+        result = self.health.evaluate(self.healthy_signals(
+            last_effective_progress={
+                "rounds_without_progress": 3,
+                "markers": ["heartbeat"],
+                "unacked": 0,
+                "empty_waits": 0,
+            }
+        ))
+        self.assertEqual(result["state"], "degraded")
+        self.assertEqual(
+            self.finding(result, "last_effective_progress")["reason"],
+            "no_effective_progress",
+        )
+
+    def test_the_consumer_unacked_count_is_part_of_the_stall_signal(self):
+        result = self.health.evaluate(self.healthy_signals(
+            unacked={"unacked": 2, "batches": ["d1", "d2"]},
+            last_effective_progress={
+                "rounds_without_progress": 3,
+                "markers": [],
+                "unacked": 2,
+                "empty_waits": 2,
+            },
+        ))
+        self.assertEqual(result["state"], "blocked", "the unacked head outranks the stall")
+        reasons = {item["reason"] for item in result["reasons"]}
+        self.assertIn("unacked_batch", reasons)
+        self.assertIn("no_effective_progress", reasons)
+        stall = self.finding(result, "last_effective_progress")
+        self.assertEqual(stall["detail"]["unacked"], 2)
+        self.assertEqual(stall["detail"]["empty_waits"], 2,
+                         "empty waits are evidence, not invisibility")
+
+    def test_consumer_fenced_blocks_and_escalates_with_the_refusals_named(self):
+        result = self.health.evaluate(self.healthy_signals(
+            binding={"outcome": "consumer_fenced", "ownership": "unproven",
+                     "evidence": "CLI: consumer_fenced"})
+        )
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["next_action"], "escalate")
+        finding = self.finding(result, "binding")
+        self.assertEqual(finding["reason"], "binding_loss")
+        self.assertEqual(finding["detail"]["outcome"], "consumer_fenced")
+        self.assertEqual(set(finding["detail"]["refused"]),
+                         {"impersonate_handle", "create_new_run"})
+
+    def test_a_lost_run_binding_stops_the_run_even_with_verified_ownership(self):
+        result = self.health.evaluate(self.healthy_signals(
+            binding={"outcome": "run_binding_lost", "ownership": "verified"})
+        )
+        self.assertEqual(result["state"], "blocked",
+                         "a verified owner still has to re-establish the binding")
+        self.assertEqual(result["next_action"], "record_pending")
+        self.assertEqual(self.finding(result, "binding")["reason"], "binding_loss")
+
+    def test_an_unproven_ownership_is_unknown_and_escalates(self):
+        result = self.health.evaluate(self.healthy_signals(
+            binding={"outcome": "run_binding_lost"})
+        )
+        self.assertEqual(result["state"], "unknown",
+                         "a missing ownership field is evidence absent, never healthy")
+        self.assertEqual(result["next_action"], "escalate")
+        self.assertEqual(
+            self.finding(result, "binding")["reason"], "ownership_unobserved")
+
+    def test_an_unrecorded_binding_outcome_is_unknown(self):
+        result = self.health.evaluate(self.healthy_signals(
+            binding={"outcome": "something_new", "ownership": "verified"})
+        )
+        self.assertEqual(result["state"], "unknown")
+        self.assertEqual(
+            self.finding(result, "binding")["reason"], "unknown_binding_outcome")
+
+    def test_a_binding_block_that_records_no_loss_is_not_a_verdict(self):
+        result = self.health.evaluate(self.healthy_signals(binding={"outcome": "none"}))
+        self.assertEqual(result["state"], "healthy", "a checked binding with no loss is healthy")
+        self.assertIsNone(self.finding(result, "binding"))
+
+
 class CliTests(SnapshotMixin, unittest.TestCase):
     """``health evaluate`` as the coordinator surface, with a real ledger home."""
 
@@ -1028,6 +1255,47 @@ class CliTests(SnapshotMixin, unittest.TestCase):
             json.loads(result.stdout)["projection"],
             "progress.json remains a projection; health authority is the ledger record",
         )
+
+    def test_a_binding_loss_is_recorded_as_blocked_with_the_refusals(self):
+        snapshot = self.healthy_signals(
+            run_id=RUN_ID,
+            binding={"outcome": "consumer_fenced", "ownership": "unproven"},
+        )
+        result = self.cli(
+            ["evaluate", "--run-id", RUN_ID, "--signals", str(self.write_snapshot(snapshot))]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        printed = json.loads(result.stdout)
+        self.assertEqual(printed["state"], "blocked")
+        self.assertEqual(printed["next_action"], "escalate")
+        record = self.ledger_records()[-1]
+        self.assertEqual(record["detail"]["health_state"], "blocked")
+        binding = next(item for item in record["detail"]["reason"]
+                       if item["signal"] == "binding")
+        self.assertEqual(binding["reason"], "binding_loss")
+        self.assertEqual(set(binding["detail"]["refused"]),
+                         {"impersonate_handle", "create_new_run"})
+
+    def test_a_consumer_observation_stall_block_is_recorded(self):
+        """The shape the inbox loop writes: the ``signals`` block plus ``observed_at``."""
+        snapshot = self.healthy_signals(
+            run_id=RUN_ID,
+            last_effective_progress={
+                "rounds_without_progress": 3,
+                "markers": [],
+                "unacked": 0,
+                "empty_waits": 3,
+            },
+        )
+        result = self.cli(
+            ["evaluate", "--run-id", RUN_ID, "--signals", str(self.write_snapshot(snapshot))]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["state"], "degraded")
+        record = self.ledger_records()[-1]
+        stall = next(item for item in record["detail"]["reason"]
+                     if item["signal"] == "last_effective_progress")
+        self.assertEqual(stall["detail"]["empty_waits"], 3)
 
     def test_both_bundles_run_the_same_cli(self):
         snapshot = self.healthy_signals(run_id=RUN_ID)

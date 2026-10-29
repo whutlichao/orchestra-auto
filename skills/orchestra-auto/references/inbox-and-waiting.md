@@ -112,6 +112,32 @@ external waiter that polled pid-file liveness alone already missed one real deat
 file had been unlinked by the consumer on its way out, so the waiter read "nothing to check" as
 "still fine" and stayed asleep.
 
+### 1.2 Binding loss
+
+`consumer_fenced` or a lost Run binding stops consumption and lifecycle operations for that
+identity. The loop classifies the failure, preserves the evidence, records `binding` in
+`state.json` and carries it in the wake's observation, and ends in the error wake as always — it
+never retries by itself. The recorded block is:
+
+```json
+{"outcome": "consumer_fenced", "ownership": "unproven",
+ "refused": ["impersonate_handle", "create_new_run"], "evidence": "…", "observed_at": "…"}
+```
+
+- `outcome` is `consumer_fenced` or `run_binding_lost`. A failure that does not name a binding
+  loss is **not** reclassified: a permission or waiter error leaves `outcome: none` and stays an
+  ordinary error wake.
+- `ownership` is `unproven` because the consumer cannot verify the real caller; verifying it is
+  the coordinator's read. Health grades an unproven binding as `unknown` and escalates, and grades
+  a fenced consumer as `blocked`. In both cases the next step is evidence, not authority.
+- `refused` names what no recovery path may do: impersonate a handle, or create a new Run
+  unconditionally. Inventory the old Dispatch and its artifacts first; an ownership that cannot
+  be established escalates to the human rather than being guessed.
+
+An install refusal — another loop holds the directory, or the binding belongs to another
+Run/terminal/CLI — happens before the loop starts, so it carries no observation and leaves the
+owner's state directory untouched.
+
 Each cycle the script first checks without a filter and then installs a blocking wait, so
 heartbeats and ordinary messages cannot pile up at the head of the queue. A complete response is
 written atomically to `deliveries/*.json`, hashed by deliveryId, and the parent directory is
@@ -215,7 +241,11 @@ The wake line (stdout, exactly one line):
 ```json
 {"event": "wake", "reason": "delivery", "run": "run_ab12", "terminal": "term_coord",
  "deliveryId": "dlv_9f", "types": ["worker_done"], "messageCount": 1,
- "saved": "/tmp/orch-repo-run_ab12/deliveries/<sha256-of-deliveryId>.json", "detail": "new batch dlv_9f saved: 1 message(s) ['worker_done']"}
+ "saved": "/tmp/orch-repo-run_ab12/deliveries/<sha256-of-deliveryId>.json", "detail": "new batch dlv_9f saved: 1 message(s) ['worker_done']",
+ "observation": {"kind": "inbox_observation", "observed_at": "…", "run": "run_ab12",
+                 "unacked": 1, "watch": "on", "binding": {"outcome": "none"},
+                 "last_effective_progress": {"mode": "consumer", "markers": ["message"],
+                 "rounds_without_progress": 0, "empty_waits": 0, "unacked": 1}}}
 ```
 
 | Field | Meaning |
@@ -228,6 +258,34 @@ The wake line (stdout, exactly one line):
 | `messageCount` | number of messages in that batch; `0` otherwise |
 | `saved` | the file the batch was written to *before* the wake; `null` otherwise |
 | `detail` | one line naming the reason; for `error`, the error text, flattened and truncated |
+| `observation` | exactly one local observation for this wake — the facts below, and the input to `health evaluate` |
+
+**The observation.** Every wake carries exactly one `observation` object, and the same object is
+persisted as `wake_observation` in `state.json` before the line is printed. It is written locally
+and the coordinator transcribes it into the ledger; the consumer never writes the ledger. Its
+fields are `kind`, `observed_at`, `reason`, `run`, `terminal`, `deliveryId`, `phase`, `saved`,
+`unacked`, `unacked_delivery_ids`, `blocked`, `watch`, `last_effective_progress`, `binding`,
+`write_scope: state.json` and `transcribe_to: ledger`. `saved`/`unacked`/`blocked` are the same
+arithmetic as `--status --json` (§1.1), so the wake and a status read never disagree. A
+reconciliation wake keeps its own `kind: inbox_reconciliation` record in `observation` and still
+carries the wake's `wake_observation`. Feed it to health without translating anything by hand:
+
+```bash
+python3 <SKILL_DIR>/scripts/health.py evaluate --run-id <run_id> --observation observation.json
+```
+
+The signals the consumer cannot see read `unknown` there, not healthy; the coordinator supplies
+its own reads before a verdict of `healthy` is possible. See
+[run health](run-health.md) for the states and the signal table.
+
+**Stall markers.** `last_effective_progress.markers` holds what this round progressed on, from the
+shared vocabulary `message`, `artifact`, `commit`, `stage`; the consumer can observe `message`
+(a non-heartbeat batch) and `stage` (a worker's lifecycle stage changed). `rounds_without_progress`
+counts consecutive rounds with none of those, and three consecutive rounds is `degraded`. A
+**heartbeat is never progress**: it is listed under `ignored_markers` and never resets the count.
+`empty_waits` counts the waits that timed out since the last batch; a consumer cannot see an empty
+wait by reading files, so the wake carries it and the `unacked` count next to it — empty waits are
+never read as invisibility.
 
 Exit codes: `0` a wake; `1` a fatal error of the running loop — itself a wake, with the same line at
 `reason=error` plus `watch.log` and `state.json phase=error`; `2` the installation was refused

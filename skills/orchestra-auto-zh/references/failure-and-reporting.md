@@ -20,6 +20,10 @@
   的恢复参考，核验真实 session/terminal 与原 Run。`check` 用 `--terminal`，不接受 `--from`；
   不要凭标题猜句柄、伪装 worker 或无条件新建 Run。
   旧 Dispatch 未盘点且归属未厘清前，不创建重复编辑者；无法恢复时保留产物、报告绑定阻塞。
+  收件器把结果（`consumer_fenced` 或 `run_binding_lost`）、错误文本与两条拒绝记为 state 里的
+  `binding`，放进唤醒的 observation，并照常以普通 error 唤醒结束。health 读取该记录：被 fence
+  的收件器是 `blocked`，归属未证实的绑定丢失是 `unknown`，两者都升级而不授权 retry。协议与
+  证据门槛见 [通信与恢复](inbox-and-waiting.md) §1.2 与 [运行健康](run-health.md)。
 - 已获授权的实施工作不因任务小或 repo 缺 `WORK_SCOPE` 而跳过派活；纯问答、报告及超出
   本轮交付终点的后续阶段不派活。范围不明时先只读探索并按 §1 复核。
 - 后续阶段已在本轮范围内时直接推进；不在范围内时在报告写明状态与下一步入口。
