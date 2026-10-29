@@ -97,6 +97,49 @@ CI；仓库没有可用 CI 时，才在本地跑一次等价的全量门禁作�
 条件不满足时保留现场，报告“远端已合并，本地同步阻塞”，暂停后续合并；不自动 stash、
 reset、checkout 或创建本地 merge commit。网络错误查明后可重试一次。
 
+### §6.6 验收记录与四级状态
+
+门禁结论要么持久落盘，要么等于没发生。在 release worker 或告诉任何人门禁通过之前，先把它记成
+台账 `kind: acceptance` 记录；写入失败就报告为写入失败，绝不当作通过，并用同一个 `record_id`
+重试。
+
+```bash
+ACCEPTANCE="$SKILLS_ROOT/orchestra-auto/scripts/acceptance.py"
+python3 "$ACCEPTANCE" record --run-id "$RUN" --record "$ACCEPTANCE_JSON"
+python3 "$ACCEPTANCE" show --run-id "$RUN" --ticket 39
+```
+
+每个 PR 一条记录，携带 `ticket`、`gate`、`attempt`、`accepted_sha`、`accepted_at`、
+`pr {number, head_at_acceptance, base}`、`checks [{name, command, result, evidence_ref}]`、
+`review {axis[], result, evidence_ref}`、四个 `levels`、`decided_by`（`coordinator` 或
+`human`）、`decided_at` 与 `answer_location`。`validate(record)` 拒绝任何为 `true` 却没有
+`evidence_ref` 的级别；CLI 先校验再写入，拒绝时以非零退出并输出错误清单。加
+`--authority FILE` 时会再用记录的 PR host/tracker/git 读取结果交叉核对已声明的级别。
+
+**最低证据**：缺少证据的声明是打回，不是细节。
+
+| 声明 | 证据 |
+| --- | --- |
+| 合并 | PR host 的 `MERGED`、merge SHA，以及 `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| tracker 关闭 | tracker 读回为 `closed`，并带读回时间 |
+| 启动 | `turnStart: observed`，或该 attempt 的产物 / 状态投影引用 |
+| 测试 | 命令、结果与日志引用。`grep` 只证明字符串存在，绝不等于跑过测试 |
+| review | 两个轴（`standards`、`spec`）与 review 引用；豁免要在 spec **和** Answer 里都写明理由 |
+
+`worker_done` 只证明结算。它既不是启动证据，也绝不产生验收：凭它把某级置为 `true` 会被拒绝。
+
+**四级状态**：`implemented`、`integrated`、`merged`、`tracker_closed` 是四个独立的声明，按 PR
+分别记录。票级级别只有在**每个**关联 PR 记录都支持时才为真——一张票可以合理地跨多个 PR，任何一个
+PR 弱就拉低票级，不能被平均掉。同一 PR 的两条记录互相矛盾时标为 `divergent`，该 PR 不声明任何
+级别。`never_merge` 是 merged 级的终态，归人类决定：`{"value": false, "terminal":
+"never_merge", "decided_by": "human"}` 并附理由，spike 才不会再显得永远未完成。revert 或
+reopen **追加** observation（`acceptance.py observe`），把受影响级别置 false，并把原证据保留为
+历史；任何东西都不被覆盖。
+
+**pending 而非冻结**：issue #20 里关于四级的问题仍未定。把它们记为台账 `pending` 项
+（`acceptance.py open-questions`）并附证据，受影响语义保持 `provisional`，票据无需等人类回复即可
+收尾。后来的人类决定追加 observation（`resolve-question`），绝不改写已有记录。
+
 ### Worker 生命周期与打回
 
 每张结算的 Dispatch 按当前 Orca completion accounting 处理：继续派 follow-up、用户要求

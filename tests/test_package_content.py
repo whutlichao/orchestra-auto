@@ -32,6 +32,7 @@ SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 #: iterate this list, and a completeness test fails when a shipped file is missing from it, so
 #: a new script cannot land with a green suite and no coverage.
 SCRIPT_FILES = (
+    "acceptance.py",
     "inbox-loop.py",
     "inbox-loop.sh",
     "ledger.py",
@@ -39,7 +40,13 @@ SCRIPT_FILES = (
     "progress.html",
     "progress.py",
 )
-PYTHON_SCRIPTS = ("inbox-loop.py", "ledger.py", "progress-demo.py", "progress.py")
+PYTHON_SCRIPTS = (
+    "acceptance.py",
+    "inbox-loop.py",
+    "ledger.py",
+    "progress-demo.py",
+    "progress.py",
+)
 
 REFERENCE_FILES = (
     "dispatch-loop.md",
@@ -710,6 +717,69 @@ class ContractRegressionTests(unittest.TestCase):
                           f"{name}: a false close-out must be named as forbidden")
             self.assertIn(expected["reconcile"], squash(references["gate-acceptance.md"]),
                           f"{name}: the post-merge tracker reconciliation is missing")
+
+    def test_acceptance_records_document_the_same_rules_in_both_bundles(self):
+        """The record, its evidence rules and the four-level extension are one contract.
+
+        The acceptance record is a local schema; if the two language bundles describe it
+        differently, a coordinator reading the Chinese bundle would accept what the English
+        one refuses. Each side is checked for the same decisions: the record fields, the
+        minimum-evidence rules (including "a grep is not a test run" and "worker_done proves
+        settlement only"), the multi-PR all-linked-PRs rule, the never-merge terminal and
+        the reopen-appends rule, and the pending/provisional treatment of issue #20.
+        """
+        expectations = {
+            "orchestra-auto": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "without an `evidence_ref`",
+                "merge": "PR host `MERGED`",
+                "tracker": "read-back",
+                "start": "`turnStart: observed`",
+                "grep": "A `grep` only proves a string exists",
+                "worker_done": "`worker_done` proves settlement only",
+                "waiver": "the spec **and** the Answer",
+                "multi_pr": "**every** linked PR record supports",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` is a terminal state",
+                "revert": "**appends** an observation",
+                "pending": "keep the affected semantics `provisional`",
+                "script": "scripts/acceptance.py",
+            },
+            "orchestra-auto-zh": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "却没有 `evidence_ref`",
+                "merge": "PR host 的 `MERGED`",
+                "tracker": "读回",
+                "start": "`turnStart: observed`",
+                "grep": "只证明字符串存在",
+                "worker_done": "`worker_done` 只证明结算",
+                "waiver": "spec **和** Answer",
+                "multi_pr": "**每个**关联 PR 记录都支持",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` 是 merged 级的终态",
+                "revert": "**追加** observation",
+                "pending": "`provisional`",
+                "script": "scripts/acceptance.py",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["gate-acceptance.md"])
+            self.assertIn(expected["section"], text,
+                          f"{name}: gate-acceptance.md has no acceptance-record section")
+            for field in expected["fields"]:
+                self.assertIn(field, text,
+                              f"{name}: the acceptance record loses the field {field!r}")
+            for key in ("no_true_without_evidence", "merge", "tracker", "start", "grep",
+                        "worker_done", "waiver", "multi_pr", "divergent", "never_merge",
+                        "revert", "pending", "script"):
+                self.assertIn(expected[key], text,
+                              f"{name}: the acceptance rule {key!r} is missing from "
+                              "gate-acceptance.md")
 
     def test_pre_skill_is_chosen_by_stage_not_by_channel(self):
         """A stage chooses its pre-skill; the old channel-to-skill mapping must be gone."""
