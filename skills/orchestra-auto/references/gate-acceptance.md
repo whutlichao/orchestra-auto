@@ -132,6 +132,54 @@ not hold, preserve the scene and report "merged remotely, local sync blocked", p
 merges; do not auto-stash, reset, check out, or create a local merge commit. A network error may
 be retried once after diagnosis.
 
+### §6.6 Acceptance records and the four levels
+
+A gate result is durable or it did not happen. Record it as a ledger `kind: acceptance` record
+before you release the worker or tell anyone the gate passed; a failed write is reported as a
+failed write, never as a pass, and is retried with the same `record_id`.
+
+```bash
+ACCEPTANCE="$SKILLS_ROOT/orchestra-auto/scripts/acceptance.py"
+python3 "$ACCEPTANCE" record --run-id "$RUN" --record "$ACCEPTANCE_JSON"
+python3 "$ACCEPTANCE" show --run-id "$RUN" --ticket 39
+```
+
+One record per PR carries `ticket`, `gate`, `attempt`, `accepted_sha`, `accepted_at`,
+`pr {number, head_at_acceptance, base}`, `checks [{name, command, result, evidence_ref}]`,
+`review {axis[], result, evidence_ref}`, the four `levels`, `decided_by` (`coordinator` or
+`human`), `decided_at` and `answer_location`. `validate(record)` rejects a level that is `true`
+without an `evidence_ref`; the CLI validates before it writes and exits non-zero with the error
+list when it refuses. `--authority FILE` additionally cross-checks claimed levels against a
+recorded PR-host/tracker/git read.
+
+**Minimum evidence.** A claim without its evidence is a send-back, not a nuance.
+
+| Claim | What proves it |
+| --- | --- |
+| merge | PR host `MERGED`, the merge SHA, and `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| tracker close | a tracker read-back showing `closed`, with the read time |
+| start | `turnStart: observed`, or the attempt's artifact / status-projection reference |
+| tests | the command, the result and the log reference. A `grep` only proves a string exists, so it is never a test run |
+| review | both axes (`standards`, `spec`) and the review reference; a waiver records its reason in the spec **and** the Answer |
+
+`worker_done` proves settlement only. It is never start evidence and never produces an
+acceptance: a level made `true` on it is rejected.
+
+**Four levels.** `implemented`, `integrated`, `merged` and `tracker_closed` are separate claims,
+recorded per PR. The ticket-level level is true only when **every** linked PR record supports
+it — a ticket may legitimately span several PRs, and one weak PR lowers the ticket's level
+rather than being averaged away. Two records that disagree about the same PR are `divergent`,
+and no level is claimed for that PR. `never_merge` is a terminal state for the merged level and
+belongs to a human: `{"value": false, "terminal": "never_merge", "decided_by": "human"}` with a
+reason, so a spike stops looking incomplete. A revert or a reopen **appends** an observation
+(`acceptance.py observe`) that sets the affected level false and keeps the original evidence as
+history; nothing is overwritten.
+
+**Pending, not frozen.** The four-level questions in issue #20 are open. Record them as ledger
+`pending` items (`acceptance.py open-questions`) with their evidence, keep the affected
+semantics `provisional`, and close the ticket without waiting for a human reply. A later human
+decision appends an observation (`resolve-question`); it never rewrites the earlier records.
+
 ### Worker lifecycle and send-backs
 
 Handle every settled Dispatch under the current Orca completion accounting: dispatch a follow-up,

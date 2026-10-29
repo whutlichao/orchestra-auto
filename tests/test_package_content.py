@@ -32,6 +32,8 @@ SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 #: iterate this list, and a completeness test fails when a shipped file is missing from it, so
 #: a new script cannot land with a green suite and no coverage.
 SCRIPT_FILES = (
+    "acceptance.py",
+    "health.py",
     "inbox-loop.py",
     "inbox-loop.sh",
     "ledger.py",
@@ -41,7 +43,9 @@ SCRIPT_FILES = (
     "progress.py",
 )
 PYTHON_SCRIPTS = (
-    "inbox-loop.py", "ledger.py", "preflight.py", "progress-demo.py", "progress.py",
+    "acceptance.py",
+    "health.py", "inbox-loop.py", "ledger.py", "preflight.py", "progress-demo.py",
+    "progress.py",
 )
 
 REFERENCE_FILES = (
@@ -57,6 +61,7 @@ REFERENCE_FILES = (
     "reformat-noise-recovery.md",
     "reply-protocol.md",
     "progress-dashboard.md",
+    "run-health.md",
     "spec-contract.md",
     "worker-start-and-recovery.md",
 )
@@ -770,6 +775,69 @@ class ContractRegressionTests(unittest.TestCase):
             self.assertIn(expected["reconcile"], squash(references["gate-acceptance.md"]),
                           f"{name}: the post-merge tracker reconciliation is missing")
 
+    def test_acceptance_records_document_the_same_rules_in_both_bundles(self):
+        """The record, its evidence rules and the four-level extension are one contract.
+
+        The acceptance record is a local schema; if the two language bundles describe it
+        differently, a coordinator reading the Chinese bundle would accept what the English
+        one refuses. Each side is checked for the same decisions: the record fields, the
+        minimum-evidence rules (including "a grep is not a test run" and "worker_done proves
+        settlement only"), the multi-PR all-linked-PRs rule, the never-merge terminal and
+        the reopen-appends rule, and the pending/provisional treatment of issue #20.
+        """
+        expectations = {
+            "orchestra-auto": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "without an `evidence_ref`",
+                "merge": "PR host `MERGED`",
+                "tracker": "read-back",
+                "start": "`turnStart: observed`",
+                "grep": "A `grep` only proves a string exists",
+                "worker_done": "`worker_done` proves settlement only",
+                "waiver": "the spec **and** the Answer",
+                "multi_pr": "**every** linked PR record supports",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` is a terminal state",
+                "revert": "**appends** an observation",
+                "pending": "keep the affected semantics `provisional`",
+                "script": "scripts/acceptance.py",
+            },
+            "orchestra-auto-zh": {
+                "section": "§6.6",
+                "fields": ("`accepted_sha`", "`answer_location`", "`decided_by`",
+                           "`checks [", "`review {", "`levels`"),
+                "no_true_without_evidence": "却没有 `evidence_ref`",
+                "merge": "PR host 的 `MERGED`",
+                "tracker": "读回",
+                "start": "`turnStart: observed`",
+                "grep": "只证明字符串存在",
+                "worker_done": "`worker_done` 只证明结算",
+                "waiver": "spec **和** Answer",
+                "multi_pr": "**每个**关联 PR 记录都支持",
+                "divergent": "`divergent`",
+                "never_merge": "`never_merge` 是 merged 级的终态",
+                "revert": "**追加** observation",
+                "pending": "`provisional`",
+                "script": "scripts/acceptance.py",
+            },
+        }
+        for name, expected in expectations.items():
+            _entrypoint, references = self.corpus(name)
+            text = squash(references["gate-acceptance.md"])
+            self.assertIn(expected["section"], text,
+                          f"{name}: gate-acceptance.md has no acceptance-record section")
+            for field in expected["fields"]:
+                self.assertIn(field, text,
+                              f"{name}: the acceptance record loses the field {field!r}")
+            for key in ("no_true_without_evidence", "merge", "tracker", "start", "grep",
+                        "worker_done", "waiver", "multi_pr", "divergent", "never_merge",
+                        "revert", "pending", "script"):
+                self.assertIn(expected[key], text,
+                              f"{name}: the acceptance rule {key!r} is missing from "
+                              "gate-acceptance.md")
+
     def test_pre_skill_is_chosen_by_stage_not_by_channel(self):
         """A stage chooses its pre-skill; the old channel-to-skill mapping must be gone."""
         expectations = {
@@ -1013,6 +1081,74 @@ class EvalMetadataTests(unittest.TestCase):
             self.assertTrue(
                 denies_proof and names_the_level,
                 f"{name}: the _note must state these are not end-to-end proof",
+            )
+
+
+class RunHealthReferenceTests(unittest.TestCase):
+    """The health reference must match the module's state machine and signal table.
+
+    A reference that drifts from ``health.py`` teaches the reader a state machine the code does
+    not implement, which is worse than no reference. This checks the contract anchors — the five
+    states, the precedence order, the eleven signals and the two authorization edges — not full
+    semantic equivalence.
+    """
+
+    STATES = ("healthy", "degraded", "blocked", "lost", "unknown")
+    # The eleven rows of the signal table, in each language's own wording. The module's own
+    # keys are asserted in ``tests/test_health.py``; this file checks the documentation.
+    SIGNALS = {
+        "orchestra-auto": ("heartbeat", "inbox phase", "unacked batch",
+                           "worker-list snapshot", "worker-show observation", "turnStart",
+                           "progress freshness", "last effective progress",
+                           "reclaimable terminal", "waiter-slot leak", "nested roster"),
+        "orchestra-auto-zh": ("heartbeat", "inbox phase", "unacked 批次", "worker-list 快照",
+                              "worker-show 观测", "turnStart", "progress freshness",
+                              "last effective progress", "reclaimable 终端",
+                              "waiter slot 泄漏", "nested roster"),
+    }
+    ANCHORS = {
+        "orchestra-auto": (
+            "lost > blocked > unknown > degraded > healthy",
+            "never `healthy`",
+            "not a health state",
+            "health alone never authorizes it",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+        "orchestra-auto-zh": (
+            "lost > blocked > unknown > degraded > healthy",
+            "绝不 `healthy`",
+            "不是健康状态",
+            "从不授权 release",
+            "preamble cadence",
+            "observation.agentWait",
+            "watch_disabled",
+        ),
+    }
+
+    def test_the_state_machine_and_signal_table_are_documented(self):
+        for name in SKILL_NAMES:
+            text = (REPO_ROOT / "skills" / name / "references" / "run-health.md").read_text()
+            flat = compact(text)
+            for state in self.STATES:
+                self.assertIn(state, text, f"{name}: run-health.md lost the {state} state")
+            for signal in self.SIGNALS[name]:
+                self.assertIn(compact(signal), flat,
+                              f"{name}: run-health.md lost the {signal!r} signal row")
+            for anchor in self.ANCHORS[name]:
+                self.assertIn(compact(anchor), flat,
+                              f"{name}: run-health.md lost the anchor {anchor!r}")
+
+    def test_the_reference_trigger_is_on_the_first_lines(self):
+        for name in SKILL_NAMES:
+            head = "\n".join(
+                (REPO_ROOT / "skills" / name / "references" / "run-health.md")
+                .read_text().splitlines()[:12]
+            )
+            self.assertTrue(
+                any(marker in head for marker in ("When to read", "什么时候读", "何时读取")),
+                f"{name}: run-health.md must state its trigger near the top",
             )
 
 

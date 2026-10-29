@@ -57,6 +57,7 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |
 | `references/inbox-and-waiting.md` | Before each Run's first dispatch (identity binding, inbox, installing the wake and its switches, lost-contact recovery); after every wake, to install the next wait; also when a worker's message never shows up |
 | `references/ledger.md` | Before the action a record protects and after it; `ledger reconcile` after a crash window, and the action matrix it applies |
+| `references/run-health.md` | After every wake, before reporting a Run's state, or when a worker goes quiet: evaluate health, the signal table and the transition rules |
 | `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
 | `references/gates-docs-planning.md` | This ticket is a design / spec / ticket-splitting ticket heading for G-docs / G-wayfinder / G-spec / G-tickets |
 | `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
@@ -286,14 +287,13 @@ gate blocked the merge.
 ## 8. Planning dependency initialization (on demand)
 
 Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their
-repository configuration is missing, check the planning setup. Reuse existing tracker and docs
-configuration; confirm any new governance files, labels or PRs belong to the round's scope. A
-worker lands what is needed in an isolated worktree; the coordinator accepts it.
+repository configuration is missing, check the planning setup. Reuse the existing tracker and docs
+configuration; confirm new governance files, labels or PRs belong to the round. A worker lands it.
 
 ## 9. Failure and reporting discipline
 
 When the CLI will not start, a `worker-start` receipt is `state: failed`, a breaker trips, or the Orca
 app restarts, follow [failure and reporting](references/failure-and-reporting.md) instead of
-improvising. The recurring shape of every rule there: gather evidence before deciding, report the exact
-error, and never relaunch unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
+improvising: gather evidence before deciding, report the exact error, and never relaunch
+unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
 [long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.
