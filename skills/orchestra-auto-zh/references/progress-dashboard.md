@@ -83,10 +83,14 @@ Worker；每个实体在所属分组单独计数，不推断未报告的问题�
 核验、自报、启动确认及时效分列；完整 ID、worktree 和摘要放入明细。仅无凭证 HTTP(S) 引用可点击，
 其他内容为文本，不提供文件内容。
 
-可选浏览器回归使用仓库外的 Playwright 与 Chromium，不是运行依赖。设置 `PLAYWRIGHT_MODULE` 指向
-该外部包，然后针对独立 DEMO 服务执行
-`node tests/progress_dashboard_browser.cjs http://127.0.0.1:8766/ EVIDENCE_DIR`，覆盖四种视口、
-事实边界、刷新状态保留与安全渲染。
+页面同时写明 **警告不是启动失败**：记录或看板警告只表示「继续编排」，记录一个 gap，绝不把一次派发
+判定为启动失败。
+
+可选浏览器回归使用仓库外的 Playwright 与 Chromium，不是运行依赖，也不是强制门禁——强制门禁是上文
+的 CLI/HTTP 契约。设置 `PLAYWRIGHT_MODULE` 指向该外部包，然后针对注册了两个 Run 的单例服务执行
+`node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=FIRST&second=SECOND' EVIDENCE_DIR`。
+脚本拦截 `**/snapshot*`，通过 Run 列表切换所选 Run，覆盖四种视口、事实边界、刷新状态保留与安全渲染；
+环境未提供 Playwright 时它只是不运行，测试套件不会因此失败。
 
 ## 协议 v2
 
@@ -219,6 +223,32 @@ $ORCA_PROGRESS_HOME
 `{ok, protocol_version, pid, started_at, runs}`；`protocol_version` 从 `1` 开始。
 `GET /?run=<id>` 渲染页面，`GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不
 返回其他 Run 的数据。
+
+**HTTP 面与 Run 隔离。** 服务只暴露三条 GET 路由，没有任何写 API：
+
+| 路由 | 返回 |
+| --- | --- |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs}`：服务状态与已注册 Run ID，绝不含状态路径 |
+| `GET /?run=<id>` | 页面：由 `/health` 生成的 Run 列表，加上所选 Run 的 tasks、workers、deliveries、events、时效与健康投影，以及「警告不是启动失败」提示 |
+| `GET /snapshot?run=<id>` | 该 Run 的只读快照，不含任何其他 Run 的数据 |
+
+隔离靠每次请求只解析一个描述符：快照只读取所选 Run 的 `progress.json`，且必须经过共用的状态路径校验器；
+响应只出现 Run ID，绝不出现状态路径；跨 Run 访问仅限 `/health` 与页面上的 Run ID 列表。描述符不可读、
+或 `progress.json` 缺失/损坏时返回 `503` 与 `Snapshot unavailable`，并在 Run 列表中标记为不可用；
+描述符绝不删除、绝不修复；未知 Run ID 返回 `404`。某个 Run 不可用时页面保留 Run 列表，绝不悄悄显示
+另一个 Run 的数据。服务不保存任何按 Run 的状态，因此可重启：`progress.json` 仍是事实来源，服务中断
+只是一个 gap。
+
+**安全边界。** 服务只绑定 IPv4 `127.0.0.1`，绝不绑定通配或 IPv6 地址；所有路由只接受 GET，其他方法
+（含向顶层表单的 `POST`）一律返回 `405` 与 `Allow: GET`。每个响应（包括错误响应）都带
+`Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、
+`Cache-Control: no-store`、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与
+`Referrer-Policy: no-referrer`。页面不加载任何外部资源，只拉取同源 JSON。`Host` 头必须是
+`localhost` 或 `127.0.0.1`（可带服务端口），否则在路由前直接返回 `403`——这是 DNS 重绑防护，
+被重绑的页面无法读取看板。服务只读已注册的 `state_path`：绝不把请求路径映射为文件、绝不提供文件正文、
+绝不接受路径作为输入，路径穿越、符号链接状态路径与仓库祖先均由共用校验器拒绝。`$ORCA_PROGRESS_HOME`
+保持 `0700`，描述符不含凭证。这是单用户本地信任模型的服务：没有认证，不得对外暴露或转发端口。
 
 **兼容与回退。** 无 `/health` 的旧服务是 legacy：不向它注册，也绝不 kill。任何 `serve --state`
 回退（启动锁超时、legacy/不兼容/卡死服务、查看器启动失败、DEMO）都不注册、返回

@@ -49,6 +49,23 @@ STARTUP_LOCK_NAME = 'startup.lock'
 REGISTRY_RUNS_DIR = 'runs'
 DESCRIPTOR_FIELDS = {'run_id', 'state_path', 'registered_at', 'label'}
 SERVER_FIELDS = {'pid', 'port', 'protocol_version', 'started_at', 'binary_version'}
+#: The HTTP surface is read-only and local to this machine. Only these Host names are
+#: accepted (an optional ``:port`` suffix must name the serving port); anything else is a
+#: DNS-rebinding attempt and is refused before routing.
+LOCALHOST_NAMES = frozenset({'localhost', '127.0.0.1'})
+#: No external assets, no framing, no form posts. The page is one inline-script document
+#: that fetches only same-origin JSON.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'")
+SECURITY_HEADERS = (
+    ('Cache-Control', 'no-store'),
+    ('X-Content-Type-Options', 'nosniff'),
+    ('X-Frame-Options', 'DENY'),
+    ('Referrer-Policy', 'no-referrer'),
+    ('Content-Security-Policy', CONTENT_SECURITY_POLICY),
+)
 
 FIELDS = {
     'init': {'id', 'target_repo', 'mode', 'phase', 'status', 'title', 'orca_run_id',
@@ -846,61 +863,142 @@ def view(directory, stale_seconds):
     return state
 
 
+def descriptor_run_ids(home):
+    """Run IDs named by the descriptor files, including ones that cannot be read.
+
+    A descriptor that fails validation is still kept: it names a Run that exists and is
+    merely unavailable, which is not the same answer as "unknown Run".
+    """
+    runs = home / REGISTRY_RUNS_DIR
+    if runs.is_symlink() or not runs.is_dir():
+        return []
+    names = []
+    for path in sorted(runs.iterdir()):
+        if path.suffix != '.json' or not path.is_file() or path.is_symlink():
+            continue
+        if PORTABLE_ID.fullmatch(path.stem):
+            names.append(path.stem)
+    return names
+
+
+def resolve_run(home, run_id):
+    """Resolve one Run ID to its validated state directory.
+
+    Raises ``LookupError`` for an ID that is not registered here and ``ValueError`` for a
+    registered Run whose descriptor is unreadable. It never returns another Run's data,
+    never accepts a path, and never deletes anything.
+    """
+    if not isinstance(run_id, str) or not PORTABLE_ID.fullmatch(run_id):
+        raise LookupError('unknown or missing run')
+    for descriptor in discover(home):
+        if descriptor['run_id'] == run_id:
+            return Path(descriptor['state_path'])
+    if run_id in descriptor_run_ids(home):
+        raise ValueError('registered Run is unavailable')
+    raise LookupError('unknown or missing run')
+
+
 def serve(directory, port, stale_seconds, registry=None):
     """Serve one Run (``serve --state``) or the registered Runs (``serve --registry``).
 
-    The HTTP layer is read-only: it renders ``progress.json`` snapshots and the local
-    registry descriptors and never writes, schedules, or reads any file content.
+    The HTTP surface is read-only, IPv4-localhost-only and exposes three GET routes:
+    ``/health`` (service plus registered Run IDs), ``/?run=<id>`` (the page, which lists
+    every registered Run and renders the selected one) and ``/snapshot?run=<id>`` (that
+    Run's read-only snapshot). It renders ``progress.json`` and the local registry
+    descriptors only: it never reads or serves arbitrary files or file contents, never
+    writes, and never names a state path in a response. Unreadable descriptors are
+    reported as unavailable and are never deleted.
     """
     page = ASSET.read_bytes()
     started_at = now()
+    binding = {'port': port}
 
     def health_payload():
-        runs = [descriptor['run_id'] for descriptor in discover(registry)] if registry else []
+        runs = []
+        if registry is not None:
+            try:
+                runs = [descriptor['run_id'] for descriptor in discover(registry)]
+            except (OSError, ValueError, Degraded):
+                runs = []
         return {'ok': True, 'protocol_version': PROTOCOL_VERSION, 'pid': os.getpid(),
                 'started_at': started_at, 'runs': runs}
 
-    def selected_directory(query):
-        if registry is None:
-            return directory
-        wanted = (parse_qs(query).get('run') or [''])[0]
-        for descriptor in discover(registry):
-            if descriptor['run_id'] == wanted:
-                return Path(descriptor['state_path'])
-        raise ValueError('unknown or missing run')
-
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            parts = urlsplit(self.path)
-            route = parts.path
-            status, mime = 200, 'text/html; charset=utf-8'
-            if route == '/':
-                body = page
-            elif route == '/health':
-                mime = 'application/json; charset=utf-8'
-                body = json.dumps(health_payload()).encode()
-            elif route == '/snapshot':
-                mime = 'application/json; charset=utf-8'
-                try:
-                    body = json.dumps(view(selected_directory(parts.query),
-                                           stale_seconds)).encode()
-                except (OSError, ValueError, KeyError, TypeError) as error:
-                    status = 503
-                    body = json.dumps({'error': 'Snapshot unavailable: ' + type(error).__name__}).encode()
-            else:
-                status, mime, body = 404, 'text/plain; charset=utf-8', b'Not found'
+        def host_allowed(self):
+            """Only the two local names may address the service (DNS-rebinding guard)."""
+            host = (self.headers.get('Host') or '').strip().lower()
+            if not host or host.startswith('['):
+                return False
+            name, separator, port_text = host.partition(':')
+            if name not in LOCALHOST_NAMES:
+                return False
+            if not separator:
+                return True
+            return port_text.isdigit() and int(port_text) == binding['port']
+
+        def respond(self, status, mime, body, allow=None):
             self.send_response(status)
             self.send_header('Content-Type', mime)
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header('Content-Length', str(len(body)))
+            for key, value in SECURITY_HEADERS:
+                self.send_header(key, value)
+            if allow:
+                self.send_header('Allow', allow)
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != 'HEAD':
+                self.wfile.write(body)
+
+        def do_GET(self):
+            if not self.host_allowed():
+                self.respond(403, 'text/plain; charset=utf-8', b'Forbidden', 'GET')
+                return
+            parts = urlsplit(self.path)
+            route = parts.path
+            if route == '/':
+                self.respond(200, 'text/html; charset=utf-8', page)
+            elif route == '/health':
+                self.respond(200, 'application/json; charset=utf-8',
+                             json.dumps(health_payload()).encode())
+            elif route == '/snapshot':
+                self.snapshot(parts.query)
+            else:
+                self.respond(404, 'text/plain; charset=utf-8', b'Not found', 'GET')
+
+        def snapshot(self, query):
+            mime = 'application/json; charset=utf-8'
+            selected = directory
+            if registry is not None:
+                wanted = (parse_qs(query).get('run') or [''])[0]
+                try:
+                    selected = resolve_run(registry, wanted)
+                except LookupError:
+                    self.respond(404, mime, json.dumps({'error': 'Unknown Run'}).encode())
+                    return
+                except (OSError, ValueError, Degraded):
+                    self.respond(503, mime, json.dumps(
+                        {'error': 'Snapshot unavailable: this Run cannot be read'}).encode())
+                    return
+            try:
+                body = json.dumps(view(selected, stale_seconds)).encode()
+            except (OSError, ValueError, KeyError, TypeError):
+                self.respond(503, mime,
+                             json.dumps({'error': 'Snapshot unavailable'}).encode())
+                return
+            self.respond(200, mime, body)
+
+        def reject_method(self):
+            if not self.host_allowed():
+                self.respond(403, 'text/plain; charset=utf-8', b'Forbidden', 'GET')
+                return
+            self.respond(405, 'text/plain; charset=utf-8', b'Method not allowed', 'GET')
+
+        do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = reject_method
 
         def log_message(self, *_args):
             pass
 
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    binding['port'] = server.server_port
     print(BANNER + 'http://127.0.0.1:' + str(server.server_port) + '/', flush=True)
     try:
         server.serve_forever()

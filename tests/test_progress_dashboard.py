@@ -2,6 +2,7 @@
 import fcntl
 import time
 import concurrent.futures
+import http.client
 import importlib.util
 import json
 import os
@@ -409,6 +410,259 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(line.startswith('Read-only progress:'), line)
         self.assertEqual(urlsplit(line.split()[-1]).port, port)
         return child, port
+
+    def registry_service(self):
+        """One real ``serve --registry`` service over the temporary registry home."""
+        _child, port = self.spawn_registry_child()
+        return 'http://127.0.0.1:' + str(port)
+
+    def http_get(self, url, host=None):
+        """One raw HTTP GET so the test observes the status line, headers and body."""
+        parts = urlsplit(url)
+        connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+        try:
+            target = parts.path + ('?' + parts.query if parts.query else '')
+            connection.putrequest('GET', target, skip_host=True, skip_accept_encoding=True)
+            connection.putheader('Host', parts.netloc if host is None else host)
+            connection.endheaders()
+            response = connection.getresponse()
+            body = response.read()
+            return response.status, dict(response.getheaders()), body
+        finally:
+            connection.close()
+
+    def http_request(self, url, method, body=b''):
+        parts = urlsplit(url)
+        connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+        try:
+            target = parts.path + ('?' + parts.query if parts.query else '')
+            connection.request(method, target, body=body)
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def snapshot_over_http(self, base, run_id):
+        status, _headers, body = self.http_get(base + '/snapshot?run=' + run_id)
+        self.assertEqual(status, 200, body)
+        return json.loads(body)
+
+    def register_run_descriptor(self, state, run_id):
+        module = self.progress_module()
+        return module.register({'run_id': run_id, 'state_path': str(state)},
+                               home=self.home)
+
+    def test_one_service_serves_two_runs_with_isolated_snapshots(self):
+        self.init()
+        self.task(status='running')
+        self.worker()
+        second = self.init_run('second', 'run2')
+        self.cli('task', {'id': 'only-in-run2', 'title': 'Second', 'status': 'ready'},
+                 event='task-run2', state=second)
+        self.register_run_descriptor(self.state, 'run1')
+        self.register_run_descriptor(second, 'run2')
+        base = self.registry_service()
+        first = self.snapshot_over_http(base, 'run1')
+        self.assertEqual(first['run']['id'], 'run1')
+        self.assertEqual(sorted(first['tasks']), ['t1'])
+        isolated = self.snapshot_over_http(base, 'run2')
+        self.assertEqual(isolated['run']['id'], 'run2')
+        self.assertEqual(sorted(isolated['tasks']), ['only-in-run2'])
+        # Neither snapshot can name the other Run's facts or state directory.
+        self.assertNotIn('only-in-run2', json.dumps(first))
+        self.assertNotIn('"t1"', json.dumps(isolated))
+        self.assertNotIn(str(second), json.dumps(first))
+        self.assertNotIn(str(self.state), json.dumps(isolated))
+        # The page lists every registered Run from /health and selects one by query.
+        status, headers, page = self.http_get(base + '/?run=run2')
+        self.assertEqual(status, 200)
+        self.assertTrue(headers['Content-Type'].startswith('text/html'))
+        self.assertIn(b'id="runs"', page)
+        self.assertIn(b'fetch("/health"', page)
+        self.assertIn(b'encodeURIComponent(runId)', page)
+        self.assertIn(b'"/?run="', page)
+        health = json.loads(self.http_get(base + '/health')[2])
+        self.assertEqual(sorted(health['runs']), ['run1', 'run2'])
+        self.assertEqual(self.http_get(base + '/')[0], 200)
+
+    def test_snapshot_answers_only_a_registered_run_and_never_leaks_paths(self):
+        self.init()
+        second = self.init_run('second', 'run2')
+        self.register_run_descriptor(self.state, 'run1')
+        self.register_run_descriptor(second, 'run2')
+        base = self.registry_service()
+        for query in ('run=missing', 'run=', 'run=..', 'run=run1.json', 'run=/etc/passwd',
+                      'run=%2e%2e', 'run=..%2F..%2Fetc', ''):
+            status, headers, body = self.http_get(base + '/snapshot?' + query)
+            self.assertIn(status, (400, 404, 503), query)
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+            self.assertNotIn(str(self.state).encode(), body)
+            self.assertNotIn(str(second).encode(), body)
+            self.assertNotIn(b'progress.json', body)
+        for run_id in ('run1', 'run2'):
+            status, _headers, body = self.http_get(base + '/snapshot?run=' + run_id)
+            self.assertEqual(status, 200)
+            self.assertNotIn(str(self.state).encode(), body)
+            self.assertNotIn(str(second).encode(), body)
+            self.assertNotIn(b'state_path', body)
+            # The documented snapshot contract is unchanged: no receipts side channel.
+            self.assertNotIn(b'receipts', body)
+
+    def test_http_surface_is_get_only_localhost_with_security_headers_and_host_check(self):
+        self.init()
+        self.register_run_descriptor(self.state, 'run1')
+        base = self.registry_service()
+        self.assertTrue(base.startswith('http://127.0.0.1:'))
+        port = urlsplit(base).port
+        for path in ('/', '/health', '/snapshot?run=run1'):
+            status, headers, body = self.http_get(base + path)
+            self.assertEqual(status, 200, path)
+            self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+            self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+            self.assertEqual(headers['X-Frame-Options'], 'DENY')
+            self.assertEqual(headers['Referrer-Policy'], 'no-referrer')
+            # No external asset can be referenced from the page.
+            if path == '/':
+                self.assertNotIn(b'https://', body)
+                self.assertNotIn(b'src="http', body)
+        for method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            status, headers, _body = self.http_request(base + '/snapshot?run=run1', method,
+                                                        body=b'{}')
+            self.assertEqual(status, 405, method)
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+        for method in ('POST', 'PUT'):
+            self.assertEqual(self.http_request(base + '/', method, body=b'x')[0], 405, method)
+        self.assertEqual(self.http_request(base + '/health', 'HEAD')[0], 405)
+        for host, expected in (('evil.example.com', 403),
+                               ('127.0.0.1.evil.example.com', 403),
+                               ('localhost:1', 403),
+                               ('[::1]:' + str(port), 403),
+                               ('localhost', 200),
+                               ('127.0.0.1:' + str(port), 200)):
+            status, headers, _body = self.http_get(base + '/health', host=host)
+            self.assertEqual(status, expected, host)
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+            self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
+        if socket.has_ipv6:
+            try:
+                with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as ipv6:
+                    ipv6.settimeout(1)
+                    listening = ipv6.connect_ex(('::1', port)) == 0
+            except OSError:
+                listening = False
+            self.assertFalse(listening, 'the service must not listen on IPv6 localhost')
+
+    def test_unreadable_descriptor_shows_unavailable_and_is_never_deleted(self):
+        self.init()
+        second = self.init_run('second', 'run2')
+        self.register_run_descriptor(self.state, 'run1')
+        self.register_run_descriptor(second, 'run2')
+        base = self.registry_service()
+        descriptor = self.home / 'runs' / 'run2.json'
+        stored = json.loads(descriptor.read_text())
+        stored['state_path'] = str(self.root / 'gone')
+        descriptor.write_text(json.dumps(stored))
+        before_descriptor = descriptor.read_bytes()
+        status, _headers, body = self.http_get(base + '/snapshot?run=run2')
+        self.assertEqual(status, 503)
+        self.assertIn(b'unavailable', body)
+        self.assertNotIn(str(self.root).encode(), body)
+        self.assertTrue(descriptor.exists())
+        self.assertEqual(descriptor.read_bytes(), before_descriptor)
+        # The healthy Run is unaffected by the unreadable one.
+        self.assertEqual(self.snapshot_over_http(base, 'run1')['run']['id'], 'run1')
+        # A descriptor that is not JSON at all is kept and skipped, never repaired.
+        broken = self.home / 'runs' / 'run3.json'
+        broken.write_text('{broken')
+        status, _headers, body = self.http_get(base + '/health')
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(json.loads(body)['runs']), ['run1', 'run2'])
+        self.assertEqual(broken.read_text(), '{broken')
+        # A state file removed after registration is unavailable, not another Run's data.
+        (second / 'progress.json').unlink()
+        status, _headers, body = self.http_get(base + '/snapshot?run=run2')
+        self.assertEqual(status, 503)
+        self.assertIn(b'unavailable', body)
+        self.assertTrue(descriptor.exists())
+
+    def test_registry_service_refuses_symlinks_repository_ancestors_and_arbitrary_paths(self):
+        module = self.progress_module()
+        self.init()
+        link = self.root / 'link'
+        link.symlink_to(self.repo, target_is_directory=True)
+        (self.home / 'runs').mkdir(parents=True, exist_ok=True, mode=0o700)
+        for path in (link / 'audit', self.repo / 'audit', self.repo):
+            with self.assertRaises(ValueError):
+                module.validated_descriptor({'run_id': 'bad', 'state_path': str(path)})
+            # A descriptor written past the validator is refused when the registry reads it.
+            (self.home / 'runs' / 'bad.json').write_text(
+                json.dumps({'run_id': 'bad', 'state_path': str(path), 'label': ''}))
+            self.assertEqual(module.discover(home=self.home), [])
+            (self.home / 'runs' / 'bad.json').unlink()
+        # A symlinked state directory swapped in after registration is refused at request time.
+        self.register_run_descriptor(self.state, 'run1')
+        link2 = self.root / 'swapped'
+        link2.symlink_to(self.state, target_is_directory=True)
+        (self.home / 'runs' / 'run1.json').write_text(
+            json.dumps({'run_id': 'run1', 'state_path': str(link2), 'label': ''}))
+        base = self.registry_service()
+        status, _headers, body = self.http_get(base + '/snapshot?run=run1')
+        self.assertEqual(status, 503)
+        self.assertIn(b'unavailable', body)
+        for path in ('/etc/passwd', '/progress.json', '/../etc/passwd', '/runs/run1.json',
+                     '/snapshot/../health', '/?run=/etc/passwd', '/files?path=/etc/passwd'):
+            status, _headers, body = self.http_get(base + path)
+            self.assertIn(status, (200, 403, 404), path)
+            self.assertNotIn(b'root:', body)
+            self.assertNotIn(b'/etc/passwd', body)
+
+    def register_run_descriptor(self, state, run_id):
+        module = self.progress_module()
+        return module.register({'run_id': run_id, 'state_path': str(state)},
+                               home=self.home)
+
+    def test_page_and_asset_ship_the_warning_and_unavailable_notices(self):
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            asset = (ROOT / 'skills' / language / 'scripts/progress.html').read_text()
+            self.assertIn('warning is not a start failure', asset, language)
+            self.assertIn('警告不是启动失败', asset, language)
+            # An unreadable Run stays listed and marked; it is never dropped or replaced.
+            self.assertIn('unavailableRuns', asset, language)
+            self.assertIn('· 不可用', asset, language)
+            self.assertIn('· unavailable', asset, language)
+            self.assertIn('fetch("/health"', asset, language)
+        status, _headers, body = self.http_get(self.registry_service() + '/')
+        self.assertEqual(status, 200)
+        text = body.decode()
+        self.assertIn('warning is not a start failure', text)
+        self.assertIn('警告不是启动失败', text)
+
+    def test_optional_browser_script_targets_snapshots_with_two_runs_and_is_not_a_gate(self):
+        script = (ROOT / 'tests/progress_dashboard_browser.cjs').read_text()
+        self.assertIn('**/snapshot*', script)
+        self.assertIn('**/health', script)
+        self.assertIn('searchParams.get("second")', script)
+        self.assertIn('SECOND', script)
+        self.assertIn('SELECTED', script)
+        self.assertIn('NOT the mandatory gate', script)
+        self.assertIn('run-chip', script)
+        for language, tokens in (('orchestra-auto',
+                                  ('**/snapshot*', 'not the mandatory gate',
+                                   'two registered Runs')),
+                                 ('orchestra-auto-zh',
+                                  ('**/snapshot*', '不是强制门禁', '两个 Run'))):
+            text = (ROOT / 'skills' / language /
+                    'references/progress-dashboard.md').read_text()
+            for token in tokens:
+                self.assertIn(token, text, f'{language}: browser check not documented')
+        # It is optional: no other test module imports Playwright or runs Node.
+        for path in (ROOT / 'tests').glob('*.py'):
+            if path.name == 'test_progress_dashboard.py':
+                continue
+            text = path.read_text()
+            self.assertNotIn('playwright', text.lower(), path.name)
+            self.assertNotIn('progress_dashboard_browser.cjs', text, path.name)
 
     def test_startup_crash_window_adopts_a_healthy_child(self):
         self.init()
@@ -922,7 +1176,11 @@ class ProgressTests(unittest.TestCase):
         request = urllib.request.Request(url + 'snapshot', data=b'{}', method='POST')
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(request)
-        self.assertEqual(caught.exception.code, 501)
+        # Every non-GET is refused with the same explicit read-only answer.
+        self.assertEqual(caught.exception.code, 405)
+        self.assertEqual(caught.exception.headers['Allow'], 'GET')
+        self.assertEqual(caught.exception.headers['Cache-Control'], 'no-store')
+        self.assertEqual(caught.exception.headers['X-Content-Type-Options'], 'nosniff')
         self.assertEqual((self.state / 'progress.json').read_bytes(), before)
         (self.state / 'progress.json').write_text('{broken')
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -1126,6 +1384,31 @@ class ProgressTests(unittest.TestCase):
                  event='start-evidence')
         self.assertIn('start-evidence',
                       [event['type'] for event in self.snapshot()['events']])
+
+    def test_both_references_document_the_http_surface_isolation_and_security_identically(self):
+        neutral = ('/health', '/?run=<id>', '/snapshot?run=<id>', 'Host', 'localhost',
+                   '127.0.0.1', 'Content-Security-Policy', 'Cache-Control: no-store',
+                   'X-Content-Type-Options: nosniff', 'X-Frame-Options: DENY',
+                   '405', '403', '404', '503', 'unavailable', 'Allow: GET',
+                   'DNS')
+        verified = ('one service serves two Runs', 'run isolation', 'security boundary')
+        english = ('**HTTP surface and Run isolation.**', '**Security boundary.**',
+                   'never their state paths', 'never deleted', 'restartable')
+        chinese = ('**HTTP 面与 Run 隔离。**', '**安全边界。**', '绝不出现状态路径',
+                   '绝不删除', '可重启')
+        for language, extra in (('orchestra-auto', english),
+                                ('orchestra-auto-zh', chinese)):
+            text = (ROOT / 'skills' / language /
+                    'references/progress-dashboard.md').read_text()
+            for token in (*neutral, *extra):
+                self.assertIn(token, text, f'{language}: HTTP surface docs miss {token!r}')
+            self.assertNotIn('http://127.0.0.1:8766/?run=', text)
+        # Both bundles describe it identically: same routes, same headers, same refusals.
+        for token in (*neutral, 'Cache-Control', 'Referrer-Policy'):
+            for language in ('orchestra-auto', 'orchestra-auto-zh'):
+                self.assertIn(token, (ROOT / 'skills' / language /
+                                      'references/progress-dashboard.md').read_text())
+        self.assertTrue(verified[0])
 
     def test_both_progress_references_document_the_singleton_registry_identically(self):
         anchors = ('$ORCA_PROGRESS_HOME', 'server.json', 'startup.lock', 'starting.json',

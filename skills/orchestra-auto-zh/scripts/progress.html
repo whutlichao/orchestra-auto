@@ -313,6 +313,64 @@
         background: var(--accent);
       }
 
+      .runs {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px;
+        padding: 8px 32px;
+        font-size: 12.5px;
+        color: var(--muted);
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+      }
+      .runs[hidden] {
+        display: none;
+      }
+      .runs-label {
+        font-weight: 650;
+        color: var(--text-2);
+      }
+      .run-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-width: 0;
+      }
+      .run-chip {
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        padding: 2px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        overflow-wrap: anywhere;
+      }
+      .run-chip[aria-current="true"] {
+        border-color: var(--accent-line);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 650;
+      }
+      .run-chip.unavailable {
+        border-style: dashed;
+        color: var(--warning);
+        background: var(--warning-soft);
+      }
+      .notice {
+        padding: 8px 32px;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--warning);
+        background: var(--warning-soft);
+        border-bottom: 1px solid var(--line);
+        overflow-wrap: anywhere;
+      }
+
       main {
         width: 100%;
         max-width: 1560px;
@@ -981,7 +1039,9 @@
         main,
         .page-footer,
         .topbar,
-        .health {
+        .health,
+        .runs,
+        .notice {
           padding-left: 44px;
           padding-right: 44px;
         }
@@ -1002,6 +1062,12 @@
         }
         .health {
           padding: 9px 24px;
+        }
+        .runs {
+          padding: 8px 24px;
+        }
+        .notice {
+          padding: 8px 24px;
         }
         .page-footer {
           padding: 0 24px 28px;
@@ -1065,6 +1131,12 @@
         .health {
           padding: 8px 18px;
         }
+        .runs {
+          padding: 8px 18px;
+        }
+        .notice {
+          padding: 8px 18px;
+        }
         main,
         .page-footer {
           padding-left: 18px;
@@ -1104,7 +1176,9 @@
           padding: 16px 12px 40px;
         }
         .topbar,
-        .health {
+        .health,
+        .runs,
+        .notice {
           padding-left: 12px;
           padding-right: 12px;
         }
@@ -1194,6 +1268,16 @@
         <div id="health" class="health loading" role="status" aria-live="polite">
           正在加载快照…
         </div>
+        <div id="runs" class="runs" hidden>
+          <span class="runs-label" id="runs-label">已注册 Run</span>
+          <span class="run-chips" id="run-chips"></span>
+        </div>
+        <p class="notice" id="notice">
+          <strong>警告不是启动失败 · a warning is not a start failure.</strong>
+          记录或看板警告只表示「继续编排」：失败只记录 gap，派发和运行不会因此被判定为启动失败。
+          A recording or dashboard warning only means "continue orchestration"; it never
+          turns a dispatch into a failed start.
+        </p>
         <main id="content"><p class="empty">尚无有效快照。</p></main>
         <footer class="page-footer" id="footer">
           只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照 · 不估算完成百分比或剩余时间
@@ -1215,6 +1299,10 @@
       const skipLink = document.getElementById("skip-link");
       const languageButton = document.getElementById("language");
       const refreshButton = document.getElementById("refresh");
+      const runsBar = document.getElementById("runs");
+      const runsLabel = document.getElementById("runs-label");
+      const runChips = document.getElementById("run-chips");
+      const notice = document.getElementById("notice");
 
       const NAV = [
         ["overview", "运行概览", "Overview"],
@@ -1256,6 +1344,8 @@
         active: { zh: "运行中", en: "Active", tone: "success" },
         completed: { zh: "已结束", en: "Completed", tone: "success" },
         current: { zh: "观测有效", en: "Current", tone: "success" },
+        healthy: { zh: "健康", en: "Healthy", tone: "success" },
+        degraded: { zh: "降级", en: "Degraded", tone: "warning" },
 
         stale: { zh: "观测过期", en: "Stale", tone: "warning" },
         lost: { zh: "已失联", en: "Lost", tone: "danger" },
@@ -1277,7 +1367,9 @@
 
       let snapshot = null;
       // A singleton dashboard serves many Runs; the opened URL names the selected one.
-      const selectedRun = new URLSearchParams(location.search).get("run") || "";
+      let selectedRun = new URLSearchParams(location.search).get("run") || "";
+      let knownRuns = [];
+      let unavailableRuns = [];
       let lastLoaded = null;
       let filter = null;
       let language = "zh";
@@ -1466,6 +1558,8 @@
           "Orchestra · Progress console",
         );
         document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+        notice.lang = language === "zh" ? "zh-CN" : "en";
+        renderRuns();
         runHeading.textContent = snap
           ? value(snap.run.title || snap.run.id)
           : tr("等待快照", "Waiting for snapshot");
@@ -1487,6 +1581,62 @@
             tone(snap.run.phase),
           );
         }
+      }
+
+      function renderRuns() {
+        runsLabel.textContent = tr("已注册 Run", "Registered Runs");
+        runChips.replaceChildren();
+        const listed = [...knownRuns];
+        for (const runId of unavailableRuns)
+          if (!listed.includes(runId)) listed.push(runId);
+        runsBar.hidden = listed.length === 0;
+        for (const runId of listed) {
+          const unavailable = unavailableRuns.includes(runId);
+          const chip = node(
+            "a",
+            runId + (unavailable ? tr(" · 不可用", " · unavailable") : ""),
+            runChips,
+          );
+          chip.className = "run-chip" + (unavailable ? " unavailable" : "");
+          chip.href = "/?run=" + encodeURIComponent(runId);
+          chip.dataset.run = runId;
+          if (runId === selectedRun) chip.setAttribute("aria-current", "true");
+          chip.addEventListener("click", (event) => {
+            event.preventDefault();
+            if (selectedRun === runId) return;
+            selectedRun = runId;
+            history.replaceState(
+              null,
+              "",
+              "/?run=" + encodeURIComponent(runId),
+            );
+            snapshot = null;
+            lastLoaded = null;
+            healthState = { kind: "loading", at: null, message: "" };
+            renderRuns();
+            content.replaceChildren();
+            renderPlaceholder();
+            renderHealth();
+            refresh();
+          });
+        }
+      }
+
+      // The Run list is the only cross-Run information the page shows: /health names
+      // Run IDs, never state paths. A selected Run whose descriptor cannot be read stays
+      // listed as unavailable; it is never silently replaced by another Run.
+      async function refreshRuns() {
+        try {
+          const response = await fetch("/health", { cache: "no-store" });
+          if (!response.ok) return;
+          const health = await response.json();
+          const runs = Array.isArray(health && health.runs) ? health.runs : [];
+          knownRuns = runs.filter((item) => typeof item === "string");
+          unavailableRuns = unavailableRuns.filter(
+            (item) => !knownRuns.includes(item),
+          );
+          renderRuns();
+        } catch {}
       }
 
       function renderHealth() {
@@ -1603,6 +1753,14 @@
         metaGrid.className = "meta-grid";
         fact(tr("状态", "Status"), label(snap.run.status), metaGrid);
         fact(tr("阶段", "Phase"), label(snap.run.phase), metaGrid);
+        // The health projection is shown separately from task facts and never inferred.
+        fact(
+          tr("健康投影", "Health projection"),
+          Object.hasOwn(snap.run, "health")
+            ? label(snap.run.health)
+            : tr("无记录", "not recorded"),
+          metaGrid,
+        );
         fact(tr("开始时间", "Started"), dateTime(snap.run.started_at), metaGrid);
         fact(tr("结束时间", "Ended"), dateTime(snap.run.ended_at), metaGrid);
         const tiles = node("div", undefined, grid);
@@ -2617,10 +2775,22 @@
           } catch {
             throw Error(tr("快照不是有效 JSON", "Snapshot is not valid JSON"));
           }
-          if (!response.ok)
+          if (!response.ok) {
+            // A registered Run whose descriptor cannot be read is listed as
+            // unavailable; the service never deletes or repairs it.
+            if (response.status === 503 && selectedRun) {
+              if (!unavailableRuns.includes(selectedRun))
+                unavailableRuns.push(selectedRun);
+              renderRuns();
+            }
             throw Error(
               data && data.error ? String(data.error) : "Snapshot request failed",
             );
+          }
+          unavailableRuns = unavailableRuns.filter(
+            (item) => item !== selectedRun,
+          );
+          renderRuns();
           const changed = JSON.stringify(data) !== JSON.stringify(snapshot);
           if (changed || renderedLanguage !== language) render(data);
           renderedLanguage = language;
@@ -2640,7 +2810,10 @@
         }
       }
 
-      refreshButton.addEventListener("click", refresh);
+      refreshButton.addEventListener("click", () => {
+        refreshRuns();
+        refresh();
+      });
       languageButton.addEventListener("click", () => {
         language = language === "zh" ? "en" : "zh";
         renderChrome(snapshot);
@@ -2662,8 +2835,12 @@
 
       renderChrome(null);
       renderHealth();
+      refreshRuns();
       refresh();
-      setInterval(refresh, 3000);
+      setInterval(() => {
+        refreshRuns();
+        refresh();
+      }, 3000);
     </script>
   </body>
 </html>
