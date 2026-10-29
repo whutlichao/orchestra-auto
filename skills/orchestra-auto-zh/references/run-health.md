@@ -68,7 +68,7 @@ observation 的字段及其对健康的意义：
 | `observed_at` | 快照的 `observed_at` | 收件器查看的时刻；所有年龄都从它起算 |
 | `saved`、`unacked`、`unacked_delivery_ids`、`blocked` | `unacked` | 与 `--status --json` 同一套算术；非零即 `blocked` |
 | `watch` | `watch` | `off` 是 `degraded` + `watch_disabled`，绝不 healthy |
-| `phase`、`error` | `inbox` | `error` 立即 `blocked`；静止唤醒不记录 phase |
+| `phase`、`error` | `inbox` | `error` 立即 `blocked`；静止唤醒（`phase: wake`）不映射 inbox 块，因为它不是活跃 phase |
 | `binding` | `binding` | 下面的绑定丢失记录 |
 | `last_effective_progress` | `last_effective_progress` | 下面的停滞信号 |
 

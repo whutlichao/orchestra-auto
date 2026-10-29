@@ -77,7 +77,7 @@ The observation's fields, and what each one means for health:
 | `observed_at` | the snapshot's `observed_at` | when the loop looked; every age is measured from it |
 | `saved`, `unacked`, `unacked_delivery_ids`, `blocked` | `unacked` | the same `--status --json` arithmetic; a nonzero count is `blocked` |
 | `watch` | `watch` | `off` is `degraded` with `watch_disabled`, never healthy |
-| `phase`, `error` | `inbox` | `error` is `blocked` immediately; a resting wake records no phase |
+| `phase`, `error` | `inbox` | `error` is `blocked` immediately; a resting wake (`phase: wake`) maps no inbox block, because it is not a live phase |
 | `binding` | `binding` | the binding-loss record, below |
 | `last_effective_progress` | `last_effective_progress` | the stall signal, below |
 
