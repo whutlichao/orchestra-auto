@@ -542,8 +542,10 @@ def aggregate(ticket, records):
     ticket-level level is true only when **every** linked PR record supports it. A later
     ``observation`` (revert / reopen) sets the affected level false and is attached as
     ``last_observation`` while the original evidence reference is preserved — history is
-    appended to, never overwritten. Two records that disagree about the same PR are
-    ``divergent``: the PR's levels are not averaged and no level is claimed for it.
+    appended to, never overwritten. A later attempt re-accepting the same PR is the claim
+    in force and leaves the earlier ones in ``records`` as history; records at the *same*
+    attempt that disagree about the same PR are ``divergent``, and that PR's levels are
+    neither averaged nor claimed.
     """
     accepted, observations = [], []
     for record in records or []:

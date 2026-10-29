@@ -824,6 +824,14 @@ class CliTests(unittest.TestCase):
                    if record["kind"] == "pending"]
         self.assertEqual(len(pending), 4)
         self.assertTrue(all(record["state"] == "pending" for record in pending))
+        summary = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "ledger.py"),
+             "summary", "--run-id", RUN_ID],
+            env=self.env, cwd=str(self.root), text=True, capture_output=True)
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+        counted = json.loads(summary.stdout)
+        self.assertEqual(counted["kinds"]["pending"], 4)
+        self.assertEqual(len(counted["pending_items"]), 4)
 
         resolved = self.run_cli(
             "resolve-question", "--run-id", RUN_ID,
