@@ -45,8 +45,7 @@ user input → §1 pin the delivery endpoint and channel → §2 hard-rule self-
               (worker-release, reclaimable drained) → §7 closing report; stop at the agreed delivery endpoint
 ```
 
-Files under `references/` are read conditionally; SKILL.md keeps the routing and the core
-constraints. Each reference states its own trigger in its opening lines:
+Files under `references/` are read conditionally; SKILL.md keeps the routing and the core constraints. Each reference states its own trigger in its opening lines:
 
 | File | When to read it |
 | --- | --- |
@@ -57,6 +56,7 @@ constraints. Each reference states its own trigger in its opening lines:
 | `references/gate-acceptance.md` | When a ticket closes and you pick a gate; when merging a project PR or settling a worker |
 | `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |
 | `references/inbox-and-waiting.md` | Before each Run's first dispatch (identity binding, inbox, installing the wake and its switches, lost-contact recovery); after every wake, to install the next wait; also when a worker's message never shows up |
+| `references/ledger.md` | Before the action a record protects and after it; when reconciling a crash window or reporting open intents and pending items |
 | `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
 | `references/gates-docs-planning.md` | This ticket is a design / spec / ticket-splitting ticket heading for G-docs / G-wayfinder / G-spec / G-tickets |
 | `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
