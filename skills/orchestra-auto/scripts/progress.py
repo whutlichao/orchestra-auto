@@ -35,6 +35,8 @@ LOCK_TIMEOUT_SECONDS = 2.0
 #: The singleton registry protocol. ``protocol_version`` starts at 1; a service that
 #: does not answer ``/health`` with at least this version is legacy or incompatible.
 PROTOCOL_VERSION = 1
+#: A Run label is untrusted display text; /health truncates it before serving.
+RUN_LABEL_MAX_CHARS = 120
 REGISTRY_HOME_ENV = 'ORCA_PROGRESS_HOME'
 DEFAULT_REGISTRY_HOME = '~/.orca/progress'
 REGISTRY_DIRECTORY_MODE = 0o700
@@ -898,6 +900,32 @@ def resolve_run(home, run_id):
     raise LookupError('unknown or missing run')
 
 
+def text_label(value):
+    """A stripped label string, or ``''`` when the value is not a string."""
+    return value.strip() if isinstance(value, str) else ''
+
+
+def readable_run_labels(descriptors):
+    """Map each Run ID to a short readable label without exposing any state path.
+
+    A descriptor label wins. Historical Runs registered before labels were populated
+    fall back to the title of the Run's own state; any failure to read that state
+    silently omits the mapping, because /health must stay available and path-free.
+    """
+    labels = {}
+    for descriptor in descriptors:
+        label = text_label(descriptor.get('label', ''))
+        if not label:
+            try:
+                title = read_state(state_path(descriptor['state_path']))['run'].get('title')
+            except Exception:  # a historical state may be missing, unreadable or malformed
+                continue
+            label = text_label(title)
+        if label:
+            labels[descriptor['run_id']] = label[:RUN_LABEL_MAX_CHARS]
+    return labels
+
+
 def serve(directory, port, stale_seconds, registry=None):
     """Serve one Run (``serve --state``) or the registered Runs (``serve --registry``).
 
@@ -914,14 +942,16 @@ def serve(directory, port, stale_seconds, registry=None):
     binding = {'port': port}
 
     def health_payload():
-        runs = []
+        descriptors = []
         if registry is not None:
             try:
-                runs = [descriptor['run_id'] for descriptor in discover(registry)]
+                descriptors = discover(registry)
             except (OSError, ValueError, Degraded):
-                runs = []
+                descriptors = []
         return {'ok': True, 'protocol_version': PROTOCOL_VERSION, 'pid': os.getpid(),
-                'started_at': started_at, 'runs': runs}
+                'started_at': started_at,
+                'runs': [descriptor['run_id'] for descriptor in descriptors],
+                'run_labels': readable_run_labels(descriptors)}
 
     class Handler(BaseHTTPRequestHandler):
         def host_allowed(self):
@@ -1065,10 +1095,10 @@ def main():
             print(json.dumps(view(directory, 300), ensure_ascii=False))
         elif args.command == 'open':
             state = read_state(directory)
+            title = state['run'].get('title')
+            label = args.label or text_label(title)
             run = {'run_id': state['run']['id'], 'state_path': str(directory),
-                   'mode': state['run'].get('mode')}
-            if args.label:
-                run['label'] = args.label
+                   'mode': state['run'].get('mode'), 'label': label}
             info = open(run, executable=Path(__file__).resolve(), home=args.registry,
                         startup_timeout=args.startup_timeout)
             print(json.dumps(info))

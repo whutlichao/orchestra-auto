@@ -178,10 +178,10 @@ class ProgressTests(unittest.TestCase):
         with urllib.request.urlopen(self.origin_of(info) + '/health', timeout=5) as response:
             return json.load(response)
 
-    def init_run(self, name, run_id):
+    def init_run(self, name, run_id, **extra):
         state = self.root / 'audit' / name
         self.cli('init', {'id': run_id, 'target_repo': str(self.repo), 'mode': 'REAL',
-                          'phase': 'implementation', 'status': 'active'},
+                          'phase': 'implementation', 'status': 'active', **extra},
                  event='init', state=state)
         return state
 
@@ -268,6 +268,24 @@ class ProgressTests(unittest.TestCase):
             self.assertEqual(descriptor['label'], '')
         self.assertEqual(self.snapshot_of(infos[0], 'run1')['run']['id'], 'run1')
         self.assertEqual(self.snapshot_of(infos[0], 'run2')['run']['id'], 'run2')
+
+    def test_open_uses_the_run_title_as_default_label_and_label_flag_overrides_it(self):
+        self.cli('init', {'id': 'run1', 'target_repo': str(self.repo), 'mode': 'REAL',
+                          'phase': 'implementation', 'status': 'active',
+                          'title': '  Dashboard labels from titles  '})
+        first = self.background_viewer()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        info = json.loads(first.stdout)
+        self.addCleanup(terminate, info['pid'])
+        descriptor = json.loads((self.home / 'runs' / 'run1.json').read_text())
+        self.assertEqual(descriptor['label'], 'Dashboard labels from titles')
+        again = subprocess.run(
+            [sys.executable, str(SCRIPT), '--state', str(self.state),
+             '--registry', str(self.home), '--label', 'explicit label', 'open'],
+            env=self.environment(), capture_output=True, text=True, timeout=25)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        descriptor = json.loads((self.home / 'runs' / 'run1.json').read_text())
+        self.assertEqual(descriptor['label'], 'explicit label')
 
     def read_json(self, path):
         return json.loads(path.read_text())
@@ -615,6 +633,46 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertIn(b'unavailable', body)
         self.assertTrue(descriptor.exists())
+
+    def test_health_reports_readable_run_labels_and_never_leaks_state_paths(self):
+        explicit = self.init_run('explicit', 'run1', title='Title under a descriptor label')
+        historical = self.init_run('historical', 'run2', title='  Historical title  ')
+        long_title = self.init_run('long', 'run3', title='L' * 200)
+        broken = self.init_run('broken', 'run4', title='Unreadable state')
+        untitled = self.init_run('untitled', 'run5')
+        whitespace = self.init_run('whitespace', 'run6', title='Whitespace label fallback')
+        module = self.progress_module()
+        registrations = (
+            ('run1', explicit, 'Descriptor label'),
+            ('run2', historical, None),
+            ('run3', long_title, None),
+            ('run4', broken, None),
+            ('run5', untitled, None),
+            ('run6', whitespace, '   '),
+        )
+        for run_id, state, label in registrations:
+            descriptor = {'run_id': run_id, 'state_path': str(state)}
+            if label is not None:
+                descriptor['label'] = label
+            module.register(descriptor, home=self.home)
+        (broken / 'progress.json').write_text('{broken')
+        base = self.registry_service()
+        status, _headers, body = self.http_get(base + '/health')
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertTrue(health['ok'])
+        # The existing contract is unchanged: runs is an ordered array of Run ID strings.
+        self.assertEqual(health['runs'], ['run1', 'run2', 'run3', 'run4', 'run5', 'run6'])
+        self.assertEqual(health['run_labels'], {
+            'run1': 'Descriptor label',
+            'run2': 'Historical title',
+            'run3': 'L' * 120,
+            'run6': 'Whitespace label fallback',
+        })
+        for path in (explicit, historical, long_title, broken, untitled, whitespace):
+            self.assertNotIn(str(path), body.decode())
+        self.assertNotIn(b'state_path', body)
+        self.assertNotIn(b'progress.json', body)
 
     def test_registry_service_refuses_symlinks_repository_ancestors_and_arbitrary_paths(self):
         module = self.progress_module()

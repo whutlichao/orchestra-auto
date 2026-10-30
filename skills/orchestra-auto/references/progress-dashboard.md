@@ -43,7 +43,9 @@ the first dispatch, run the init and open commands above with the real Run ID, a
 outside the repository and the actual target repository; do not use the example ID or paths. `open`
 registers the Run with the per-user dashboard service, starts that single service when none is
 running, and attempts to open the default browser, printing `{url, pid, degraded, reason,
-browser_opened}` as JSON; give the URL to the user. If the browser cannot open, tell the user to
+browser_opened}` as JSON; give the URL to the user. When `--label` is omitted, the descriptor
+label defaults to the Run's `run.title`; pass `--label <text>` to override it, so the standard
+command above needs no change. If the browser cannot open, tell the user to
 visit the printed URL manually. The page refreshes every three seconds; keep recording at
 the checkpoints below, and recording works whether or not the server is running. Leave the dashboard
 available to inspect the final state; stop it with `kill PID` on the printed singleton PID, which leaves every
@@ -76,7 +78,9 @@ workers, delivery evidence and events. No external fonts, assets or frontend pac
 snapshot refreshes every three seconds, and every single read — snapshot or Run list — is bounded by
 an 8-second timeout. A snapshot read that fails or times out records the error with its time, keeps
 the last valid view, and the next poll simply retries; a stuck request never stops the page. A Run
-list read that fails stays silent and never changes the snapshot view. Task filters,
+list read that fails stays silent and never changes the snapshot view. The Run list shows each
+Run's readable label when `/health` supplies one, falls back to the Run ID otherwise, and reveals
+the full Run ID when a chip is hovered. Task filters,
 expanded details, graph scroll and language survive updates. The in-page refresh button re-reads
 immediately, aborting a request that is still waiting instead of queueing behind it, and returning
 the tab to the foreground (visible tab, page restored from the back/forward cache, or window focus)
@@ -285,21 +289,29 @@ timeout is degraded: no second service is ever started.
 
 **Interfaces.** The script exposes `registry.register(run)`, `registry.discover()`,
 `registry.probe()` and `registry.open(run) -> {url, pid, degraded, reason}`; the HTTP layer only
-renders read-only snapshots. `GET /health` returns `{ok, protocol_version, pid, started_at, runs}`;
-`protocol_version` starts at `1`. `GET /?run=<id>` renders the page and `GET /snapshot?run=<id>`
-returns that Run's snapshot; an unknown Run is an error, never another Run's data.
+renders read-only snapshots. `GET /health` returns
+`{ok, protocol_version, pid, started_at, runs, run_labels}`; `protocol_version` starts at `1`.
+`runs` stays an ordered array of Run ID strings. `run_labels` maps each Run ID to a short readable
+label: the validated descriptor label wins; when it is empty, the service reads only that Run's
+registered state and uses `run.title`; a state that cannot be read is silently omitted, and every
+value is stripped of surrounding whitespace and truncated to 120 characters. The response never
+includes a state path. `GET /?run=<id>`
+renders the page and `GET /snapshot?run=<id>` returns that Run's snapshot; an unknown Run is an
+error, never another Run's data.
 
 **HTTP surface and Run isolation.** The service exposes exactly three GET routes and no write API:
 
 | Route | Answer |
 | --- | --- |
-| `GET /health` | `{ok, protocol_version, pid, started_at, runs}`: the service plus the registered Run IDs, never their state paths |
-| `GET /?run=<id>` | the page: a Run list built from `/health` plus the selected Run's tasks, workers, deliveries, events, freshness and health projection, and the "warning is not a start failure" notice |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels}`: the service, the registered Run IDs, and their short readable labels (descriptor label first, then the registered state's `run.title`; unreadable states are omitted), never their state paths |
+| `GET /?run=<id>` | the page: a Run list built from `/health` (each chip shows the readable label when present and the full Run ID on hover) plus the selected Run's tasks, workers, deliveries, events, freshness and health projection, and the "warning is not a start failure" notice |
 | `GET /snapshot?run=<id>` | that Run's read-only snapshot, and nothing from any other Run |
 
 Run isolation is one descriptor lookup per request: each snapshot reads only the selected Run's
-`progress.json` through the shared state-path validator, responses name Run IDs and never a state
-path, and cross-Run access is limited to the Run ID list in `/health` and on the page. A descriptor
+`progress.json` through the shared state-path validator, and responses name Run IDs and short
+labels, never a state path. Cross-Run reading is limited to `/health` deriving a label: when a
+descriptor has no label it may read only that Run's own state for `run.title`, and the page shows
+the Run ID list. A descriptor
 that cannot be read, or whose `progress.json` is missing or corrupt, answers `503` with
 `Snapshot unavailable` and a Run list entry marked unavailable; the descriptor is never deleted and
 never repaired, and an unknown Run ID answers `404`. The page keeps the Run list when one Run is
