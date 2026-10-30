@@ -93,8 +93,14 @@ let browser;
   const requests = [];
   page.on("request", (request) => requests.push(request.url()));
   page.on("pageerror", (e) => errors.push(String(e)));
+  // The fake clock is installed before the page runs so every timer the page schedules —
+  // the three-second poll and the 8-second read timeout — is controlled here. It is then
+  // paused, so only an explicit runFor advances the page's time and request counts stay
+  // deterministic.
+  await page.clock.install();
   await page.goto(url);
   await page.waitForSelector(".donut");
+  await page.clock.pauseAt(new Date(Date.now()));
   const results = ["Chromium " + browser.version()];
   for (const [width, height] of [
     [1440, 900],
@@ -124,7 +130,21 @@ let browser;
   }
   let snapshot = fixture(SELECTED),
     response = "valid";
+  // A "hang" answer holds the response until the test releases it, so the page really is
+  // left waiting while the test observes whether it can still recover on its own.
+  const held = [];
   await page.route("**/snapshot*", async (route) => {
+    if (response === "hang") {
+      await new Promise((resolve) => held.push(resolve));
+      try {
+        return await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify(snapshot),
+        });
+      } catch {
+        return undefined; // the page already aborted this request
+      }
+    }
     if (response === "error")
       return route.fulfill({
         status: 503,
@@ -485,6 +505,87 @@ let browser;
   results.push(
     "cycles, missing nodes, long titles and 90 tasks stay scrollable; graph scroll survives refresh; malicious HTML/URLs stay text",
   );
+  // A hung read must not lock the page. The route holds the response so the page is really
+  // waiting; the paused clock then runs past the page's own 8-second read timeout.
+  const snapshotRequests = () =>
+    requests.filter((requestUrl) => requestUrl.includes("/snapshot")).length;
+  const heldBefore = snapshotRequests();
+  response = "hang";
+  await refresh();
+  assert.equal(snapshotRequests(), heldBefore + 1, "the click issued a request");
+  await page.clock.runFor(8100);
+  await page.waitForTimeout(200);
+  assert.match(
+    await page.locator("#health").innerText(),
+    /读取超时|Read timed out/,
+    "the hung read times out and says so",
+  );
+  assert.equal(
+    await page.locator(".scroll svg rect").count(),
+    90,
+    "the last valid view survives the timeout",
+  );
+  // Recovering after the timeout: the next read must land. The still-held request is
+  // released late and must not overwrite the newer result.
+  response = "valid";
+  for (const release of held.splice(0)) release();
+  await page.waitForTimeout(100);
+  snapshot = fixture(SELECTED);
+  snapshot.tasks = { after: task("after", "accepted") };
+  const heldAfterTimeout = snapshotRequests();
+  await refresh();
+  assert.equal(snapshotRequests(), heldAfterTimeout + 1, "a real read follows the timeout");
+  assert.equal(await page.locator(".task-row").count(), 1);
+  assert.match(await page.locator(".task-row").innerText(), /after/);
+  results.push(
+    "a hung snapshot times out at 8s, keeps the last valid view, and the next read still lands",
+  );
+  // A forced refresh wins immediately instead of waiting for the timeout to expire.
+  response = "hang";
+  await refresh();
+  const heldDuringForce = snapshotRequests();
+  snapshot = { ...fixture(SELECTED), tasks: { forced: task("forced", "running") } };
+  response = "valid";
+  await page.locator("#refresh").click();
+  await page.waitForTimeout(300);
+  assert.equal(
+    snapshotRequests(),
+    heldDuringForce + 1,
+    "the refresh button does not queue behind the stuck read",
+  );
+  assert.equal(await page.locator(".task-row").count(), 1);
+  assert.match(await page.locator(".task-row").innerText(), /forced/);
+  for (const release of held.splice(0)) release();
+  results.push("the refresh button aborts a stuck read and re-reads immediately");
+  // Returning to the foreground reads at once — the page is visible and unthrottled here, so
+  // a read can only come from the events themselves. A burst of three collapses into one.
+  snapshot = fixture(SELECTED);
+  await refresh();
+  const foregroundBefore = snapshotRequests();
+  await page.evaluate(() => {
+    let state = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => state,
+    });
+    state = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    state = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pageshow"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await page.clock.runFor(60);
+  await page.waitForTimeout(300);
+  assert.equal(
+    snapshotRequests(),
+    foregroundBefore + 1,
+    "one foreground burst is exactly one read",
+  );
+  results.push(
+    "visibilitychange, pageshow and focus collapse into one immediate read",
+  );
+  await page.clock.resume();
   assert.deepEqual(
     requests.filter((requestUrl) => !requestUrl.startsWith(base.origin + "/")),
     [],

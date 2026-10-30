@@ -1373,7 +1373,17 @@
       let lastLoaded = null;
       let filter = null;
       let language = "zh";
-      let busy = false;
+      // Every page read is bounded: a hung service must not strand the view. The same
+      // timeout covers /snapshot and /health, and an explicit refresh aborts a read
+      // that is still in flight instead of waiting for it.
+      const READ_TIMEOUT_MS = 8000;
+      // visibilitychange, pageshow and focus can all fire for one return to the foreground.
+      // One pending timer collapses that burst into a single read.
+      const FOREGROUND_DEBOUNCE_MS = 50;
+      const inFlight = { snapshot: null, health: null };
+      // An abandoned read must not overwrite the state of the read that replaced it,
+      // so each snapshot read carries the generation it started under.
+      let readGeneration = 0;
       let renderedLanguage = null;
       let navLanguage = null;
       let healthState = { kind: "loading", at: null, message: "" };
@@ -1617,17 +1627,51 @@
             content.replaceChildren();
             renderPlaceholder();
             renderHealth();
-            refresh();
+            // The selection changed, so a read still in flight for the old Run must not
+            // land on the new one: abort it and read the newly selected Run now.
+            refresh({ force: true });
           });
         }
+      }
+
+      // One bounded read of a same-origin endpoint. The timer aborts the request — the
+      // headers or the body — at READ_TIMEOUT_MS, and an explicit refresh may abort the
+      // same controller sooner. Every caller releases the timer when it is done.
+      function startRead(path) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+        return {
+          controller,
+          response: fetch(path, { cache: "no-store", signal: controller.signal }),
+          release: () => clearTimeout(timer),
+        };
+      }
+
+      // A timeout is reported as a timeout, not as the browser's generic abort message.
+      function readMessage(read, error) {
+        if (read.controller.signal.aborted)
+          return tr(
+            "读取超时 " + READ_TIMEOUT_MS / 1000 + " 秒",
+            "Read timed out after " + READ_TIMEOUT_MS / 1000 + " seconds",
+          );
+        return error && error.message ? String(error.message) : String(error);
       }
 
       // The Run list is the only cross-Run information the page shows: /health names
       // Run IDs, never state paths. A selected Run whose descriptor cannot be read stays
       // listed as unavailable; it is never silently replaced by another Run.
-      async function refreshRuns() {
+      async function refreshRuns(options) {
+        // A health read that is still waiting is left alone by the poll: it is silent,
+        // bounded by the same timeout, and read again on the next tick. An explicit
+        // refresh aborts it so the Run list is re-read now rather than later.
+        if (inFlight.health) {
+          if (!(options && options.force)) return;
+          inFlight.health.abort();
+        }
+        const read = startRead("/health");
+        inFlight.health = read.controller;
         try {
-          const response = await fetch("/health", { cache: "no-store" });
+          const response = await read.response;
           if (!response.ok) return;
           const health = await response.json();
           const runs = Array.isArray(health && health.runs) ? health.runs : [];
@@ -1636,7 +1680,14 @@
             (item) => !knownRuns.includes(item),
           );
           renderRuns();
-        } catch {}
+        } catch {
+          // A /health failure stays silent: it never decides what the snapshot view says.
+        } finally {
+          // The flag is released even when the read is aborted, so the next tick — and an
+          // explicit refresh — can always issue a real request.
+          if (inFlight.health === read.controller) inFlight.health = null;
+          read.release();
+        }
       }
 
       function renderHealth() {
@@ -2760,21 +2811,31 @@
         }
       }
 
-      async function refresh() {
-        if (busy) return;
-        busy = true;
+      // A snapshot read is bounded by READ_TIMEOUT_MS and carries the generation it started
+      // under, so a read that was abandoned or replaced can never write over the newer one.
+      // `force` aborts a read that is still waiting instead of queueing behind it: the page
+      // is an observer, and a hung service must not own the view until the next reload.
+      async function refresh(options) {
+        const force = Boolean(options && options.force);
+        // A read that is still waiting is the serial flag: the poll waits it out, an
+        // explicit refresh replaces it.
+        if (inFlight.snapshot && !force) return;
+        if (inFlight.snapshot) inFlight.snapshot.abort();
+        const read = startRead(
+          "/snapshot" +
+            (selectedRun ? "?run=" + encodeURIComponent(selectedRun) : ""),
+        );
+        inFlight.snapshot = read.controller;
+        const generation = ++readGeneration;
         try {
-          const response = await fetch(
-            "/snapshot" +
-              (selectedRun ? "?run=" + encodeURIComponent(selectedRun) : ""),
-            { cache: "no-store" },
-          );
+          const response = await read.response;
           let data;
           try {
             data = await response.json();
           } catch {
             throw Error(tr("快照不是有效 JSON", "Snapshot is not valid JSON"));
           }
+          if (generation !== readGeneration) return;
           if (!response.ok) {
             // A registered Run whose descriptor cannot be read is listed as
             // unavailable; the service never deletes or repairs it.
@@ -2798,21 +2859,27 @@
           lastLoaded = new Date();
           healthState = { kind: "ok", at: null, message: "" };
         } catch (error) {
+          if (generation !== readGeneration) return;
           healthState = {
             kind: "error",
             at: new Date(),
-            message:
-              error && error.message ? String(error.message) : String(error),
+            message: readMessage(read, error),
           };
         } finally {
-          busy = false;
-          renderHealth();
+          read.release();
+          // The flag is the in-flight read itself; clearing it on success, failure, timeout
+          // and abort alike is what lets the next poll and the refresh button send a real
+          // request instead of returning early. A replaced read must not clear its successor.
+          if (inFlight.snapshot === read.controller) inFlight.snapshot = null;
+          if (generation === readGeneration) renderHealth();
         }
       }
 
       refreshButton.addEventListener("click", () => {
-        refreshRuns();
-        refresh();
+        // An explicit refresh keeps the rendered view, filter, details, scroll and language,
+        // but never waits for a read that is already stuck.
+        refreshRuns({ force: true });
+        refresh({ force: true });
       });
       languageButton.addEventListener("click", () => {
         language = language === "zh" ? "en" : "zh";
@@ -2820,6 +2887,30 @@
         rerender();
         renderHealth();
       });
+      // Returning to the foreground catches up at once instead of waiting for the next tick.
+      // visibilitychange, pageshow and focus can all fire for one return, so a pending timer
+      // collapses the burst into one read; a read already in flight is replaced, not queued.
+      let foregroundTimer = null;
+      function refreshForeground() {
+        if (foregroundTimer) return;
+        foregroundTimer = setTimeout(() => {
+          foregroundTimer = null;
+          refreshRuns({ force: true });
+          refresh({ force: true });
+        }, FOREGROUND_DEBOUNCE_MS);
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refreshForeground();
+      });
+      // The pageshow that belongs to this load is not a return: the script issues its own
+      // first read below. Only a later pageshow — a back/forward-cache restore — is one.
+      let pageShown = false;
+      window.addEventListener("pageshow", (event) => {
+        const restore = pageShown || event.persisted;
+        pageShown = true;
+        if (restore) refreshForeground();
+      });
+      window.addEventListener("focus", refreshForeground);
       let scrollFrame = null;
       window.addEventListener(
         "scroll",
