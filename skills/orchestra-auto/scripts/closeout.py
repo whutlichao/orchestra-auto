@@ -189,6 +189,41 @@ def _accepted_records(facts):
     return "ok", "", found
 
 
+def _current_accepted_records(accepted):
+    """Return each PR's latest attempt, retaining same-attempt conflicts."""
+    by_pr = {}
+    ungrouped = set()
+    for item in accepted:
+        number = _pr_number(item["payload"])
+        if number is None:
+            ungrouped.add(id(item))
+        else:
+            by_pr.setdefault(number, []).append(item)
+
+    divergent = []
+    selected = set(ungrouped)
+    for number, items in by_pr.items():
+        attempt = max((item["payload"].get("attempt") for item in items
+                       if type(item["payload"].get("attempt")) is int), default=1)
+        latest = [item for item in items if item["payload"].get("attempt") == attempt]
+        if not latest:
+            # Invalid attempts already block row 1; keep them visible to later rows too.
+            latest = items
+        selected.update(id(item) for item in latest)
+        signatures = {LEDGER.canonical_json({
+            "accepted_sha": item["payload"].get("accepted_sha"),
+            "levels": [
+                (name, _level(item["payload"], name).get("value"))
+                for name in ACCEPTANCE.LEVEL_NAMES
+            ],
+        }) for item in latest}
+        if len(signatures) > 1:
+            divergent.append((number, attempt))
+
+    current = [item for item in accepted if id(item) in selected]
+    return current, divergent
+
+
 def _level(payload, name):
     levels = payload.get("levels") if isinstance(payload, dict) else None
     level = levels.get(name) if isinstance(levels, dict) else None
@@ -221,7 +256,8 @@ def _row(index, status, detail=None, evidence=None):
 def _row_one(run_id, facts):
     state, reason, accepted = _accepted_records(facts)
     if state != "ok":
-        return _row(1, "unknown", {"reason": reason}), accepted
+        return _row(1, "unknown", {"reason": reason}), accepted, accepted
+    current, divergent = _current_accepted_records(accepted)
     problems, entries, evidence = [], [], []
     for item in accepted:
         payload = item["payload"]
@@ -239,12 +275,19 @@ def _row_one(run_id, facts):
             "ok" if not item["errors"] else "invalid"))
         problems.extend(
             str(item["record_id"]) + ": " + error for error in item["errors"])
+    for number, attempt in divergent:
+        problems.append(
+            "PR " + str(number) + " has divergent acceptance records at attempt "
+            + str(attempt))
     if not accepted:
         problems.append(
             "no acceptance record is persisted; the accepted SHA must be captured at "
             "acceptance and cannot be reconstructed later")
     status = "blocked" if problems else "ok"
-    return _row(1, status, {"entries": entries, "problems": problems}, evidence), accepted
+    detail = {"entries": entries, "problems": problems}
+    if divergent:
+        detail["divergent"] = True
+    return _row(1, status, detail, evidence), accepted, current
 
 
 def _row_two(facts, accepted):
@@ -604,6 +647,8 @@ def _classification(rows, pending_open, applied):
                 and item["id"] != 9]
     if not blocking:
         return "ready"
+    if rows[0]["status"] == "blocked" and rows[0]["detail"].get("divergent"):
+        return "acceptance_divergent"
     if applied.get("revert"):
         return "merge_reverted"
     if applied.get("reopen"):
@@ -690,21 +735,21 @@ def plan(facts):
     observed_at = normalized["observed_at"]
 
     rows = []
-    row_one, accepted = _row_one(run_id, normalized)
+    row_one, accepted, current = _row_one(run_id, normalized)
     rows.append(row_one)
-    rows.append(_row_two(normalized, accepted))
-    rows.append(_row_three(normalized, accepted))
-    rows.append(_row_four(normalized, accepted))
+    rows.append(_row_two(normalized, current))
+    rows.append(_row_three(normalized, current))
+    rows.append(_row_four(normalized, current))
     rows.append(_row_five(normalized))
-    rows.append(_row_six(normalized, accepted))
-    rows.append(_row_seven(normalized, accepted))
+    rows.append(_row_six(normalized, current))
+    rows.append(_row_seven(normalized, current))
     rows.append(_row_eight(normalized))
     rows.append(_row_nine(normalized))
 
     observations_section = _section(normalized, "observations")
     observations = (_rows(observations_section, "records")
                     if observations_section.get("state") == "ok" else [])
-    applied = _apply_observations(rows, accepted, observations)
+    applied = _apply_observations(rows, current, observations)
 
     ten = _row_ten(normalized, accepted, observed_at)
     rows.append(ten)
