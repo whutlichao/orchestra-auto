@@ -348,7 +348,13 @@
         color: var(--text-2);
         font-family: var(--mono);
         font-size: 11.5px;
-        overflow-wrap: anywhere;
+        min-width: 0;
+      }
+      .run-chip-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .run-chip[aria-current="true"] {
         border-color: var(--accent-line);
@@ -1369,6 +1375,7 @@
       // A singleton dashboard serves many Runs; the opened URL names the selected one.
       let selectedRun = new URLSearchParams(location.search).get("run") || "";
       let knownRuns = [];
+      let runLabels = {};
       let unavailableRuns = [];
       let lastLoaded = null;
       let filter = null;
@@ -1602,11 +1609,16 @@
         runsBar.hidden = listed.length === 0;
         for (const runId of listed) {
           const unavailable = unavailableRuns.includes(runId);
-          const chip = node(
-            "a",
-            runId + (unavailable ? tr(" · 不可用", " · unavailable") : ""),
-            runChips,
+          const chip = node("a", undefined, runChips);
+          const chipText = node(
+            "span",
+            (runLabels[runId] || runId) +
+              (unavailable ? tr(" · 不可用", " · unavailable") : ""),
+            chip,
           );
+          chipText.className = "run-chip-text";
+          // The full Run ID stays reachable on hover even when the label is shown.
+          chip.title = runId;
           chip.className = "run-chip" + (unavailable ? " unavailable" : "");
           chip.href = "/?run=" + encodeURIComponent(runId);
           chip.dataset.run = runId;
@@ -1658,8 +1670,8 @@
       }
 
       // The Run list is the only cross-Run information the page shows: /health names
-      // Run IDs, never state paths. A selected Run whose descriptor cannot be read stays
-      // listed as unavailable; it is never silently replaced by another Run.
+      // Run IDs and short readable labels, never state paths. A selected Run whose descriptor
+      // cannot be read stays listed as unavailable; it is never silently replaced by another Run.
       async function refreshRuns(options) {
         // A health read that is still waiting is left alone by the poll: it is silent,
         // bounded by the same timeout, and read again on the next tick. An explicit
@@ -1676,6 +1688,13 @@
           const health = await response.json();
           const runs = Array.isArray(health && health.runs) ? health.runs : [];
           knownRuns = runs.filter((item) => typeof item === "string");
+          // Only string values are labels; anything else falls back to the Run ID.
+          const labels = health && health.run_labels;
+          runLabels = {};
+          if (labels && typeof labels === "object" && !Array.isArray(labels)) {
+            for (const [runId, value] of Object.entries(labels))
+              if (typeof value === "string") runLabels[runId] = value;
+          }
           unavailableRuns = unavailableRuns.filter(
             (item) => !knownRuns.includes(item),
           );

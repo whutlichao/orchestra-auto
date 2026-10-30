@@ -34,7 +34,7 @@ python3 "$PROGRESS" --state "$STATE" init --event-id init-1 --effective --data \
 python3 "$PROGRESS" --state "$STATE" open || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-将 `PROGRESS` 换为当前安装的本 skill 目录下的绝对路径。首次派活前使用真实 Run ID、新的仓库外审计子目录及实际目标仓库执行上述 init 和 open；不要使用示例 ID 或路径。`open` 把该 Run 注册到每用户唯一的看板服务，必要时启动这个唯一服务，并尝试打开默认浏览器，以 JSON 输出 `{url, pid, degraded, reason, browser_opened}`；把 URL 告知用户。浏览器无法打开时告知用户手动访问该 URL。服务每三秒刷新，后续节点按下表记录；服务关闭也可写入。看板保持可用以便查看最终状态；需要停止时对该单例 PID 执行 `kill PID`，所有快照保留；下一次 `open` 会重启服务并重新注册。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
+将 `PROGRESS` 换为当前安装的本 skill 目录下的绝对路径。首次派活前使用真实 Run ID、新的仓库外审计子目录及实际目标仓库执行上述 init 和 open；不要使用示例 ID 或路径。`open` 把该 Run 注册到每用户唯一的看板服务，必要时启动这个唯一服务，并尝试打开默认浏览器，以 JSON 输出 `{url, pid, degraded, reason, browser_opened}`；把 URL 告知用户。未显式传入 `--label` 时，descriptor 的 label 默认取该 Run 的 `run.title`；需要覆盖时传 `--label <text>`，因此上面的标准命令不需要改动。浏览器无法打开时告知用户手动访问该 URL。服务每三秒刷新，后续节点按下表记录；服务关闭也可写入。看板保持可用以便查看最终状态；需要停止时对该单例 PID 执行 `kill PID`，所有快照保留；下一次 `open` 会重启服务并重新注册。`show` 不启动服务即可输出快照；`serve --port 0` 自动选择并打印地址。
 `--stale-seconds 300` 控制观察过期阈值；缺少时间显示 unknown，旧观察显示 stale，coordinator
 明确记录的 lost 生命周期独立显示。新活动不代表有效进展。
 
@@ -58,7 +58,8 @@ REAL Run 首次派活前。
 依次组织运行概览、关注事项、任务统计、静态参考流程、依赖图、任务与 Worker、交付证据和事件；
 不加载远程字体、资源或前端包。每三秒读取一次，且每次读取（快照或 Run 列表）都有 8 秒超时。
 快照读取失败或超时会带时间记录错误并保留最后有效视图，下一轮轮询直接重试；挂起的请求不会让页面
-停摆。Run 列表读取失败保持静默，绝不影响快照视图。筛选、展开明细、依赖图滚动位置及语言在刷新后保留。
+停摆。Run 列表读取失败保持静默，绝不影响快照视图。`/health` 提供标签时 Run 列表显示可读标签，
+否则回退显示 Run ID；悬停 chip 可看到完整 Run ID。筛选、展开明细、依赖图滚动位置及语言在刷新后保留。
 页面内「刷新」按钮立即重读，并中断仍在等待的
 请求而不是排在它后面；标签页回到前台（变为可见、从往返缓存恢复、窗口获得焦点）会立即读取一次，
 不必等下一个三秒周期；这些事件做了防抖，一次回到前台只发一次读取。
@@ -235,20 +236,23 @@ $ORCA_PROGRESS_HOME
 
 **接口。** 脚本暴露 `registry.register(run)`、`registry.discover()`、`registry.probe()` 与
 `registry.open(run) -> {url, pid, degraded, reason}`；HTTP 层只渲染只读快照。`GET /health` 返回
-`{ok, protocol_version, pid, started_at, runs}`；`protocol_version` 从 `1` 开始。
-`GET /?run=<id>` 渲染页面，`GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不
-返回其他 Run 的数据。
+`{ok, protocol_version, pid, started_at, runs, run_labels}`；`protocol_version` 从 `1` 开始。
+`runs` 仍是有序的 Run ID 字符串数组。`run_labels` 把每个 Run ID 映射为简短可读标签：优先使用
+已校验的 descriptor label；为空时只读取该 Run 已注册的状态并取 `run.title`；状态不可读则静默
+省略该映射；所有值去除首尾空白并截断到 120 个字符。响应绝不包含状态路径。`GET /?run=<id>` 渲染页面，
+`GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不返回其他 Run 的数据。
 
 **HTTP 面与 Run 隔离。** 服务只暴露三条 GET 路由，没有任何写 API：
 
 | 路由 | 返回 |
 | --- | --- |
-| `GET /health` | `{ok, protocol_version, pid, started_at, runs}`：服务状态与已注册 Run ID，绝不含状态路径 |
-| `GET /?run=<id>` | 页面：由 `/health` 生成的 Run 列表，加上所选 Run 的 tasks、workers、deliveries、events、时效与健康投影，以及「警告不是启动失败」提示 |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels}`：服务状态、已注册 Run ID 及其简短可读标签（优先 descriptor label，其次该 Run 已注册状态的 `run.title`；不可读状态省略），绝不含状态路径 |
+| `GET /?run=<id>` | 页面：由 `/health` 生成的 Run 列表（每个 chip 有标签时显示可读标签，悬停显示完整 Run ID），加上所选 Run 的 tasks、workers、deliveries、events、时效与健康投影，以及「警告不是启动失败」提示 |
 | `GET /snapshot?run=<id>` | 该 Run 的只读快照，不含任何其他 Run 的数据 |
 
 隔离靠每次请求只解析一个描述符：快照只读取所选 Run 的 `progress.json`，且必须经过共用的状态路径校验器；
-响应只出现 Run ID，绝不出现状态路径；跨 Run 访问仅限 `/health` 与页面上的 Run ID 列表。描述符不可读、
+响应只出现 Run ID 与简短标签，绝不出现状态路径。跨 Run 读取仅限 `/health` 推导标签：descriptor 无
+label 时只读取该 Run 自己的状态取 `run.title`，页面只展示 Run ID 列表。描述符不可读、
 或 `progress.json` 缺失/损坏时返回 `503` 与 `Snapshot unavailable`，并在 Run 列表中标记为不可用；
 描述符绝不删除、绝不修复；未知 Run ID 返回 `404`。某个 Run 不可用时页面保留 Run 列表，绝不悄悄显示
 另一个 Run 的数据。服务不保存任何按 Run 的状态，因此可重启：`progress.json` 仍是事实来源，服务中断

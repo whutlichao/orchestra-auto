@@ -157,6 +157,9 @@ let browser;
     });
   });
   // The singleton lists every registered Run; only the selected one is rendered.
+  // The selected Run carries a readable label; the second one has none and must fall
+  // back to its Run ID, which stays available on hover for a labelled chip.
+  let healthLabels = { [SELECTED]: "可验证的 Run 标签 / readable Run label" };
   await page.route("**/health", async (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -166,6 +169,7 @@ let browser;
         pid: 1,
         started_at: "2026-01-01T00:00:00Z",
         runs: [SELECTED, SECOND],
+        run_labels: healthLabels,
       }),
     }),
   );
@@ -177,8 +181,37 @@ let browser;
   assert.equal(await page.locator(".run-chip").count(), 2);
   assert.equal(
     await page.locator('.run-chip[aria-current="true"]').innerText(),
-    SELECTED,
+    "可验证的 Run 标签 / readable Run label",
   );
+  assert.equal(
+    await page.locator('.run-chip[aria-current="true"]').getAttribute("title"),
+    SELECTED,
+    "the full Run ID stays reachable on hover",
+  );
+  assert.equal(
+    await page.locator(".run-chip").nth(1).innerText(),
+    SECOND,
+    "a Run without a label falls back to its Run ID",
+  );
+  // A long label is truncated with an ellipsis instead of widening the page.
+  healthLabels = { [SELECTED]: "Long readable label ".repeat(12) };
+  await refresh();
+  assert.equal(
+    await page
+      .locator('.run-chip[aria-current="true"]')
+      .evaluate((node) => node.getBoundingClientRect().height < 30),
+    true,
+    "a long label stays on one line",
+  );
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+    true,
+    "a long label does not widen the page",
+  );
+  healthLabels = { [SELECTED]: "可验证的 Run 标签 / readable Run label" };
+  await refresh();
   assert.match(
     await page.locator("#notice").innerText(),
     /不是启动失败[\s\S]*not a start failure/,
