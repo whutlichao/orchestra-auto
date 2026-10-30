@@ -73,8 +73,15 @@ The single bundled page defaults to Chinese and has an English switch. Both bund
 same page bytes. A light canvas, fixed left section navigation and a top bar order the Run
 overview, attention items, task statistics, static reference flow, dependency graph, tasks and
 workers, delivery evidence and events. No external fonts, assets or frontend packages load. A
-snapshot refreshes every three seconds. Task filters, expanded details, graph scroll and language
-survive updates; errors show their time and preserve the complete last valid page.
+snapshot refreshes every three seconds, and every single read — snapshot or Run list — is bounded by
+an 8-second timeout. A snapshot read that fails or times out records the error with its time, keeps
+the last valid view, and the next poll simply retries; a stuck request never stops the page. A Run
+list read that fails stays silent and never changes the snapshot view. Task filters,
+expanded details, graph scroll and language survive updates. The in-page refresh button re-reads
+immediately, aborting a request that is still waiting instead of queueing behind it, and returning
+the tab to the foreground (visible tab, page restored from the back/forward cache, or window focus)
+triggers one immediate read rather than waiting for the next three-second tick; those events are
+debounced so one return produces one read.
 
 Attention lists only recorded block reasons, pending decisions (including a Run waiting for a user
 without any task-level decision), failed records and lost workers; each matching record counts
@@ -122,11 +129,16 @@ means "continue orchestration", records a gap and never turns a dispatch into a 
 
 Optional browser regression checks require an externally installed Playwright and Chromium, not
 runtime dependencies, and they are not the mandatory gate — the CLI/HTTP contract above is.
-Set `PLAYWRIGHT_MODULE` to that external package, then run
+Set `PLAYWRIGHT_MODULE` to that external package — the script uses `page.clock`, the fake clock that
+makes the timeout and foreground assertions deterministic, so the installed Playwright must be new
+enough to provide it — then run
 `node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=FIRST&second=SECOND' EVIDENCE_DIR`
 against a singleton service with two registered Runs. The script routes `**/snapshot*`, switches the
 selected Run through the Run list, and covers four viewports, semantic edge cases, refresh state and
-safe rendering; when Playwright is absent it is simply not run and nothing in the suite fails for it.
+safe rendering. It also holds one snapshot response open past the page's 8-second read timeout and
+asserts that the page keeps the last valid view and recovers on the next click, and it asserts that
+one `visibilitychange`/`pageshow`/`focus` burst produces exactly one immediate read; when Playwright
+is absent it is simply not run and nothing in the suite fails for it.
 
 ## Protocol v2
 
@@ -395,8 +407,9 @@ force without this feature. Neither a missing record nor a viewer outage authori
 The recorder never calls Orca, so there is no worker-list contract or additional receiver to keep
 alive. It only knows facts explicitly submitted. It cannot discover an unreported nested worker,
 a merge, tracker closure, or an offline worker. The page labels last observation and effective
-progress separately; staleness is observation age, not proof of failure. A viewer fetch error retains
-the last valid snapshot with a visible error and its load time; it never substitutes an empty success.
+progress separately; staleness is observation age, not proof of failure. A viewer fetch error or an
+8-second read timeout retains the last valid snapshot with a visible error and its load time; it
+never substitutes an empty success, and the page keeps polling afterwards.
 
 The snapshot is fsynced, replaced atomically, and its directory fsynced. A crash before replace leaves
 the old valid snapshot and perhaps an ignored `.progress-*` temporary file; a crash after replace

@@ -44,6 +44,35 @@ def wait_dead(pid, timeout=5):
     return False
 
 
+def page_script(asset):
+    """The single inline script body: the self-healing rules live there, not in the prose."""
+    start = asset.index('<script>') + len('<script>')
+    return asset[start:asset.index('</script>')]
+
+
+def prose(language, relative):
+    """A shipped document as words on single spaces: prose wraps, its promises do not."""
+    return ' '.join((ROOT / 'skills' / language / relative).read_text().split())
+
+
+def braced_block(script, marker):
+    """The balanced ``{...}`` body that follows ``marker``.
+
+    Asserting a token is inside this block proves it belongs to the function under test,
+    not merely that the page mentions the word somewhere.
+    """
+    opening = script.index('{', script.index(marker))
+    depth = 0
+    for index in range(opening, len(script)):
+        if script[index] == '{':
+            depth += 1
+        elif script[index] == '}':
+            depth -= 1
+            if depth == 0:
+                return script[opening:index + 1]
+    raise AssertionError(f'unbalanced block after {marker!r}')
+
+
 class LegacyDashboardHandler(BaseHTTPRequestHandler):
     """A pre-singleton dashboard: answers GET without a ``/health`` endpoint."""
 
@@ -478,7 +507,8 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(headers['Content-Type'].startswith('text/html'))
         self.assertIn(b'id="runs"', page)
-        self.assertIn(b'fetch("/health"', page)
+        # The Run list is read through the same bounded reader as the snapshot.
+        self.assertIn(b'startRead("/health")', page)
         self.assertIn(b'encodeURIComponent(runId)', page)
         self.assertIn(b'"/?run="', page)
         health = json.loads(self.http_get(base + '/health')[2])
@@ -631,12 +661,114 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('unavailableRuns', asset, language)
             self.assertIn('· 不可用', asset, language)
             self.assertIn('· unavailable', asset, language)
-            self.assertIn('fetch("/health"', asset, language)
+            self.assertIn('startRead("/health")', asset, language)
         status, _headers, body = self.http_get(self.registry_service() + '/')
         self.assertEqual(status, 200)
         text = body.decode()
         self.assertIn('warning is not a start failure', text)
         self.assertIn('警告不是启动失败', text)
+
+    def test_page_reads_are_bounded_and_a_stuck_read_cannot_stop_the_poll(self):
+        """Every read carries a timeout, and no outcome can leave a read marked in flight."""
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            asset = (ROOT / 'skills' / language / 'scripts/progress.html').read_text()
+            script = page_script(asset)
+            # A named timeout constant, an AbortController and an aborting timer.
+            self.assertIn('const READ_TIMEOUT_MS = 8000;', script, language)
+            self.assertIn('new AbortController()', script, language)
+            self.assertIn('setTimeout(() => controller.abort(), READ_TIMEOUT_MS)', script,
+                          language)
+            self.assertIn('clearTimeout(timer)', script, language)
+            # The one bounded reader is what both endpoints go through; no bare fetch of
+            # the snapshot survives outside it, and the timeout is reported as a timeout.
+            self.assertEqual(script.count('fetch('), 1, language)
+            reader = braced_block(script, 'function startRead(path)')
+            self.assertIn('signal: controller.signal', reader, language)
+            message = braced_block(script, 'function readMessage(read, error)')
+            self.assertIn('read.controller.signal.aborted', message, language)
+            self.assertIn('读取超时', message, language)
+            self.assertIn('Read timed out after', message, language)
+            snapshot = braced_block(script, 'async function refresh(options)')
+            self.assertIn('startRead(', snapshot, language)
+            self.assertNotIn('await fetch(', snapshot, language)
+            self.assertIn('inFlight.snapshot.abort()', snapshot, language)
+            self.assertIn('readMessage(read, error)', snapshot, language)
+            # The in-flight read *is* the serial flag, and `finally` clears it on success,
+            # failure, timeout and abort alike — so the next poll, and the refresh button,
+            # can send a real request instead of returning early.
+            finally_block = braced_block(snapshot, 'finally')
+            self.assertIn('inFlight.snapshot = null', finally_block, language)
+            self.assertIn('generation === readGeneration', finally_block, language)
+            self.assertNotIn('busy', script, language)
+            # A replaced read cannot write over the newer one.
+            self.assertIn('let readGeneration = 0;', script, language)
+            self.assertIn('generation !== readGeneration', snapshot, language)
+            # /health shares the timeout and stays silent on failure.
+            health = braced_block(script, 'async function refreshRuns(options)')
+            self.assertIn('startRead("/health")', health, language)
+            self.assertNotIn('healthState = {', health, language)
+            self.assertIn('if (inFlight.health === read.controller) inFlight.health = null;',
+                          health, language)
+        status, _headers, body = self.http_get(self.registry_service() + '/')
+        self.assertEqual(status, 200)
+        served = page_script(body.decode())
+        self.assertIn('const READ_TIMEOUT_MS = 8000;', served)
+        self.assertIn('new AbortController()', served)
+
+    def test_manual_refresh_and_foreground_return_force_a_real_read(self):
+        """The button and the foreground events replace a waiting read instead of queueing."""
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            asset = (ROOT / 'skills' / language / 'scripts/progress.html').read_text()
+            script = page_script(asset)
+            click = braced_block(
+                script, 'refreshButton.addEventListener("click", () =>')
+            self.assertIn('refreshRuns({ force: true });', click, language)
+            self.assertIn('refresh({ force: true });', click, language)
+            # Without `force` the click would return on the in-flight read — the exact bug
+            # the issue reports — so the gate itself is asserted, not just the call site.
+            refresh = braced_block(script, 'async function refresh(options)')
+            self.assertIn('const force = Boolean(options && options.force);', refresh,
+                          language)
+            self.assertIn('if (inFlight.snapshot && !force) return;', refresh, language)
+            # Visibility, bfcache restore and focus all refresh at once, debounced.
+            self.assertIn('document.addEventListener("visibilitychange"', script, language)
+            self.assertIn('document.visibilityState === "visible"', script, language)
+            self.assertIn('window.addEventListener("pageshow",', script, language)
+            self.assertIn('window.addEventListener("focus", refreshForeground)', script,
+                          language)
+            self.assertIn('let foregroundTimer = null;', script, language)
+            self.assertIn('const FOREGROUND_DEBOUNCE_MS = 50;', script, language)
+            foreground = braced_block(script, 'function refreshForeground()')
+            self.assertIn('if (foregroundTimer) return;', foreground, language)
+            self.assertIn('FOREGROUND_DEBOUNCE_MS', foreground, language)
+            self.assertIn('refreshRuns({ force: true });', foreground, language)
+            self.assertIn('refresh({ force: true });', foreground, language)
+            # A Run switch must not let the previous Run's read land on the new selection.
+            chip = braced_block(script, 'chip.addEventListener("click", (event) =>')
+            self.assertIn('refresh({ force: true });', chip, language)
+        status, _headers, body = self.http_get(self.registry_service() + '/')
+        self.assertEqual(status, 200)
+        served = page_script(body.decode())
+        self.assertIn('refresh({ force: true });', served)
+        self.assertIn('window.addEventListener("pageshow",', served)
+
+    def test_both_bundles_ship_the_same_self_healing_page(self):
+        """The two packages ship one page, and that page is the self-healing one.
+
+        Byte parity itself is asserted by ``test_package_content`` (``progress.html`` is in
+        ``SCRIPT_FILES``); this test asserts that the shared page carries the self-healing
+        rules, in both copies, so a package that silently lost the fix cannot pass.
+        """
+        self.assertEqual(
+            (ROOT / 'skills/orchestra-auto/scripts/progress.html').read_bytes(),
+            (ROOT / 'skills/orchestra-auto-zh/scripts/progress.html').read_bytes(),
+        )
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            page = (ROOT / 'skills' / language / 'scripts/progress.html').read_bytes()
+            self.assertIn(b'const READ_TIMEOUT_MS = 8000;', page, language)
+            self.assertIn(b'new AbortController()', page, language)
+            self.assertIn(b'window.addEventListener("pageshow",', page, language)
+            self.assertIn(b'window.addEventListener("focus", refreshForeground)', page, language)
 
     def test_optional_browser_script_targets_snapshots_with_two_runs_and_is_not_a_gate(self):
         script = (ROOT / 'tests/progress_dashboard_browser.cjs').read_text()
@@ -1444,6 +1576,19 @@ class ProgressTests(unittest.TestCase):
             for token in (*neutral, *anchors):
                 self.assertIn(token, text, f'{language}: progress-dashboard.md '
                                           f'is missing {token!r}')
+
+    def test_both_references_document_the_self_healing_page(self):
+        """Both languages promise the same reads, timeouts, retries and foreground refresh."""
+        english = prose('orchestra-auto', 'references/progress-dashboard.md')
+        chinese = prose('orchestra-auto-zh', 'references/progress-dashboard.md')
+        # Each promise is anchored on wording that only the new paragraph carries; "every
+        # three seconds" alone predates this change and would prove nothing.
+        for token in ('8-second timeout', 'keeps the last', 'last valid view',
+                      'The in-page refresh button re-reads',
+                      'returning the tab to the foreground'):
+            self.assertIn(token, english, f'English reference misses {token!r}')
+        for token in ('8 秒超时', '最后有效视图', '页面内「刷新」按钮立即重读', '回到前台'):
+            self.assertIn(token, chinese, f'Chinese reference misses {token!r}')
 
 
 if __name__ == '__main__':
