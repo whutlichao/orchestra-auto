@@ -274,6 +274,7 @@
         gap: 6px;
       }
       .actions {
+        position: relative;
         display: flex;
         gap: 8px;
         flex-shrink: 0;
@@ -313,14 +314,73 @@
         background: var(--accent);
       }
 
-      .runs {
+      .run-menu {
+        position: relative;
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: min(280px, 40vw);
+      }
+      .run-summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        max-width: 100%;
+        min-width: 0;
+        padding: 8px 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--text-2);
+        font-size: 12.5px;
+        line-height: 1.4;
+        list-style: none;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .run-summary::-webkit-details-marker {
+        display: none;
+      }
+      .run-summary:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .run-menu[open] > .run-summary {
+        border-color: var(--accent-line);
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .run-summary-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .run-summary-arrow {
+        flex: 0 0 auto;
+        color: var(--faint);
+        font-size: 10px;
+        transition: transform 120ms ease;
+      }
+      .run-menu[open] .run-summary-arrow {
+        transform: rotate(180deg);
+      }
+      .run-panel {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        z-index: 40;
+        width: min(360px, calc(100vw - 24px));
+        max-height: 60vh;
+        overflow-y: auto;
         display: flex;
         flex-direction: column;
         gap: 7px;
-        min-width: 0;
-      }
-      .runs[hidden] {
-        display: none;
+        padding: 12px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        box-shadow: 0 18px 44px -24px rgba(21, 34, 56, 0.45);
       }
       .runs-label {
         font-size: 11px;
@@ -1200,9 +1260,19 @@
         .topbar h1 {
           font-size: 17px;
         }
+        .actions {
+          width: 100%;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          max-width: 100%;
+        }
         .actions button {
           font-size: 12px;
           padding: 7px 10px;
+        }
+        /* Anchor the panel to the actions row so it cannot run past the left edge. */
+        .run-menu {
+          position: static;
         }
         main {
           padding: 16px 12px 40px;
@@ -1275,18 +1345,6 @@
             <small id="brand-sub">进展指挥台</small>
           </span>
         </div>
-        <div id="runs" class="runs" hidden>
-          <span class="runs-label" id="runs-label">已注册 Run</span>
-          <span class="run-chips" id="run-chips"></span>
-          <button
-            id="run-toggle"
-            class="run-toggle"
-            type="button"
-            aria-controls="run-chips"
-            aria-expanded="false"
-            hidden
-          ></button>
-        </div>
         <nav id="nav" class="nav" aria-label="页面导航"></nav>
         <div class="side-note">
           <span class="badge tone-neutral" id="readonly-badge">只读</span>
@@ -1302,6 +1360,32 @@
             <div class="identity-meta" id="identity-meta"></div>
           </div>
           <div class="actions">
+            <details id="runs" class="run-menu" hidden>
+              <summary id="run-summary" class="run-summary" aria-label="切换 Run · 已注册 Run">
+                <span
+                  id="run-summary-dot"
+                  class="run-dot tone-neutral"
+                  data-state="unknown"
+                  aria-hidden="true"
+                ></span>
+                <span id="run-summary-label" class="run-summary-text"
+                  >已注册 Run</span
+                >
+                <span class="run-summary-arrow" aria-hidden="true">▾</span>
+              </summary>
+              <div class="run-panel">
+                <span class="runs-label" id="runs-label">已注册 Run</span>
+                <span class="run-chips" id="run-chips"></span>
+                <button
+                  id="run-toggle"
+                  class="run-toggle"
+                  type="button"
+                  aria-controls="run-chips"
+                  aria-expanded="false"
+                  hidden
+                ></button>
+              </div>
+            </details>
             <button id="language" type="button" aria-label="切换语言">
               English
             </button>
@@ -1338,7 +1422,10 @@
       const skipLink = document.getElementById("skip-link");
       const languageButton = document.getElementById("language");
       const refreshButton = document.getElementById("refresh");
-      const runsBar = document.getElementById("runs");
+      const runMenu = document.getElementById("runs");
+      const runSummary = document.getElementById("run-summary");
+      const runSummaryDot = document.getElementById("run-summary-dot");
+      const runSummaryLabel = document.getElementById("run-summary-label");
       const runsLabel = document.getElementById("runs-label");
       const runChips = document.getElementById("run-chips");
       const runToggle = document.getElementById("run-toggle");
@@ -1654,13 +1741,39 @@
         );
       }
 
+      // The summary and every chip paint the same dot from one Run state.
+      function paintRunDot(element, state) {
+        element.className = "run-dot tone-" + tone(state);
+        element.dataset.state = state;
+      }
+
+      // The summary always names the selected Run, not just the list.
+      function renderRunSummary() {
+        const summaryText = selectedRun
+          ? runLabels[selectedRun] || selectedRun
+          : tr("选择 Run", "Select a Run");
+        paintRunDot(
+          runSummaryDot,
+          selectedRun ? runState(selectedRun) : "unknown",
+        );
+        runSummaryLabel.textContent = summaryText;
+        runSummary.setAttribute(
+          "aria-label",
+          selectedRun
+            ? tr("切换 Run · 当前 ", "Switch Run · current ") + summaryText
+            : tr("切换 Run · 已注册 Run", "Switch Run · Registered Runs"),
+        );
+      }
+
       function renderRuns() {
         runsLabel.textContent = tr("已注册 Run", "Registered Runs");
+        renderRunSummary();
         runChips.replaceChildren();
         const listed = [...knownRuns];
         for (const runId of unavailableRuns)
           if (!listed.includes(runId)) listed.push(runId);
-        runsBar.hidden = listed.length === 0;
+        runMenu.hidden = listed.length === 0;
+        if (!listed.length) runMenu.open = false;
         const collapsed = new Set();
         if (!runsExpanded)
           for (const runId of listed)
@@ -1671,8 +1784,7 @@
           const current = runState(runId);
           const chip = node("a", undefined, runChips);
           const dot = node("span", undefined, chip);
-          dot.className = "run-dot tone-" + tone(current);
-          dot.dataset.state = current;
+          paintRunDot(dot, current);
           dot.setAttribute("aria-hidden", "true");
           const chipText = node(
             "span",
@@ -1689,6 +1801,8 @@
           if (runId === selectedRun) chip.setAttribute("aria-current", "true");
           chip.addEventListener("click", (event) => {
             event.preventDefault();
+            // A choice always closes the dropdown, even for the current Run.
+            runMenu.open = false;
             if (selectedRun === runId) return;
             selectedRun = runId;
             history.replaceState(
@@ -2978,6 +3092,17 @@
       runToggle.addEventListener("click", () => {
         runsExpanded = !runsExpanded;
         renderRuns();
+      });
+      // Escape closes the dropdown and gives focus back to its summary.
+      runMenu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !runMenu.open) return;
+        event.preventDefault();
+        runMenu.open = false;
+        runSummary.focus();
+      });
+      // A click anywhere outside the open dropdown closes it.
+      document.addEventListener("click", (event) => {
+        if (runMenu.open && !runMenu.contains(event.target)) runMenu.open = false;
       });
       refreshButton.addEventListener("click", () => {
         // An explicit refresh keeps the rendered view, filter, details, scroll and language,

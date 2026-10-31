@@ -461,7 +461,7 @@ submitted facts, and fetch errors retain the last valid snapshot with an error b
 
 The singleton service exposes three read-only GET routes on `127.0.0.1` only: `/health` (the
 service plus the registered Run IDs, their readable labels and projected `run_states`),
-`/?run=<id>` (the page, listing every registered Run in the left sidebar and rendering the selected
+`/?run=<id>` (the page, listing every registered Run in a top bar dropdown and rendering the selected
 one) and `/snapshot?run=<id>` (that Run's snapshot only). Cross-Run access is limited to the Run
 list; responses name Run IDs, never state paths; an unreadable Run shows as unavailable and is
 never deleted by the service or `open`. Only an explicit `registry prune` archives ended Runs into

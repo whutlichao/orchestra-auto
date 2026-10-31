@@ -1229,24 +1229,39 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('refresh({ force: true });', served)
         self.assertIn('window.addEventListener("pageshow",', served)
 
-    def test_page_places_runs_in_the_sidebar_and_collapses_ended_runs(self):
+    def test_page_places_runs_in_a_topbar_dropdown_and_collapses_ended_runs(self):
         for language in ('orchestra-auto', 'orchestra-auto-zh'):
             asset = (ROOT / 'skills' / language / 'scripts' / 'progress.html').read_text()
             sidebar = asset[asset.index('<aside class="sidebar">'):
                             asset.index('</aside>')]
-            self.assertIn('id="runs"', sidebar, language)
-            self.assertIn('id="runs-label"', sidebar, language)
-            self.assertIn('id="run-toggle"', sidebar, language)
-            self.assertIn('aria-controls="run-chips"', sidebar, language)
-            self.assertLess(sidebar.index('class="brand"'), sidebar.index('id="runs"'),
+            # The sidebar is back to brand, navigation and the read-only note only.
+            self.assertNotIn('id="runs"', sidebar, language)
+            self.assertNotIn('id="runs-label"', sidebar, language)
+            self.assertNotIn('id="run-toggle"', sidebar, language)
+            topbar = asset[asset.index('<header class="topbar">'):
+                           asset.index('</header>')]
+            actions = topbar[topbar.index('<div class="actions">'):]
+            self.assertIn('<details id="runs" class="run-menu"', actions, language)
+            self.assertIn('<summary id="run-summary"', actions, language)
+            self.assertIn('id="run-summary-dot"', actions, language)
+            self.assertIn('id="run-summary-label"', actions, language)
+            self.assertIn('id="runs-label"', actions, language)
+            self.assertIn('id="run-chips"', actions, language)
+            self.assertIn('id="run-toggle"', actions, language)
+            self.assertIn('aria-controls="run-chips"', actions, language)
+            self.assertLess(actions.index('id="runs"'), actions.index('id="language"'),
                             language)
-            self.assertLess(sidebar.index('id="runs"'), sidebar.index('id="nav"'),
-                            language)
-            # The old top strip is gone: there is exactly one Run list on the page.
+            # The old sidebar strip is gone: there is exactly one Run list on the page.
             self.assertEqual(asset.count('id="runs"'), 1, language)
             script = page_script(asset)
-            self.assertIn('const runsBar = document.getElementById("runs");', script,
+            self.assertIn('const runMenu = document.getElementById("runs");', script,
                           language)
+            self.assertIn('const runSummary = document.getElementById("run-summary");',
+                          script, language)
+            self.assertIn('const runSummaryDot = document.getElementById("run-summary-dot");',
+                          script, language)
+            self.assertIn('const runSummaryLabel = document.getElementById("run-summary-label");',
+                          script, language)
             self.assertIn('const runToggle = document.getElementById("run-toggle");',
                           script, language)
             self.assertIn('let runStates = {};', script, language)
@@ -1257,6 +1272,11 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('Show all (', script, language)
             self.assertIn('收起', script, language)
             self.assertIn('Collapse', script, language)
+            self.assertIn('切换 Run · 已注册 Run', script, language)
+            self.assertIn('Switch Run · Registered Runs', script, language)
+            self.assertIn('切换 Run · 当前 ', script, language)
+            self.assertIn('Switch Run · current ', script, language)
+            render_summary = braced_block(script, 'function renderRunSummary()')
             render = braced_block(script, 'function renderRuns()')
             folded = braced_block(script, 'function foldedByDefault(runId)')
             self.assertIn('runState(runId)', folded, language)
@@ -1265,24 +1285,53 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('selectedRun', folded, language)
             self.assertIn('foldedByDefault', render, language)
             self.assertIn('runToggle', render, language)
-            self.assertIn('run-dot', render, language)
+            self.assertIn('paintRunDot(', render, language)
             self.assertIn('aria-expanded', render, language)
             self.assertIn('history.replaceState', render, language)
+            # The summary names the selected Run; a chip click closes the dropdown.
+            self.assertIn('runSummaryLabel.textContent', render_summary, language)
+            self.assertIn('paintRunDot(', render_summary, language)
+            self.assertIn('runMenu.open = false;', render, language)
+            self.assertIn('runMenu.hidden = listed.length === 0;', render, language)
+            # Escape closes the dropdown and returns focus to its summary.
+            escape = braced_block(
+                script, 'runMenu.addEventListener("keydown", (event) =>')
+            self.assertIn('event.key !== "Escape"', escape, language)
+            self.assertIn('runMenu.open = false;', escape, language)
+            self.assertIn('runSummary.focus();', escape, language)
+            # A click outside the open dropdown closes it.
+            outside = braced_block(
+                script, 'document.addEventListener("click", (event) =>')
+            self.assertIn('runMenu.open', outside, language)
+            self.assertIn('runMenu.contains(event.target)', outside, language)
             self.assertIn('runStates = {};', braced_block(
                 script, 'async function refreshRuns(options)'), language)
-            # The sidebar keeps the list usable on narrow screens.
-            container = asset[asset.index('.runs {'):asset.index('.run-chip {')]
-            self.assertIn('flex-direction: column', container, language)
+            # The panel is absolute below the summary, right aligned, internally
+            # scrollable, and its long labels never widen the page.
+            panel = asset[asset.index('.run-panel {'):asset.index('.runs-label {')]
+            self.assertIn('position: absolute', panel, language)
+            self.assertIn('right: 0', panel, language)
+            self.assertIn('width: min(360px, calc(100vw - 24px))', panel, language)
+            self.assertIn('max-height: 60vh', panel, language)
+            self.assertIn('overflow-y: auto', panel, language)
+            summary = asset[asset.index('.run-summary {'):
+                            asset.index('.run-summary-text {')]
+            self.assertIn('display: inline-flex', summary, language)
+            label_text = asset[asset.index('.run-summary-text {'):
+                               asset.index('.run-summary-arrow {')]
+            self.assertIn('text-overflow: ellipsis', label_text, language)
+            self.assertIn('white-space: nowrap', label_text, language)
             chips = asset[asset.index('.run-chips {'):asset.index('.run-chip {')]
             self.assertIn('flex-wrap: wrap', chips, language)
-            mobile = asset[asset.index('@media (max-width: 900px)'):]
-            self.assertIn('.sidebar {', mobile, language)
+            self.assertIn('@media (max-width: 900px)', asset, language)
+            self.assertIn('@media (max-width: 620px)', asset, language)
         status, _headers, body = self.http_get(self.registry_service() + '/')
         self.assertEqual(status, 200)
         served = page_script(body.decode())
         self.assertIn('let runStates = {};', served)
         self.assertIn('TERMINAL_RUN_STATES', served)
         self.assertIn('id="run-toggle"', body.decode())
+        self.assertIn('id="run-summary"', body.decode())
 
     def test_both_bundles_ship_the_same_self_healing_page(self):
         """The two packages ship one page, and that page is the self-healing one.
@@ -1312,7 +1361,9 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('NOT the mandatory gate', script)
         self.assertIn('run-chip', script)
         self.assertIn('run-toggle', script)
-        self.assertIn('.sidebar #runs', script)
+        self.assertIn('.topbar .actions #runs', script)
+        self.assertIn('#run-summary', script)
+        self.assertIn('Escape', script)
         self.assertIn('run_states', script)
         for language, tokens in (('orchestra-auto',
                                   ('**/snapshot*', 'not the mandatory gate',
@@ -2095,14 +2146,14 @@ class ProgressTests(unittest.TestCase):
                 self.assertIn(token, text, f'{language}: progress-dashboard.md '
                                            f'is missing the registry anchor {token!r}')
 
-    def test_both_progress_references_document_explicit_prune_and_sidebar_runs(self):
+    def test_both_progress_references_document_explicit_prune_and_topbar_runs(self):
         common = ('run_states', 'archive/', 'registry prune', '--older-than-days',
                   '--keep', '--dry-run', 'descriptor.json', '"pruned"', '"archived"',
                   '"kept"', '"skipped"', 'completed', 'cancelled', 'failed')
-        english = ('7 days', '10 newest', 'left sidebar', 'Show all', 'Collapse',
+        english = ('7 days', '10 newest', 'top bar', 'dropdown', 'Show all', 'Collapse',
                    'never runs it automatically', 'same filesystem',
                    'copies and verifies', 'exit 1')
-        chinese = ('7 天', '最近 10', '侧边栏', '显示全部', '收起',
+        chinese = ('7 天', '最近 10', '顶栏', '下拉', '显示全部', '收起',
                    '绝不自动调用', '同一文件系统', '复制并校验', '退出码 1')
         for language, extra in (('orchestra-auto', english),
                                 ('orchestra-auto-zh', chinese)):
@@ -2110,19 +2161,28 @@ class ProgressTests(unittest.TestCase):
                     'references/progress-dashboard.md').read_text()
             for token in (*common, *extra):
                 self.assertIn(token, text, f'{language}: prune docs miss {token!r}')
+        # The positional change keeps the folding contract and the /health contract.
+        for token in ('`run_states` is missing', 'nothing is folded',
+                      'contract is unchanged'):
+            self.assertIn(token, prose('orchestra-auto',
+                                       'references/progress-dashboard.md'))
+        for token in ('`run_states` 缺失', '不折叠', '契约不变'):
+            self.assertIn(token, prose('orchestra-auto-zh',
+                                       'references/progress-dashboard.md'))
 
     def test_design_doc_documents_run_states_and_the_only_explicit_prune_entry(self):
         text = (ROOT / 'docs/design/orchestration-stability.md').read_text()
         for token in ('run_states', 'registry prune', 'archive/', '--dry-run',
-                      '不自动删除', '终态', '显式'):
+                      '不自动删除', '终态', '显式', '顶栏下拉'):
             self.assertIn(token, text, f'design doc misses {token!r}')
 
     def test_readmes_document_run_states_and_explicit_prune_retention(self):
         claims = (
             ('README.md', ('run_states', 'registry prune', 'never deleted by the service',
-                           'archives ended Runs')),
+                           'archives ended Runs', 'top bar dropdown')),
             ('README.zh-CN.md', ('run_states', 'registry prune',
-                                 '服务与 `open` 绝不删除', '归档已结束 Run')),
+                                 '服务与 `open` 绝不删除', '归档已结束 Run',
+                                 '顶栏右侧下拉')),
         )
         for relative, tokens in claims:
             text = (ROOT / relative).read_text()
