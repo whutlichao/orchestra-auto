@@ -160,6 +160,7 @@ let browser;
   // The selected Run carries a readable label; the second one has none and must fall
   // back to its Run ID, which stays available on hover for a labelled chip.
   let healthLabels = { [SELECTED]: "可验证的 Run 标签 / readable Run label" };
+  let healthStates = { [SELECTED]: "active", [SECOND]: "completed" };
   await page.route("**/health", async (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -170,6 +171,7 @@ let browser;
         started_at: "2026-01-01T00:00:00Z",
         runs: [SELECTED, SECOND],
         run_labels: healthLabels,
+        run_states: healthStates,
       }),
     }),
   );
@@ -178,7 +180,53 @@ let browser;
     await page.waitForTimeout(180);
   }
   await refresh();
-  assert.equal(await page.locator(".run-chip").count(), 2);
+  // The Run list lives in the left sidebar, after the brand and before the navigation.
+  assert.equal(
+    await page.locator(".sidebar #runs").count(),
+    1,
+    "the Run list sits inside the sidebar",
+  );
+  assert.equal(
+    await page.evaluate(() => {
+      const sidebar = document.querySelector(".sidebar");
+      const brand = sidebar && sidebar.querySelector(".brand");
+      const runs = sidebar && sidebar.querySelector(".runs");
+      const nav = sidebar && sidebar.querySelector("nav");
+      return Boolean(
+        brand &&
+          runs &&
+          nav &&
+          brand.compareDocumentPosition(runs) &
+            Node.DOCUMENT_POSITION_FOLLOWING &&
+          runs.compareDocumentPosition(nav) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+    }),
+    true,
+    "the Run list sits after the brand and before the navigation",
+  );
+  // Ended Runs are folded by default; the selected Run never is.
+  assert.equal(await page.locator(".run-chip").count(), 1);
+  assert.equal(
+    await page.locator("#run-toggle").innerText(),
+    "显示全部 (1)",
+  );
+  assert.equal(
+    await page.locator("#run-toggle").getAttribute("aria-expanded"),
+    "false",
+  );
+  assert.equal(
+    await page
+      .locator('.run-chip[aria-current="true"] .run-dot')
+      .getAttribute("data-state"),
+    "active",
+  );
+  assert.match(
+    await page
+      .locator('.run-chip[aria-current="true"] .run-dot')
+      .getAttribute("class"),
+    /tone-success/,
+  );
   assert.equal(
     await page.locator('.run-chip[aria-current="true"]').innerText(),
     "可验证的 Run 标签 / readable Run label",
@@ -188,10 +236,23 @@ let browser;
     SELECTED,
     "the full Run ID stays reachable on hover",
   );
+  await page.locator("#run-toggle").click();
+  assert.equal(await page.locator(".run-chip").count(), 2);
+  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
   assert.equal(
-    await page.locator(".run-chip").nth(1).innerText(),
+    await page.locator("#run-toggle").getAttribute("aria-expanded"),
+    "true",
+  );
+  assert.equal(
+    await page.locator('.run-chip[title="' + SECOND + '"]').innerText(),
     SECOND,
     "a Run without a label falls back to its Run ID",
+  );
+  assert.equal(
+    await page
+      .locator('.run-chip[title="' + SECOND + '"] .run-dot')
+      .getAttribute("data-state"),
+    "completed",
   );
   // A long label is truncated with an ellipsis instead of widening the page.
   healthLabels = { [SELECTED]: "Long readable label ".repeat(12) };
@@ -210,6 +271,30 @@ let browser;
     true,
     "a long label does not widen the page",
   );
+  // The toggle speaks the page's language.
+  await page.locator("#language").click();
+  assert.equal(await page.locator("#run-toggle").innerText(), "Collapse");
+  await page.locator("#language").click();
+  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
+  // The selected Run stays visible even after it ends; collapsing hides only others.
+  healthStates = { [SELECTED]: "completed", [SECOND]: "completed" };
+  await refresh();
+  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
+  await page.locator("#run-toggle").click();
+  assert.equal(await page.locator(".run-chip").count(), 1);
+  assert.equal(
+    await page.locator('.run-chip[aria-current="true"]').getAttribute("title"),
+    SELECTED,
+    "the selected Run stays visible even when it has ended",
+  );
+  assert.equal(await page.locator("#run-toggle").innerText(), "显示全部 (1)");
+  // Without run_states (an older service) nothing is folded away.
+  healthStates = null;
+  await refresh();
+  assert.equal(await page.locator("#run-toggle").isHidden(), true);
+  assert.equal(await page.locator(".run-chip").count(), 2);
+  healthStates = { [SELECTED]: "active", [SECOND]: "completed" };
+  await refresh();
   healthLabels = { [SELECTED]: "可验证的 Run 标签 / readable Run label" };
   await refresh();
   assert.match(

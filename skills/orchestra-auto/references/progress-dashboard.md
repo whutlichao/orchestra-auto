@@ -72,7 +72,12 @@ does not open a browser; automatic opening (`open`) is only for the first dispat
 ## Reading the visual dashboard
 
 The single bundled page defaults to Chinese and has an English switch. Both bundles ship the
-same page bytes. A light canvas, fixed left section navigation and a top bar order the Run
+same page bytes. A light canvas; a left sidebar after the brand and before the section navigation
+lists the Runs, each with a status dot driven by `/health` `run_states` (a neutral dot for an
+unknown status), a readable label (falling back to the Run ID) and an unavailable marker. Ended
+Runs (`completed`/`cancelled`/`failed`) are collapsed by default, the selected Run always stays
+visible, and the keyboard-operable `#run-toggle` shows "Show all (N)" while items are hidden and
+"Collapse" once expanded. The top bar and main area order the Run
 overview, attention items, task statistics, static reference flow, dependency graph, tasks and
 workers, delivery evidence and events. No external fonts, assets or frontend packages load. A
 snapshot refreshes every three seconds, and every single read — snapshot or Run list — is bounded by
@@ -80,7 +85,8 @@ an 8-second timeout. A snapshot read that fails or times out records the error w
 the last valid view, and the next poll simply retries; a stuck request never stops the page. A Run
 list read that fails stays silent and never changes the snapshot view. The Run list shows each
 Run's readable label when `/health` supplies one, falls back to the Run ID otherwise, and reveals
-the full Run ID when a chip is hovered. Task filters,
+the full Run ID when a chip is hovered. On a narrow screen the sidebar becomes a top strip and the
+Run list stays visible and wraps. Task filters,
 expanded details, graph scroll and language survive updates. The in-page refresh button re-reads
 immediately, aborting a request that is still waiting instead of queueing behind it, and returning
 the tab to the foreground (visible tab, page restored from the back/forward cache, or window focus)
@@ -258,6 +264,10 @@ $ORCA_PROGRESS_HOME
 ├── server.json          # {pid, port, protocol_version, started_at, binary_version}
 ├── startup.lock         # flock held only during startup
 ├── starting.json        # {pid, port}: the startup crash window
+├── archive/             # reversible archives written only by an explicit registry prune (0700)
+│   └── run_xxx/
+│       ├── descriptor.json
+│       └── <state-dir>/
 └── runs/
     └── run_xxx.json     # {run_id, state_path, registered_at, label}
 ```
@@ -290,33 +300,67 @@ timeout is degraded: no second service is ever started.
 **Interfaces.** The script exposes `registry.register(run)`, `registry.discover()`,
 `registry.probe()` and `registry.open(run) -> {url, pid, degraded, reason}`; the HTTP layer only
 renders read-only snapshots. `GET /health` returns
-`{ok, protocol_version, pid, started_at, runs, run_labels}`; `protocol_version` starts at `1`.
-`runs` stays an ordered array of Run ID strings. `run_labels` maps each Run ID to a short readable
-label: the validated descriptor label wins; when it is empty, the service reads only that Run's
-registered state and uses `run.title`; a state that cannot be read is silently omitted, and every
-value is stripped of surrounding whitespace and truncated to 120 characters. The response never
-includes a state path. `GET /?run=<id>`
+`{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`; `protocol_version`
+starts at `1`. `runs` stays an ordered array of Run ID strings. `run_labels` maps each Run ID to a
+short readable label: the validated descriptor label wins; otherwise it falls back to `run.title`
+from that Run's own registered state, which `/health` reads once for both maps; a state that cannot
+be read is silently omitted, and every value is stripped of surrounding whitespace and truncated to
+120 characters. `run_states` maps each Run whose state is readable and whose `run.status` belongs
+to `RUN_STATES` to that status; unreadable states are silently omitted exactly like `run_labels`.
+`run_labels` and `run_states` come from the same state read; a Run's `progress.json` is never parsed
+twice. The response never includes a state path. `GET /?run=<id>`
 renders the page and `GET /snapshot?run=<id>` returns that Run's snapshot; an unknown Run is an
 error, never another Run's data.
+
+**Explicit cleanup (`registry prune`).** The service and `open` never clean the registry; only this
+explicit command archives ended Runs:
+
+```bash
+python3 PROGRESS --registry "$ORCA_PROGRESS_HOME" registry prune \
+  [--older-than-days 7] [--keep 10] [--dry-run] [--json]
+```
+
+`--older-than-days` defaults to 7 days and `--keep` to 10 (retaining the 10 newest Runs); both must
+be nonnegative integers, and invalid input exits 1. Only `completed`, `cancelled` and `failed` Runs
+are candidates. The retained set is the first `--keep` Run IDs by descending descriptor
+`registered_at`, whatever their status. The age basis is `run.ended_at`, falling back in order to
+`run.updated_at`, `run.last_observed`, then descriptor `registered_at`; exactly at the cutoff is
+retained and only a strictly older Run is pruned. An unreadable descriptor or state (missing,
+corrupt, failed validation) is never pruned and is reported in `skipped` with a reason; a
+nonterminal Run is reported in `kept`. `--dry-run` computes and prints only: it creates, moves and
+deletes nothing.
+
+A successful prune creates a `0700` `$ORCA_PROGRESS_HOME/archive/<run_id>/` directory (an existing
+one skips that Run as `archive_conflict`, never overwritten), moves the state directory into it (a
+rename on the same filesystem; across filesystems it copies and verifies, then deletes the original,
+and keeps the original when the copy fails) and fsyncs the archive directory. It then writes the
+original descriptor bytes to `archive/<run_id>/descriptor.json` and fsyncs, and only after all of
+that removes `runs/<run_id>.json` and fsyncs `runs/`. Any failed step rolls back, keeps the
+descriptor and the original state, reports `archive_failed` and ends with exit 1. `--json` prints
+`{"pruned": [...], "archived": [...], "kept": [...], "skipped": [{"run_id": ..., "reason": ...}]}`;
+`pruned` lists Runs removed from the registry (or that a dry run would remove) and `archived` lists
+Runs whose state was actually archived. Non-JSON output is the same summary. The command never calls
+Orca and never starts the service; the service never runs it automatically, and neither does `open`.
 
 **HTTP surface and Run isolation.** The service exposes exactly three GET routes and no write API:
 
 | Route | Answer |
 | --- | --- |
-| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels}`: the service, the registered Run IDs, and their short readable labels (descriptor label first, then the registered state's `run.title`; unreadable states are omitted), never their state paths |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`: the service, the registered Run IDs, their short readable labels (descriptor label first, then the registered state's `run.title`; unreadable states are omitted) and projected states (only Runs with a readable, valid status), never their state paths |
 | `GET /?run=<id>` | the page: a Run list built from `/health` (each chip shows the readable label when present and the full Run ID on hover) plus the selected Run's tasks, workers, deliveries, events, freshness and health projection, and the "warning is not a start failure" notice |
 | `GET /snapshot?run=<id>` | that Run's read-only snapshot, and nothing from any other Run |
 
 Run isolation is one descriptor lookup per request: each snapshot reads only the selected Run's
 `progress.json` through the shared state-path validator, and responses name Run IDs and short
-labels, never a state path. Cross-Run reading is limited to `/health` deriving a label: when a
-descriptor has no label it may read only that Run's own state for `run.title`, and the page shows
-the Run ID list. A descriptor
+labels, never a state path. Cross-Run reading is limited to `/health` reading each registered Run's
+own state once to derive labels and states; the page shows the Run ID list. A descriptor
 that cannot be read, or whose `progress.json` is missing or corrupt, answers `503` with
-`Snapshot unavailable` and a Run list entry marked unavailable; the descriptor is never deleted and
-never repaired, and an unknown Run ID answers `404`. The page keeps the Run list when one Run is
-unavailable instead of silently showing another Run's data. The service keeps no per-Run state, so
-it is restartable: `progress.json` remains the source of truth and an outage is only a gap.
+`Snapshot unavailable` and a Run list entry marked unavailable; a descriptor or state is never deleted
+or repaired by the service or `open`, and the only cleanup entry is an explicit `registry prune`,
+which archives ended Runs. An unknown Run ID answers `404`. The page keeps the
+Run list when one Run is unavailable instead of silently showing another Run's data. The service
+keeps no per-Run state, so it is restartable: `progress.json` remains the source of truth and an
+outage is only a gap.
 
 **Security boundary.** The service binds `127.0.0.1` (IPv4) only and never a wildcard or IPv6
 address; every route is GET only and any other method answers `405` with `Allow: GET`, including
@@ -433,7 +477,8 @@ Do not delete an active lock file or run an automatic repair. A corrupt/unsuppor
 closed without overwrite: preserve it, restore a known-good audit backup into a separate external
 directory and reconcile subsequent facts explicitly. No migration, truncation or guessed reconstruction.
 Keep backup copies outside repositories as well. The growing event history is a local audit record,
-not a database or a retention service; archive completed Run directories according to local policy.
+not a database or a retention service; only an explicit `registry prune` archives ended Run
+directories, and the service and `open` never run it automatically.
 
 The service binds only IPv4 localhost, has no write API, serves no arbitrary paths or file content,
 and loads no external assets. All values render as text; only HTTP(S) references become links.

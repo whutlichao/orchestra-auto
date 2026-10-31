@@ -315,21 +315,19 @@
 
       .runs {
         display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 8px;
-        padding: 8px 32px;
-        font-size: 12.5px;
-        color: var(--muted);
-        background: var(--surface);
-        border-bottom: 1px solid var(--line);
+        flex-direction: column;
+        gap: 7px;
+        min-width: 0;
       }
       .runs[hidden] {
         display: none;
       }
       .runs-label {
+        font-size: 11px;
         font-weight: 650;
-        color: var(--text-2);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--faint);
       }
       .run-chips {
         display: flex;
@@ -340,8 +338,9 @@
       .run-chip {
         display: inline-flex;
         align-items: center;
+        gap: 6px;
         max-width: 100%;
-        padding: 2px 9px;
+        padding: 3px 9px;
         border-radius: 999px;
         border: 1px solid var(--line);
         background: var(--surface-2);
@@ -349,6 +348,31 @@
         font-family: var(--mono);
         font-size: 11.5px;
         min-width: 0;
+      }
+      .run-dot {
+        flex: 0 0 8px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--faint);
+      }
+      .run-dot.tone-success {
+        background: #17a27e;
+      }
+      .run-dot.tone-warning {
+        background: #d98b18;
+      }
+      .run-dot.tone-danger {
+        background: #d0453c;
+      }
+      .run-dot.tone-accent {
+        background: var(--accent);
+      }
+      .run-dot.tone-info {
+        background: #3b9ac4;
+      }
+      .run-dot.tone-neutral {
+        background: var(--faint);
       }
       .run-chip-text {
         min-width: 0;
@@ -366,6 +390,15 @@
         border-style: dashed;
         color: var(--warning);
         background: var(--warning-soft);
+      }
+      .run-toggle {
+        width: 100%;
+        padding: 5px 9px;
+        border-radius: 9px;
+        font-size: 11.5px;
+      }
+      .run-toggle[hidden] {
+        display: none;
       }
       .notice {
         padding: 8px 32px;
@@ -1046,7 +1079,6 @@
         .page-footer,
         .topbar,
         .health,
-        .runs,
         .notice {
           padding-left: 44px;
           padding-right: 44px;
@@ -1068,9 +1100,6 @@
         }
         .health {
           padding: 9px 24px;
-        }
-        .runs {
-          padding: 8px 24px;
         }
         .notice {
           padding: 8px 24px;
@@ -1137,9 +1166,6 @@
         .health {
           padding: 8px 18px;
         }
-        .runs {
-          padding: 8px 18px;
-        }
         .notice {
           padding: 8px 18px;
         }
@@ -1183,7 +1209,6 @@
         }
         .topbar,
         .health,
-        .runs,
         .notice {
           padding-left: 12px;
           padding-right: 12px;
@@ -1250,6 +1275,18 @@
             <small id="brand-sub">进展指挥台</small>
           </span>
         </div>
+        <div id="runs" class="runs" hidden>
+          <span class="runs-label" id="runs-label">已注册 Run</span>
+          <span class="run-chips" id="run-chips"></span>
+          <button
+            id="run-toggle"
+            class="run-toggle"
+            type="button"
+            aria-controls="run-chips"
+            aria-expanded="false"
+            hidden
+          ></button>
+        </div>
         <nav id="nav" class="nav" aria-label="页面导航"></nav>
         <div class="side-note">
           <span class="badge tone-neutral" id="readonly-badge">只读</span>
@@ -1273,10 +1310,6 @@
         </header>
         <div id="health" class="health loading" role="status" aria-live="polite">
           正在加载快照…
-        </div>
-        <div id="runs" class="runs" hidden>
-          <span class="runs-label" id="runs-label">已注册 Run</span>
-          <span class="run-chips" id="run-chips"></span>
         </div>
         <p class="notice" id="notice">
           <strong>警告不是启动失败 · a warning is not a start failure.</strong>
@@ -1308,6 +1341,7 @@
       const runsBar = document.getElementById("runs");
       const runsLabel = document.getElementById("runs-label");
       const runChips = document.getElementById("run-chips");
+      const runToggle = document.getElementById("run-toggle");
       const notice = document.getElementById("notice");
 
       const NAV = [
@@ -1334,6 +1368,12 @@
         "paused",
         "cancelled",
       ];
+      // Ended Runs are folded away by default; the selected Run always stays visible.
+      const TERMINAL_RUN_STATES = new Set([
+        "completed",
+        "cancelled",
+        "failed",
+      ]);
       const TERMS = {
         unknown: { zh: "未知", en: "Unknown", tone: "neutral", color: "#98a2b3" },
         pending: { zh: "待计划", en: "Pending", tone: "neutral", color: "#cbd5e1" },
@@ -1376,6 +1416,8 @@
       let selectedRun = new URLSearchParams(location.search).get("run") || "";
       let knownRuns = [];
       let runLabels = {};
+      let runStates = {};
+      let runsExpanded = false;
       let unavailableRuns = [];
       let lastLoaded = null;
       let filter = null;
@@ -1600,6 +1642,18 @@
         }
       }
 
+      function runState(runId) {
+        return Object.hasOwn(runStates, runId) ? runStates[runId] : "unknown";
+      }
+
+      // Ended Runs fold by default, except the one currently rendered.
+      function foldedByDefault(runId) {
+        return (
+          runId !== selectedRun &&
+          TERMINAL_RUN_STATES.has(runState(runId))
+        );
+      }
+
       function renderRuns() {
         runsLabel.textContent = tr("已注册 Run", "Registered Runs");
         runChips.replaceChildren();
@@ -1607,9 +1661,19 @@
         for (const runId of unavailableRuns)
           if (!listed.includes(runId)) listed.push(runId);
         runsBar.hidden = listed.length === 0;
+        const collapsed = new Set();
+        if (!runsExpanded)
+          for (const runId of listed)
+            if (foldedByDefault(runId)) collapsed.add(runId);
         for (const runId of listed) {
+          if (collapsed.has(runId)) continue;
           const unavailable = unavailableRuns.includes(runId);
+          const current = runState(runId);
           const chip = node("a", undefined, runChips);
+          const dot = node("span", undefined, chip);
+          dot.className = "run-dot tone-" + tone(current);
+          dot.dataset.state = current;
+          dot.setAttribute("aria-hidden", "true");
           const chipText = node(
             "span",
             (runLabels[runId] || runId) +
@@ -1644,6 +1708,15 @@
             refresh({ force: true });
           });
         }
+        const hiddenCount = listed.filter(foldedByDefault).length;
+        runToggle.hidden = hiddenCount === 0;
+        runToggle.textContent = runsExpanded
+          ? tr("收起", "Collapse")
+          : tr(
+              "显示全部 (" + hiddenCount + ")",
+              "Show all (" + hiddenCount + ")",
+            );
+        runToggle.setAttribute("aria-expanded", String(runsExpanded));
       }
 
       // One bounded read of a same-origin endpoint. The timer aborts the request — the
@@ -1694,6 +1767,14 @@
           if (labels && typeof labels === "object" && !Array.isArray(labels)) {
             for (const [runId, value] of Object.entries(labels))
               if (typeof value === "string") runLabels[runId] = value;
+          }
+          // A missing run_states means an older service: every status stays unknown,
+          // so no Run is folded away.
+          const states = health && health.run_states;
+          runStates = {};
+          if (states && typeof states === "object" && !Array.isArray(states)) {
+            for (const [runId, value] of Object.entries(states))
+              if (typeof value === "string") runStates[runId] = value;
           }
           unavailableRuns = unavailableRuns.filter(
             (item) => !knownRuns.includes(item),
@@ -2857,7 +2938,7 @@
           if (generation !== readGeneration) return;
           if (!response.ok) {
             // A registered Run whose descriptor cannot be read is listed as
-            // unavailable; the service never deletes or repairs it.
+            // unavailable; the service and open never delete or repair it.
             if (response.status === 503 && selectedRun) {
               if (!unavailableRuns.includes(selectedRun))
                 unavailableRuns.push(selectedRun);
@@ -2894,6 +2975,10 @@
         }
       }
 
+      runToggle.addEventListener("click", () => {
+        runsExpanded = !runsExpanded;
+        renderRuns();
+      });
       refreshButton.addEventListener("click", () => {
         // An explicit refresh keeps the rendered view, filter, details, scroll and language,
         // but never waits for a read that is already stuck.

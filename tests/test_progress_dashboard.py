@@ -1,4 +1,5 @@
 """Public CLI, snapshot, registry and HTTP contracts for the progress sidecar."""
+import errno
 import fcntl
 import time
 import concurrent.futures
@@ -6,12 +7,14 @@ import http.client
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import stat
 import threading
 import unittest.mock
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -184,6 +187,41 @@ class ProgressTests(unittest.TestCase):
                           'phase': 'implementation', 'status': 'active', **extra},
                  event='init', state=state)
         return state
+
+    def make_run(self, name, run_id, status=None, **extra):
+        """One complete Run whose terminal status is written through ``end``."""
+        state = self.root / 'audit' / name
+        data = {'id': run_id, 'target_repo': str(self.repo), 'mode': 'REAL', **extra}
+        if status is not None:
+            data['status'] = status
+        self.cli('init', data, event='init-' + name, state=state)
+        if status in {'completed', 'cancelled', 'failed'}:
+            self.cli('end', {'status': status}, event='end-' + name, state=state)
+        elif status not in (None, 'active'):
+            self.cli('run', {'status': status}, event='status-' + name, state=state)
+        return state
+
+    def set_run_times(self, state, **values):
+        path = state / 'progress.json'
+        data = json.loads(path.read_text())
+        data['run'].update(values)
+        path.write_text(json.dumps(data))
+
+    def register_with_time(self, state, run_id, registered_at, label=''):
+        module = self.progress_module()
+        module.register({'run_id': run_id, 'state_path': str(state), 'label': label},
+                        home=self.home)
+        path = self.home / 'runs' / (run_id + '.json')
+        descriptor = json.loads(path.read_text())
+        descriptor['registered_at'] = registered_at
+        path.write_text(json.dumps(descriptor))
+        return descriptor
+
+    def prune_cli(self, *flags, home=None):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), '--registry', str(home or self.home),
+             'registry', 'prune', *flags],
+            env=self.environment(), capture_output=True, text=True)
 
     def open_run(self, state):
         return subprocess.run([sys.executable, str(SCRIPT), '--state', str(state), 'open'],
@@ -674,6 +712,387 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn(b'state_path', body)
         self.assertNotIn(b'progress.json', body)
 
+    def test_health_reports_run_states_from_the_same_state_read_as_labels(self):
+        statuses = {
+            'run1': ('active', 'Active label'),
+            'run2': ('completed', ''),
+            'run3': ('waiting_user', ''),
+            'run4': ('paused', 'Paused label'),
+            'run5': ('failed', ''),
+            'run6': ('unknown', ''),
+        }
+        states = {}
+        for run_id, (status, label) in statuses.items():
+            state = self.make_run(run_id, run_id, status)
+            states[run_id] = state
+            descriptor = {'run_id': run_id, 'state_path': str(state)}
+            if label:
+                descriptor['label'] = label
+            self.progress_module().register(descriptor, home=self.home)
+        broken_state = self.make_run('run7', 'run7', 'active')
+        (broken_state / 'progress.json').write_text('{broken')
+        self.progress_module().register(
+            {'run_id': 'run7', 'state_path': str(broken_state)}, home=self.home)
+        (self.home / 'runs' / 'run8.json').write_text('{broken descriptor')
+        base = self.registry_service()
+        status, _headers, body = self.http_get(base + '/health')
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertEqual(health['protocol_version'], 1)
+        self.assertEqual(health['runs'], ['run1', 'run2', 'run3', 'run4', 'run5', 'run6',
+                                          'run7'])
+        self.assertEqual(health['run_labels'], {
+            'run1': 'Active label',
+            'run4': 'Paused label',
+        })
+        self.assertEqual(health['run_states'], {
+            'run1': 'active',
+            'run2': 'completed',
+            'run3': 'waiting_user',
+            'run4': 'paused',
+            'run5': 'failed',
+            'run6': 'unknown',
+        })
+        for state in states.values():
+            self.assertNotIn(str(state), body.decode())
+        self.assertNotIn(b'state_path', body)
+        self.assertNotIn(b'progress.json', body)
+
+        # The label and the status are produced from one read per descriptor: a
+        # descriptor label does not skip the read needed for run_states.
+        module = self.progress_module()
+        calls = []
+        original = module.read_state
+
+        def counting(directory):
+            calls.append(str(directory))
+            return original(directory)
+
+        module.read_state = counting
+        try:
+            descriptors = module.discover(home=self.home)
+            labels, projections = module.readable_run_views(descriptors)
+        finally:
+            module.read_state = original
+        self.assertEqual(labels, health['run_labels'])
+        self.assertEqual(projections, health['run_states'])
+        self.assertEqual(len(calls), len(descriptors), calls)
+        self.assertEqual(len(set(calls)), len(calls), 'a state was parsed twice')
+
+    def test_health_omits_a_non_string_status_without_failing(self):
+        state = self.make_run('bad-status', 'run1', 'active')
+        self.set_run_times(state, status=[])
+        self.progress_module().register(
+            {'run_id': 'run1', 'state_path': str(state)}, home=self.home)
+        base = self.registry_service()
+        status, _headers, body = self.http_get(base + '/health')
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertEqual(health['runs'], ['run1'])
+        self.assertEqual(health['run_states'], {})
+
+    def test_registry_prune_only_archives_terminal_runs(self):
+        terminal = {
+            'run-completed': self.make_run('completed', 'run-completed', 'completed'),
+            'run-cancelled': self.make_run('cancelled', 'run-cancelled', 'cancelled'),
+            'run-failed': self.make_run('failed', 'run-failed', 'failed'),
+        }
+        nonterminal = {
+            'run-active': self.make_run('active', 'run-active', 'active'),
+            'run-waiting': self.make_run('waiting', 'run-waiting', 'waiting_user'),
+            'run-paused': self.make_run('paused', 'run-paused', 'paused'),
+            'run-unknown': self.make_run('unknown', 'run-unknown'),
+        }
+        old = '2020-01-01T00:00:00+00:00'
+        for run_id, state in {**terminal, **nonterminal}.items():
+            self.set_run_times(state, ended_at=old, updated_at=old, last_observed=old)
+            self.register_with_time(state, run_id, '2026-01-01T00:00:00+00:00')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], sorted(terminal))
+        self.assertEqual(report['archived'], sorted(terminal))
+        self.assertEqual(report['kept'], sorted(nonterminal))
+        self.assertEqual(report['skipped'], [])
+        for run_id, state in terminal.items():
+            self.assertFalse((self.home / 'runs' / (run_id + '.json')).exists())
+            self.assertFalse(state.exists())
+            self.assertTrue((self.home / 'archive' / run_id / state.name / 'progress.json')
+                            .exists())
+        for run_id, state in nonterminal.items():
+            self.assertTrue((self.home / 'runs' / (run_id + '.json')).exists())
+            self.assertTrue((state / 'progress.json').exists())
+
+    def test_registry_prune_respects_the_age_boundary(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        cutoff = now.timestamp() - 7 * 86400
+        runs = {
+            'run-early': cutoff - 1,
+            'run-exact': cutoff,
+            'run-late': cutoff + 1,
+        }
+        for run_id, stamp in runs.items():
+            state = self.make_run(run_id, run_id, 'completed')
+            self.set_run_times(state, ended_at=datetime.fromtimestamp(
+                stamp, timezone.utc).isoformat())
+            self.register_with_time(state, run_id, '2026-01-01T00:00:00+00:00')
+        module = self.progress_module()
+        report, failed = module.prune(home=self.home, older_than_days=7, keep=0,
+                                      now_timestamp=now.timestamp())
+        self.assertFalse(failed)
+        self.assertEqual(report['pruned'], ['run-early'])
+        self.assertEqual(sorted(report['kept']), ['run-exact', 'run-late'])
+
+    def test_registry_prune_skips_a_non_string_status(self):
+        state = self.make_run('bad-status', 'run1', 'completed')
+        self.set_run_times(state, status=[], ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['skipped'], [
+            {'run_id': 'run1', 'reason': 'state_invalid_status'}])
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+
+    def test_registry_prune_orders_retention_by_timestamp_not_string(self):
+        older = self.make_run('older', 'run-older', 'completed')
+        newer = self.make_run('newer', 'run-newer', 'completed')
+        for state in (older, newer):
+            self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        # Lexicographically the older instant sorts first, but chronologically the
+        # newer instant is 23:00Z and must win the single retention slot.
+        self.register_with_time(older, 'run-older', '2026-01-01T00:00:00+02:00')
+        self.register_with_time(newer, 'run-newer', '2025-12-31T23:00:00+00:00')
+        result = self.prune_cli('--keep', '1', '--older-than-days', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['kept'], ['run-newer'])
+        self.assertEqual(report['pruned'], ['run-older'])
+        self.assertTrue((newer / 'progress.json').exists())
+        self.assertFalse((older / 'progress.json').exists())
+
+    def test_registry_prune_keeps_the_newest_ten_descriptors_regardless_of_status(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        keep_runs = {}
+        for index in range(12):
+            run_id = 'keep-' + str(index).zfill(2)
+            state = self.make_run(run_id, run_id, 'completed')
+            self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+            self.register_with_time(
+                state, run_id, '2026-01-01T00:00:' + str(index).zfill(2) + '+00:00')
+            keep_runs[run_id] = state
+        # A non-terminal Run inside the keep set stays kept as well.
+        active = self.make_run('keep-active', 'keep-active', 'active')
+        self.set_run_times(active, updated_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(active, 'keep-active', '2025-12-31T23:59:59+00:00')
+        module = self.progress_module()
+        report, failed = module.prune(home=self.home, older_than_days=7, keep=10,
+                                      now_timestamp=now.timestamp())
+        self.assertFalse(failed)
+        self.assertEqual(report['pruned'], ['keep-00', 'keep-01'])
+        self.assertEqual(sorted(report['kept']),
+                         ['keep-' + str(index).zfill(2) for index in range(2, 12)]
+                         + ['keep-active'])
+        for run_id in ('keep-00', 'keep-01'):
+            self.assertFalse(keep_runs[run_id].exists())
+        for run_id in keep_runs:
+            if run_id not in ('keep-00', 'keep-01'):
+                self.assertTrue(keep_runs[run_id].exists())
+        # active was outside the ten newest descriptors but is not terminal.
+        self.assertTrue((active / 'progress.json').exists())
+
+    def test_registry_prune_dry_run_changes_nothing(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        active = self.make_run('active', 'run2', 'active')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        self.register_with_time(active, 'run2', '2026-01-01T00:00:00+00:00')
+        before = sorted(str(path.relative_to(self.root))
+                        for path in self.home.rglob('*'))
+        descriptor_before = (self.home / 'runs' / 'run1.json').read_bytes()
+        state_before = (state / 'progress.json').read_bytes()
+        result = self.prune_cli('--keep', '0', '--dry-run', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], ['run1'])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual(report['kept'], ['run2'])
+        self.assertEqual(sorted(str(path.relative_to(self.root))
+                                for path in self.home.rglob('*')), before)
+        self.assertFalse((self.home / 'archive').exists())
+        self.assertEqual((self.home / 'runs' / 'run1.json').read_bytes(),
+                         descriptor_before)
+        self.assertEqual((state / 'progress.json').read_bytes(), state_before)
+
+    def test_registry_prune_skips_unreadable_descriptors_and_states(self):
+        runs = self.home / 'runs'
+        runs.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (runs / 'broken.json').write_text('{broken descriptor')
+        missing = self.root / 'audit' / 'missing'
+        corrupt = self.root / 'audit' / 'corrupt'
+        empty = self.root / 'audit' / 'empty'
+        corrupt.mkdir(parents=True)
+        (corrupt / 'progress.json').write_text('{broken')
+        empty.mkdir(parents=True)
+        for run_id, state in (('run-missing', missing), ('run-corrupt', corrupt),
+                              ('run-empty', empty)):
+            (runs / (run_id + '.json')).write_text(json.dumps({
+                'run_id': run_id, 'state_path': str(state), 'label': '',
+                'registered_at': '2026-01-01T00:00:00+00:00'}))
+        good = self.make_run('good', 'run-good', 'completed')
+        self.set_run_times(good, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(good, 'run-good', '2026-01-01T00:00:00+00:00')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], ['run-good'])
+        self.assertEqual(report['archived'], ['run-good'])
+        skipped = {item['run_id']: item['reason'] for item in report['skipped']}
+        self.assertEqual(sorted(skipped), ['broken', 'run-corrupt', 'run-empty',
+                                           'run-missing'])
+        self.assertTrue(all(skipped.values()))
+        self.assertEqual((runs / 'broken.json').read_text(), '{broken descriptor')
+        for run_id, state in (('run-missing', missing), ('run-corrupt', corrupt),
+                              ('run-empty', empty)):
+            self.assertTrue((runs / (run_id + '.json')).exists())
+            if state.exists():
+                self.assertTrue(state.is_dir())
+        self.assertTrue((corrupt / 'progress.json').exists())
+        self.assertTrue((self.home / 'archive' / 'run-good' / good.name /
+                         'progress.json').exists())
+
+    def test_registry_prune_skips_an_existing_archive_directory(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        archive = self.home / 'archive' / 'run1'
+        archive.mkdir(parents=True, mode=0o700)
+        marker = archive / 'keep-me'
+        marker.write_text('original archive')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], [])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['archive_conflict'])
+        self.assertEqual(marker.read_text(), 'original archive')
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+
+    def test_registry_prune_archives_the_state_and_the_original_descriptor(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        descriptor_path = self.home / 'runs' / 'run1.json'
+        descriptor_before = descriptor_path.read_bytes()
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], ['run1'])
+        self.assertEqual(report['archived'], ['run1'])
+        archive = self.home / 'archive' / 'run1'
+        self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o700)
+        self.assertFalse(descriptor_path.exists())
+        self.assertFalse(state.exists())
+        self.assertTrue((archive / state.name / 'progress.json').exists())
+        self.assertEqual((archive / 'descriptor.json').read_bytes(), descriptor_before)
+        self.assertEqual(stat.S_IMODE((archive / 'descriptor.json').stat().st_mode),
+                         0o600)
+
+    def test_registry_prune_failure_preserves_the_descriptor_and_state(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        # An archive path that is a file cannot be made into a directory.
+        archive_file = self.home / 'archive'
+        archive_file.write_text('not a directory')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['pruned'], [])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['archive_failed'])
+        self.assertEqual(archive_file.read_text(), 'not a directory')
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+
+    def test_registry_prune_rolls_back_when_the_descriptor_write_fails(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        module = self.progress_module()
+
+        def fail(*_args, **_kwargs):
+            raise OSError('disk full')
+
+        with unittest.mock.patch.object(module, 'atomic_write_bytes', fail):
+            report, failed = module.prune(home=self.home, older_than_days=7, keep=0,
+                                          now_timestamp=datetime(2026, 1, 1,
+                                                                 tzinfo=timezone.utc)
+                                          .timestamp())
+        self.assertTrue(failed)
+        self.assertEqual(report['pruned'], [])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['archive_failed'])
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+        self.assertFalse((self.home / 'archive' / 'run1').exists())
+
+    def test_registry_prune_restores_state_after_cross_filesystem_cleanup_failure(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        module = self.progress_module()
+        real_rename = os.rename
+        real_rmtree = shutil.rmtree
+        first_rename = [True]
+        failed_delete = [False]
+
+        def rename(source, destination):
+            # Force the cross-filesystem branch once; later renames (the staging
+            # install and the rollback) proceed normally.
+            if first_rename[0]:
+                first_rename[0] = False
+                raise OSError(errno.EXDEV, 'cross-device link')
+            return real_rename(source, destination)
+
+        def rmtree(path, *args, **kwargs):
+            # The verified copy is already installed when deleting the original
+            # source fails halfway through; the rollback must restore the missing
+            # file from the archive instead of dropping the archive.
+            if Path(path) == state and not failed_delete[0]:
+                failed_delete[0] = True
+                (Path(path) / 'progress.json').unlink()
+                raise OSError('directory busy')
+            return real_rmtree(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(module.os, 'rename', rename), \
+                unittest.mock.patch.object(module.shutil, 'rmtree', rmtree):
+            report, failed = module.prune(
+                home=self.home, older_than_days=7, keep=0,
+                now_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc)
+                .timestamp())
+        self.assertTrue(failed)
+        self.assertEqual(report['pruned'], [])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['archive_failed'])
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+        self.assertFalse((self.home / 'archive' / 'run1').exists())
+
+    def test_registry_prune_rejects_negative_and_non_numeric_options(self):
+        for flag, value in (('--older-than-days', '-1'), ('--older-than-days', 'seven'),
+                            ('--keep', '-1'), ('--keep', 'ten')):
+            with self.subTest(flag=flag, value=value):
+                result = self.prune_cli(flag, value)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('nonnegative integer', result.stderr)
+
     def test_registry_service_refuses_symlinks_repository_ancestors_and_arbitrary_paths(self):
         module = self.progress_module()
         self.init()
@@ -810,6 +1229,61 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('refresh({ force: true });', served)
         self.assertIn('window.addEventListener("pageshow",', served)
 
+    def test_page_places_runs_in_the_sidebar_and_collapses_ended_runs(self):
+        for language in ('orchestra-auto', 'orchestra-auto-zh'):
+            asset = (ROOT / 'skills' / language / 'scripts' / 'progress.html').read_text()
+            sidebar = asset[asset.index('<aside class="sidebar">'):
+                            asset.index('</aside>')]
+            self.assertIn('id="runs"', sidebar, language)
+            self.assertIn('id="runs-label"', sidebar, language)
+            self.assertIn('id="run-toggle"', sidebar, language)
+            self.assertIn('aria-controls="run-chips"', sidebar, language)
+            self.assertLess(sidebar.index('class="brand"'), sidebar.index('id="runs"'),
+                            language)
+            self.assertLess(sidebar.index('id="runs"'), sidebar.index('id="nav"'),
+                            language)
+            # The old top strip is gone: there is exactly one Run list on the page.
+            self.assertEqual(asset.count('id="runs"'), 1, language)
+            script = page_script(asset)
+            self.assertIn('const runsBar = document.getElementById("runs");', script,
+                          language)
+            self.assertIn('const runToggle = document.getElementById("run-toggle");',
+                          script, language)
+            self.assertIn('let runStates = {};', script, language)
+            self.assertIn('let runsExpanded = false;', script, language)
+            self.assertIn('const TERMINAL_RUN_STATES', script, language)
+            self.assertIn('health.run_states', script, language)
+            self.assertIn('显示全部 (', script, language)
+            self.assertIn('Show all (', script, language)
+            self.assertIn('收起', script, language)
+            self.assertIn('Collapse', script, language)
+            render = braced_block(script, 'function renderRuns()')
+            folded = braced_block(script, 'function foldedByDefault(runId)')
+            self.assertIn('runState(runId)', folded, language)
+            self.assertIn('Object.hasOwn(runStates, runId)', script, language)
+            self.assertIn('TERMINAL_RUN_STATES.has', folded, language)
+            self.assertIn('selectedRun', folded, language)
+            self.assertIn('foldedByDefault', render, language)
+            self.assertIn('runToggle', render, language)
+            self.assertIn('run-dot', render, language)
+            self.assertIn('aria-expanded', render, language)
+            self.assertIn('history.replaceState', render, language)
+            self.assertIn('runStates = {};', braced_block(
+                script, 'async function refreshRuns(options)'), language)
+            # The sidebar keeps the list usable on narrow screens.
+            container = asset[asset.index('.runs {'):asset.index('.run-chip {')]
+            self.assertIn('flex-direction: column', container, language)
+            chips = asset[asset.index('.run-chips {'):asset.index('.run-chip {')]
+            self.assertIn('flex-wrap: wrap', chips, language)
+            mobile = asset[asset.index('@media (max-width: 900px)'):]
+            self.assertIn('.sidebar {', mobile, language)
+        status, _headers, body = self.http_get(self.registry_service() + '/')
+        self.assertEqual(status, 200)
+        served = page_script(body.decode())
+        self.assertIn('let runStates = {};', served)
+        self.assertIn('TERMINAL_RUN_STATES', served)
+        self.assertIn('id="run-toggle"', body.decode())
+
     def test_both_bundles_ship_the_same_self_healing_page(self):
         """The two packages ship one page, and that page is the self-healing one.
 
@@ -837,6 +1311,9 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('SELECTED', script)
         self.assertIn('NOT the mandatory gate', script)
         self.assertIn('run-chip', script)
+        self.assertIn('run-toggle', script)
+        self.assertIn('.sidebar #runs', script)
+        self.assertIn('run_states', script)
         for language, tokens in (('orchestra-auto',
                                   ('**/snapshot*', 'not the mandatory gate',
                                    'two registered Runs')),
@@ -1602,7 +2079,9 @@ class ProgressTests(unittest.TestCase):
 
     def test_both_progress_references_document_the_singleton_registry_identically(self):
         anchors = ('$ORCA_PROGRESS_HOME', 'server.json', 'startup.lock', 'starting.json',
-                   'runs/', 'protocol_version', 'register(run)', 'discover()', 'probe()',
+                   'runs/', 'archive/', 'descriptor.json', 'protocol_version',
+                   'run_states', 'register(run)', 'discover()', 'probe()',
+                   'registry prune', '--older-than-days', '--keep', '--dry-run',
                    'serve --state', 'legacy', '10', '500', 'degraded', 'gap',
                    '0720-not-used')
         anchors = tuple(anchor for anchor in anchors if not anchor.endswith('not-used'))
@@ -1615,6 +2094,40 @@ class ProgressTests(unittest.TestCase):
             for token in (*anchors, *extra):
                 self.assertIn(token, text, f'{language}: progress-dashboard.md '
                                            f'is missing the registry anchor {token!r}')
+
+    def test_both_progress_references_document_explicit_prune_and_sidebar_runs(self):
+        common = ('run_states', 'archive/', 'registry prune', '--older-than-days',
+                  '--keep', '--dry-run', 'descriptor.json', '"pruned"', '"archived"',
+                  '"kept"', '"skipped"', 'completed', 'cancelled', 'failed')
+        english = ('7 days', '10 newest', 'left sidebar', 'Show all', 'Collapse',
+                   'never runs it automatically', 'same filesystem',
+                   'copies and verifies', 'exit 1')
+        chinese = ('7 天', '最近 10', '侧边栏', '显示全部', '收起',
+                   '绝不自动调用', '同一文件系统', '复制并校验', '退出码 1')
+        for language, extra in (('orchestra-auto', english),
+                                ('orchestra-auto-zh', chinese)):
+            text = (ROOT / 'skills' / language /
+                    'references/progress-dashboard.md').read_text()
+            for token in (*common, *extra):
+                self.assertIn(token, text, f'{language}: prune docs miss {token!r}')
+
+    def test_design_doc_documents_run_states_and_the_only_explicit_prune_entry(self):
+        text = (ROOT / 'docs/design/orchestration-stability.md').read_text()
+        for token in ('run_states', 'registry prune', 'archive/', '--dry-run',
+                      '不自动删除', '终态', '显式'):
+            self.assertIn(token, text, f'design doc misses {token!r}')
+
+    def test_readmes_document_run_states_and_explicit_prune_retention(self):
+        claims = (
+            ('README.md', ('run_states', 'registry prune', 'never deleted by the service',
+                           'archives ended Runs')),
+            ('README.zh-CN.md', ('run_states', 'registry prune',
+                                 '服务与 `open` 绝不删除', '归档已结束 Run')),
+        )
+        for relative, tokens in claims:
+            text = (ROOT / relative).read_text()
+            for token in tokens:
+                self.assertIn(token, text, f'{relative}: retention docs miss {token!r}')
 
     def test_both_progress_references_document_protocol_v2_exit_codes_and_dispatch_contract(self):
         neutral = ('schema_version: 2', 'orca_run_id', 'health', 'provisional',

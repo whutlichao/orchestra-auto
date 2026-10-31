@@ -8,7 +8,9 @@ remain readable and the next write migrates them to v2.
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import fcntl
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -16,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,7 +52,12 @@ SERVER_NAME = 'server.json'
 STARTING_NAME = 'starting.json'
 STARTUP_LOCK_NAME = 'startup.lock'
 REGISTRY_RUNS_DIR = 'runs'
+REGISTRY_ARCHIVE_DIR = 'archive'
 DESCRIPTOR_FIELDS = {'run_id', 'state_path', 'registered_at', 'label'}
+#: Only an explicit ``registry prune`` may move these Runs out of the registry.
+TERMINAL_RUN_STATES = frozenset({'completed', 'cancelled', 'failed'})
+PRUNE_DEFAULT_OLDER_THAN_DAYS = 7
+PRUNE_DEFAULT_KEEP = 10
 SERVER_FIELDS = {'pid', 'port', 'protocol_version', 'started_at', 'binary_version'}
 #: The HTTP surface is read-only and local to this machine. Only these Host names are
 #: accepted (an optional ``:port`` suffix must name the serving port); anything else is a
@@ -284,27 +292,41 @@ def ensure_private_directory(path):
     os.chmod(path, REGISTRY_DIRECTORY_MODE)
 
 
-def atomic_write_json(path, payload, directory=None, prefix=None):
-    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+def _fsync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path, payload, directory=None, prefix=None):
+    """Write exact bytes atomically: temp file, fsync, rename, directory fsync."""
     directory = Path(directory or path.parent)
     prefix = prefix or '.' + Path(path).name + '-'
     fd, name = tempfile.mkstemp(prefix=prefix, dir=directory)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            json.dump(payload, output, ensure_ascii=False, indent=2)
-            output.write('\n')
+        with os.fdopen(fd, 'wb') as output:
+            output.write(payload)
             output.flush()
             os.fsync(output.fileno())
         os.chmod(name, 0o600)
         os.replace(name, path)
-        dfd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+        _fsync_directory(directory)
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def atomic_write_json(path, payload, directory=None, prefix=None):
+    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    _atomic_write(path, encoded, directory, prefix)
+
+
+def atomic_write_bytes(path, payload, directory=None):
+    """Write one exact byte payload atomically: temp, fsync, rename, directory fsync."""
+    _atomic_write(path, payload, directory)
 
 
 def read_json_object(path, reason):
@@ -379,6 +401,267 @@ def discover(home=None):
         except (Degraded, ValueError):
             continue
     return descriptors
+
+
+def _nonnegative_integer(value, name):
+    text = str(value).strip()
+    if not text.isdigit():
+        raise ValueError(name + ' must be a nonnegative integer')
+    return int(text)
+
+
+def _timestamp_value(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _prune_age_basis(descriptor, run):
+    """The prune age basis: ended_at, updated_at, last_observed, registered_at."""
+    for key in ('ended_at', 'updated_at', 'last_observed'):
+        stamp = _timestamp_value(run.get(key))
+        if stamp is not None:
+            return stamp
+    return _timestamp_value(descriptor.get('registered_at'))
+
+
+def _tree_manifest(root):
+    """Every path below ``root`` with a content digest, for cross-filesystem checks."""
+    entries = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in directories + files:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                entries[relative] = ('link', os.readlink(path))
+            elif path.is_dir():
+                entries[relative] = ('dir', '')
+            else:
+                digest = hashlib.sha256()
+                with path.open('rb') as source:
+                    for chunk in iter(lambda: source.read(65536), b''):
+                        digest.update(chunk)
+                entries[relative] = ('file', digest.hexdigest())
+    return entries
+
+
+def _fsync_tree(root):
+    for directory, _directories, files in os.walk(root, followlinks=False):
+        for name in files:
+            path = Path(directory) / name
+            if path.is_symlink():
+                continue
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        _fsync_directory(directory)
+
+
+def _move_directory(source, destination):
+    """Rename a directory, or copy + verify + fsync + delete across filesystems."""
+    try:
+        os.rename(source, destination)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    staging = destination.parent / ('.state-copy-' + uuid.uuid4().hex)
+    try:
+        shutil.copytree(source, staging, symlinks=True)
+        if _tree_manifest(source) != _tree_manifest(staging):
+            raise OSError('state copy verification failed')
+        _fsync_tree(staging)
+        os.rename(staging, destination)
+        shutil.rmtree(source)
+    except Exception:
+        if staging.is_symlink():
+            staging.unlink()
+        elif staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def _remove_path(path):
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
+    """Archive one ended Run reversibly; ``ok``, ``conflict`` or ``failed``.
+
+    The descriptor stays in ``runs/`` until the state is inside ``archive/<run_id>/``
+    and the original descriptor bytes are durable there too. Any failure rolls the
+    move back so the registry descriptor and the original state both survive.
+    """
+    source = Path(descriptor['state_path'])
+    archive_root = home / REGISTRY_ARCHIVE_DIR
+    archive_run = archive_root / descriptor['run_id']
+    try:
+        ensure_private_directory(archive_root)
+    except (OSError, Degraded):
+        return 'failed'
+    if archive_run.is_symlink() or archive_run.exists():
+        return 'conflict'
+    try:
+        archive_run.mkdir(mode=REGISTRY_DIRECTORY_MODE)
+    except FileExistsError:
+        return 'conflict'
+    except OSError:
+        return 'failed'
+    destination = archive_run / source.name
+    if source.name == 'descriptor.json' or source.is_symlink() or not source.is_dir():
+        _remove_path(archive_run)
+        return 'conflict' if source.name == 'descriptor.json' else 'failed'
+    if destination.exists() or destination.is_symlink():
+        _remove_path(archive_run)
+        return 'conflict'
+    try:
+        _move_directory(source, destination)
+        _fsync_directory(archive_run)
+        _fsync_directory(archive_root)
+        atomic_write_bytes(archive_run / 'descriptor.json', raw_descriptor, archive_run)
+        descriptor_path.unlink()
+        _fsync_directory(descriptor_path.parent)
+    except Exception:
+        try:
+            # A cross-filesystem move installs the verified copy at ``destination``
+            # before deleting the source. If that deletion fails halfway, the
+            # archive holds the only complete copy: put it back before removing it.
+            if destination.is_symlink() or destination.exists():
+                if source.is_symlink() or source.exists():
+                    _remove_path(source)
+                _move_directory(destination, source)
+            _remove_path(archive_run)
+        except Exception:
+            pass
+        if not descriptor_path.exists():
+            try:
+                atomic_write_bytes(descriptor_path, raw_descriptor,
+                                   descriptor_path.parent)
+            except Exception:
+                pass
+        return 'failed'
+    return 'ok'
+
+
+def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
+          keep=PRUNE_DEFAULT_KEEP, dry_run=False, now_timestamp=None):
+    """Archive ended Runs older than the cutoff, retaining the newest ``keep`` Runs.
+
+    Only ``completed``, ``cancelled`` and ``failed`` Runs are candidates. The newest
+    ``keep`` descriptors by ``registered_at`` are always retained, whatever their
+    status. An unreadable descriptor or state, a nonterminal Run, a Run without a
+    usable timestamp and any archive conflict or failure are never removed. Returns
+    ``(report, failed)``; ``report`` is the JSON contract and ``failed`` is true when
+    an archive step failed, in which case the CLI exits 1. ``dry_run`` reads only.
+    """
+    older_than_days = _nonnegative_integer(older_than_days, '--older-than-days')
+    keep = _nonnegative_integer(keep, '--keep')
+    home = registry_home(home)
+    cutoff = (datetime.now(timezone.utc).timestamp()
+              if now_timestamp is None else now_timestamp) - older_than_days * 86400
+    runs = home / REGISTRY_RUNS_DIR
+    paths = []
+    if runs.is_symlink() or not runs.is_dir():
+        paths = []
+    else:
+        paths = [path for path in sorted(runs.iterdir()) if path.suffix == '.json']
+    report = {'pruned': [], 'archived': [], 'kept': [], 'skipped': []}
+    descriptors = []
+    for path in paths:
+        raw = None
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('descriptor is not a regular file')
+            raw = path.read_bytes()
+            descriptor = validated_descriptor(json.loads(raw))
+            if descriptor['run_id'] != path.stem:
+                raise ValueError('descriptor filename does not match run_id')
+        except (OSError, ValueError, TypeError, Degraded):
+            report['skipped'].append(
+                {'run_id': path.stem, 'reason': 'descriptor_unreadable'})
+            continue
+        descriptors.append((path, descriptor, raw))
+    ordered = sorted(
+        descriptors,
+        key=lambda item: (_timestamp_value(item[1].get('registered_at'))
+                          or float('-inf'), item[1]['run_id']),
+        reverse=True)
+    retained = {descriptor['run_id'] for _path, descriptor, _raw in ordered[:keep]}
+    failed = False
+    for path, descriptor, raw in descriptors:
+        run_id = descriptor['run_id']
+        try:
+            run = read_state(Path(descriptor['state_path']))['run']
+        except (OSError, ValueError, KeyError, TypeError, Degraded):
+            report['skipped'].append({'run_id': run_id, 'reason': 'state_unreadable'})
+            continue
+        status = run.get('status')
+        if not isinstance(status, str) or status not in RUN_STATES:
+            report['skipped'].append({'run_id': run_id,
+                                      'reason': 'state_invalid_status'})
+            continue
+        if status not in TERMINAL_RUN_STATES or run_id in retained:
+            report['kept'].append(run_id)
+            continue
+        stamp = _prune_age_basis(descriptor, run)
+        if stamp is None:
+            report['skipped'].append({'run_id': run_id, 'reason': 'timestamp_missing'})
+            continue
+        if stamp >= cutoff:
+            report['kept'].append(run_id)
+            continue
+        if dry_run:
+            report['pruned'].append(run_id)
+            continue
+        try:
+            outcome = _archive_run(home, descriptor, path, raw)
+        except Exception:
+            outcome = 'failed'
+        if outcome == 'ok':
+            report['pruned'].append(run_id)
+            report['archived'].append(run_id)
+        elif outcome == 'conflict':
+            report['skipped'].append({'run_id': run_id, 'reason': 'archive_conflict'})
+        else:
+            report['skipped'].append({'run_id': run_id, 'reason': 'archive_failed'})
+            failed = True
+    return report, failed
+
+
+def _prune_summary(report, dry_run):
+    lines = []
+    if dry_run:
+        lines.append('Dry run: no file was created, moved or deleted.')
+    for key in ('pruned', 'archived', 'kept'):
+        lines.append(key + ': ' + (', '.join(report[key]) or 'none'))
+    if report['skipped']:
+        lines.append('skipped:')
+        lines.extend('  ' + item['run_id'] + ': ' + item['reason']
+                     for item in report['skipped'])
+    else:
+        lines.append('skipped: none')
+    return '\n'.join(lines)
+
+
+def _prune_command(args):
+    try:
+        home = registry_home(args.registry)
+    except Degraded as error:
+        raise ValueError(str(error))
+    report, failed = prune(home, args.older_than_days, args.keep, args.dry_run)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False))
+    else:
+        print(_prune_summary(report, args.dry_run))
+    return 1 if failed else 0
 
 
 def read_server(home):
@@ -905,37 +1188,45 @@ def text_label(value):
     return value.strip() if isinstance(value, str) else ''
 
 
-def readable_run_labels(descriptors):
-    """Map each Run ID to a short readable label without exposing any state path.
+def readable_run_views(descriptors):
+    """Return ``(run_labels, run_states)`` from one state read per descriptor.
 
     A descriptor label wins. Historical Runs registered before labels were populated
-    fall back to the title of the Run's own state; any failure to read that state
-    silently omits the mapping, because /health must stay available and path-free.
+    fall back to the title of the Run's own state. ``run_states`` maps a Run to its
+    ``run.status`` only when that status belongs to ``RUN_STATES``. Any failure to read
+    a state silently omits the status, and omits the label too unless the descriptor
+    carries one, because /health must stay available and path-free. The label and the
+    status come from the same parsed snapshot; a Run is never parsed twice.
     """
-    labels = {}
+    labels, states = {}, {}
     for descriptor in descriptors:
         label = text_label(descriptor.get('label', ''))
-        if not label:
-            try:
-                title = read_state(state_path(descriptor['state_path']))['run'].get('title')
-            except Exception:  # a historical state may be missing, unreadable or malformed
-                continue
-            label = text_label(title)
+        try:
+            run = read_state(Path(descriptor['state_path']))['run']
+        except Exception:  # a historical state may be missing, unreadable or malformed
+            run = None
+        if run is not None:
+            if not label:
+                label = text_label(run.get('title'))
+            status = run.get('status')
+            if isinstance(status, str) and status in RUN_STATES:
+                states[descriptor['run_id']] = status
         if label:
             labels[descriptor['run_id']] = label[:RUN_LABEL_MAX_CHARS]
-    return labels
+    return labels, states
 
 
 def serve(directory, port, stale_seconds, registry=None):
     """Serve one Run (``serve --state``) or the registered Runs (``serve --registry``).
 
     The HTTP surface is read-only, IPv4-localhost-only and exposes three GET routes:
-    ``/health`` (service plus registered Run IDs), ``/?run=<id>`` (the page, which lists
-    every registered Run and renders the selected one) and ``/snapshot?run=<id>`` (that
-    Run's read-only snapshot). It renders ``progress.json`` and the local registry
-    descriptors only: it never reads or serves arbitrary files or file contents, never
-    writes, and never names a state path in a response. Unreadable descriptors are
-    reported as unavailable and are never deleted.
+    ``/health`` (service, registered Run IDs, readable labels and projected states),
+    ``/?run=<id>`` (the page, which lists every registered Run and renders the selected
+    one) and ``/snapshot?run=<id>`` (that Run's read-only snapshot). It renders
+    ``progress.json`` and the local registry descriptors only: it never reads or serves
+    arbitrary files or file contents, never writes, and never names a state path in a
+    response. The service and ``open`` never delete or repair a descriptor; only an
+    explicit ``registry prune`` archives an ended Run.
     """
     page = ASSET.read_bytes()
     started_at = now()
@@ -948,10 +1239,11 @@ def serve(directory, port, stale_seconds, registry=None):
                 descriptors = discover(registry)
             except (OSError, ValueError, Degraded):
                 descriptors = []
+        labels, states = readable_run_views(descriptors)
         return {'ok': True, 'protocol_version': PROTOCOL_VERSION, 'pid': os.getpid(),
                 'started_at': started_at,
                 'runs': [descriptor['run_id'] for descriptor in descriptors],
-                'run_labels': readable_run_labels(descriptors)}
+                'run_labels': labels, 'run_states': states}
 
     class Handler(BaseHTTPRequestHandler):
         def host_allowed(self):
@@ -1062,6 +1354,20 @@ def main():
         item.add_argument('--effective', action='store_true', help='coordinator observed meaningful progress')
     sub.add_parser('show')
     sub.add_parser('open', help='start or adopt the per-user localhost viewer and open it in the browser')
+    registry = sub.add_parser(
+        'registry', help='explicit registry maintenance; never run automatically')
+    registry_commands = registry.add_subparsers(dest='registry_command', required=True)
+    prune_parser = registry_commands.add_parser(
+        'prune', help='archive ended Runs and remove their descriptors')
+    prune_parser.add_argument('--older-than-days',
+                              default=str(PRUNE_DEFAULT_OLDER_THAN_DAYS),
+                              help='archive ended Runs whose age basis is older (default 7)')
+    prune_parser.add_argument('--keep', default=str(PRUNE_DEFAULT_KEEP),
+                              help='always retain the newest N descriptors (default 10)')
+    prune_parser.add_argument('--dry-run', action='store_true',
+                              help='report the decision without changing any file')
+    prune_parser.add_argument('--json', action='store_true', default=argparse.SUPPRESS,
+                              help='machine-readable prune report')
     viewer = sub.add_parser('serve')
     viewer.add_argument('--registry', dest='serve_registry',
                         help='serve every registered Run from this progress home')
@@ -1078,6 +1384,8 @@ def main():
             raise ValueError('lock-timeout must be nonnegative')
         if args.startup_timeout < 0:
             raise ValueError('startup-timeout must be nonnegative')
+        if args.command == 'registry':
+            return _prune_command(args)
         if args.command == 'serve' and args.registry and args.state:
             raise ValueError('serve takes either --state or --registry, not both')
         if args.command == 'serve' and args.registry:

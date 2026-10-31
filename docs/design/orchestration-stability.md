@@ -520,6 +520,10 @@ orchestra-auto 把编排安全规则写成了大量散文，但缺少与副作�
    $ORCA_PROGRESS_HOME（缺省 ~/.orca/progress，0700）
    ├── server.json          # {pid, port, protocol_version, started_at, binary_version}
    ├── startup.lock         # flock，仅启动期持有
+   ├── archive/             # 仅由显式 registry prune 写入的可逆归档
+   │   └── run_xxx/
+   │       ├── descriptor.json
+   │       └── <state-dir>/
    └── runs/
        ├── run_xxx.json     # {run_id, state_path, registered_at, label}
        └── run_yyy.json
@@ -534,7 +538,7 @@ orchestra-auto 把编排安全规则写成了大量散文，但缺少与副作�
    3. 启动 `serve --port 0 --registry <dir>`；等待 `/health` ready（5s 超时）。
    4. 原子写 `server.json`（temp + fsync + rename）；登记 descriptor；打开浏览器；释放锁。
 3. **并发**：锁串行化启动；后到者读到健康服务即登记；若赢家尚未写 `server.json`，后到者等锁或重试探测；不会起第二个服务。
-4. **发现/存活**：`GET /health` → `{ok, protocol_version, pid, started_at, runs}`；`GET /?run=<id>` 渲染页面，`GET /snapshot?run=<id>` 返回该 Run 的只读快照；页面列出 registry 中的 Run；descriptor 的 state_path 不可读 → 显示 `unavailable`；不自动删除。
+4. **发现/存活**：`GET /health` → `{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`；`run_states` 只投影 state 可读且状态合法的 Run，并与 `run_labels` 在同一次 state 读取中产出。`GET /?run=<id>` 渲染页面，`GET /snapshot?run=<id>` 返回该 Run 的只读快照；页面在侧边栏列出 registry 中的 Run，默认折叠终态 Run（当前选中项除外）；descriptor 的 state_path 不可读 → 显示 `unavailable`。服务与 `open` 不自动删除或修复任何 descriptor/state。
 5. **Run 隔离**：服务只读每个 Run 的 progress.json；复用 progress.py 的 `state_path` 校验（拒绝 symlink/repo 祖先）；HTTP 响应只暴露 Run ID，不暴露文件路径；无写 API；跨 Run 只做列表。
 6. **旧服务兼容**：
    - `protocol_version` 写入 `server.json` 与 `/health`；客户端要求最低版本。
@@ -544,10 +548,12 @@ orchestra-auto 把编排安全规则写成了大量散文，但缺少与副作�
 8. **安全**：仅绑定 127.0.0.1；GET only；CSP；无外部资源；`Cache-Control: no-store`；校验 Host 头为 localhost/127.0.0.1（防 DNS rebinding）；只读已注册的 state_path，不提供任意路径读取；目录 0700；descriptor 不含凭证；文档明确单用户信任模型，不暴露端口/不做多用户认证。
 9. **页面**：Run 列表 + 选中 Run 的 tasks/workers/deliveries/events；freshness 显示；健康投影（若台账有 health）显示；"warning ≠ 启动失败"提示。
 10. **迁移**：现有每 Run `open` 改为单例感知；测试从"每 Run 独立端口"改为"单例 + 两 Run 隔离"，保留 `serve` 测试；DEMO 不变。
+11. **唯一显式清理入口**：自动删除仍被禁止；服务与 `open` 绝不清理注册表。只有显式 `registry prune` 会归档终态（`completed`/`cancelled`/`failed`）Run：默认 `--older-than-days 7`、`--keep 10`（最近 10 个 descriptor 无论状态），支持 `--dry-run` 与 `--json`。它把 state 与 descriptor 原文一起移入 `archive/<run_id>/`，全部成功后才删除 `runs/<run_id>.json`；任何失败回滚并保留二者。不可读 descriptor/state 永不清理。该命令不调用 Orca、不启动服务，且绝不自动调用。
 
 **验收**：
 
 - 两 Run 同时 open → 一个服务、两个 descriptor、页面可切换、快照隔离。
+- `registry prune` 只归档终态、超过阈值且不在最近 keep 集合的 Run；`--dry-run` 零改动；失败保留 descriptor 与 state。
 - 并发启动 → 锁串行，只有一个服务。
 - 服务被杀 → 下次 open 重启并重登记。
 - 旧版本/无 `/health` → 回退 + gap，不杀旧服务。
