@@ -75,14 +75,16 @@ The single bundled page defaults to Chinese and has an English switch. Both bund
 same page bytes. A light canvas; a Run dropdown sits at the right of the top bar, inside the
 actions before the language button. Its summary shows the selected Run's status dot (driven by
 `/health` `run_states`; a neutral dot for an unknown status), its readable label (falling back to
-the Run ID) and an expand arrow, with a bilingual accessible label. The panel lists the Runs, each
-with a status dot, a readable label (falling back to the Run ID) and an unavailable marker. Ended
+the Run ID) and an expand arrow, with a bilingual accessible label naming the selected Run. The
+panel lists the Runs, each with a status dot, a readable label (falling back to the Run ID) and an
+unavailable marker. Ended
 Runs (`completed`/`cancelled`/`failed`) are collapsed by default, the selected Run always stays
 visible, and the keyboard-operable `#run-toggle` shows "Show all (N)" while items are hidden and
 "Collapse" once expanded. When `run_states` is missing (an older service) every status stays
 unknown and nothing is folded; the `/health` contract is unchanged. The panel is absolutely
-positioned below the summary and right aligned, at most 360px wide and 60vh tall, scrolls
-internally, and ellipsizes long labels on one line without widening the page. Escape closes the
+positioned below the summary (anchored to the actions row on narrow screens) and right aligned,
+at most 360px wide and 60vh tall, scrolls internally, and ellipsizes long labels on one line
+without widening the page. Escape closes the
 dropdown and returns focus to its summary; a click outside closes it too. The top bar and main
 area order the Run
 overview, attention items, task statistics, static reference flow, dependency graph, tasks and

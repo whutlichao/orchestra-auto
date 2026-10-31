@@ -320,9 +320,6 @@
         min-width: 0;
         max-width: min(280px, 40vw);
       }
-      .run-menu[hidden] {
-        display: none;
-      }
       .run-summary {
         display: inline-flex;
         align-items: center;
@@ -1425,7 +1422,7 @@
       const skipLink = document.getElementById("skip-link");
       const languageButton = document.getElementById("language");
       const refreshButton = document.getElementById("refresh");
-      const runsBar = document.getElementById("runs");
+      const runMenu = document.getElementById("runs");
       const runSummary = document.getElementById("run-summary");
       const runSummaryDot = document.getElementById("run-summary-dot");
       const runSummaryLabel = document.getElementById("run-summary-label");
@@ -1744,27 +1741,39 @@
         );
       }
 
-      function renderRuns() {
-        runsLabel.textContent = tr("已注册 Run", "Registered Runs");
-        // The summary always names the selected Run, not just the list.
-        const currentState = selectedRun ? runState(selectedRun) : "unknown";
-        runSummaryDot.className = "run-dot tone-" + tone(currentState);
-        runSummaryDot.dataset.state = currentState;
-        runSummaryLabel.textContent = selectedRun
+      // The summary and every chip paint the same dot from one Run state.
+      function paintRunDot(element, state) {
+        element.className = "run-dot tone-" + tone(state);
+        element.dataset.state = state;
+      }
+
+      // The summary always names the selected Run, not just the list.
+      function renderRunSummary() {
+        const summaryText = selectedRun
           ? runLabels[selectedRun] || selectedRun
           : tr("选择 Run", "Select a Run");
-        if (selectedRun) runSummary.title = selectedRun;
-        else runSummary.removeAttribute("title");
+        paintRunDot(
+          runSummaryDot,
+          selectedRun ? runState(selectedRun) : "unknown",
+        );
+        runSummaryLabel.textContent = summaryText;
         runSummary.setAttribute(
           "aria-label",
-          tr("切换 Run · 已注册 Run", "Switch Run · Registered Runs"),
+          selectedRun
+            ? tr("切换 Run · 当前 ", "Switch Run · current ") + summaryText
+            : tr("切换 Run · 已注册 Run", "Switch Run · Registered Runs"),
         );
+      }
+
+      function renderRuns() {
+        runsLabel.textContent = tr("已注册 Run", "Registered Runs");
+        renderRunSummary();
         runChips.replaceChildren();
         const listed = [...knownRuns];
         for (const runId of unavailableRuns)
           if (!listed.includes(runId)) listed.push(runId);
-        runsBar.hidden = listed.length === 0;
-        if (!listed.length) runsBar.open = false;
+        runMenu.hidden = listed.length === 0;
+        if (!listed.length) runMenu.open = false;
         const collapsed = new Set();
         if (!runsExpanded)
           for (const runId of listed)
@@ -1775,8 +1784,7 @@
           const current = runState(runId);
           const chip = node("a", undefined, runChips);
           const dot = node("span", undefined, chip);
-          dot.className = "run-dot tone-" + tone(current);
-          dot.dataset.state = current;
+          paintRunDot(dot, current);
           dot.setAttribute("aria-hidden", "true");
           const chipText = node(
             "span",
@@ -1794,7 +1802,7 @@
           chip.addEventListener("click", (event) => {
             event.preventDefault();
             // A choice always closes the dropdown, even for the current Run.
-            runsBar.open = false;
+            runMenu.open = false;
             if (selectedRun === runId) return;
             selectedRun = runId;
             history.replaceState(
@@ -3086,15 +3094,15 @@
         renderRuns();
       });
       // Escape closes the dropdown and gives focus back to its summary.
-      runsBar.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape" || !runsBar.open) return;
+      runMenu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !runMenu.open) return;
         event.preventDefault();
-        runsBar.open = false;
+        runMenu.open = false;
         runSummary.focus();
       });
       // A click anywhere outside the open dropdown closes it.
       document.addEventListener("click", (event) => {
-        if (runsBar.open && !runsBar.contains(event.target)) runsBar.open = false;
+        if (runMenu.open && !runMenu.contains(event.target)) runMenu.open = false;
       });
       refreshButton.addEventListener("click", () => {
         // An explicit refresh keeps the rendered view, filter, details, scroll and language,

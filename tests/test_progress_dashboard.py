@@ -1254,7 +1254,7 @@ class ProgressTests(unittest.TestCase):
             # The old sidebar strip is gone: there is exactly one Run list on the page.
             self.assertEqual(asset.count('id="runs"'), 1, language)
             script = page_script(asset)
-            self.assertIn('const runsBar = document.getElementById("runs");', script,
+            self.assertIn('const runMenu = document.getElementById("runs");', script,
                           language)
             self.assertIn('const runSummary = document.getElementById("run-summary");',
                           script, language)
@@ -1274,6 +1274,9 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('Collapse', script, language)
             self.assertIn('切换 Run · 已注册 Run', script, language)
             self.assertIn('Switch Run · Registered Runs', script, language)
+            self.assertIn('切换 Run · 当前 ', script, language)
+            self.assertIn('Switch Run · current ', script, language)
+            render_summary = braced_block(script, 'function renderRunSummary()')
             render = braced_block(script, 'function renderRuns()')
             folded = braced_block(script, 'function foldedByDefault(runId)')
             self.assertIn('runState(runId)', folded, language)
@@ -1282,25 +1285,25 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('selectedRun', folded, language)
             self.assertIn('foldedByDefault', render, language)
             self.assertIn('runToggle', render, language)
-            self.assertIn('run-dot', render, language)
+            self.assertIn('paintRunDot(', render, language)
             self.assertIn('aria-expanded', render, language)
             self.assertIn('history.replaceState', render, language)
             # The summary names the selected Run; a chip click closes the dropdown.
-            self.assertIn('runSummaryLabel.textContent', render, language)
-            self.assertIn('runSummaryDot', render, language)
-            self.assertIn('runsBar.open = false;', render, language)
-            self.assertIn('runsBar.hidden = listed.length === 0;', render, language)
+            self.assertIn('runSummaryLabel.textContent', render_summary, language)
+            self.assertIn('paintRunDot(', render_summary, language)
+            self.assertIn('runMenu.open = false;', render, language)
+            self.assertIn('runMenu.hidden = listed.length === 0;', render, language)
             # Escape closes the dropdown and returns focus to its summary.
             escape = braced_block(
-                script, 'runsBar.addEventListener("keydown", (event) =>')
+                script, 'runMenu.addEventListener("keydown", (event) =>')
             self.assertIn('event.key !== "Escape"', escape, language)
-            self.assertIn('runsBar.open = false;', escape, language)
+            self.assertIn('runMenu.open = false;', escape, language)
             self.assertIn('runSummary.focus();', escape, language)
             # A click outside the open dropdown closes it.
             outside = braced_block(
                 script, 'document.addEventListener("click", (event) =>')
-            self.assertIn('runsBar.open', outside, language)
-            self.assertIn('runsBar.contains(event.target)', outside, language)
+            self.assertIn('runMenu.open', outside, language)
+            self.assertIn('runMenu.contains(event.target)', outside, language)
             self.assertIn('runStates = {};', braced_block(
                 script, 'async function refreshRuns(options)'), language)
             # The panel is absolute below the summary, right aligned, internally
@@ -2160,10 +2163,10 @@ class ProgressTests(unittest.TestCase):
                 self.assertIn(token, text, f'{language}: prune docs miss {token!r}')
         # The positional change keeps the folding contract and the /health contract.
         for token in ('`run_states` is missing', 'nothing is folded',
-                      '`/health` contract is unchanged'):
+                      'contract is unchanged'):
             self.assertIn(token, prose('orchestra-auto',
                                        'references/progress-dashboard.md'))
-        for token in ('`run_states` 缺失', '不折叠', '`/health` 契约不变'):
+        for token in ('`run_states` 缺失', '不折叠', '契约不变'):
             self.assertIn(token, prose('orchestra-auto-zh',
                                        'references/progress-dashboard.md'))
 

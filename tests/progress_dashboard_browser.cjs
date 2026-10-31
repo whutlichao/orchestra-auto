@@ -209,9 +209,10 @@ let browser;
   const summary = page.locator("#run-summary");
   const panel = page.locator(".run-panel");
   const toggle = page.locator("#run-toggle");
-  // Closed by default; the summary shows the selected Run's readable label, its
-  // state dot and the full Run ID on hover.
-  assert.equal(await runs.evaluate((node) => node.open), false, "starts closed");
+  const isOpen = () => runs.evaluate((node) => node.open);
+  // Closed by default; the summary shows the selected Run's readable label and
+  // state dot.
+  assert.equal(await isOpen(), false, "starts closed");
   assert.equal(await panel.isVisible(), false, "a closed dropdown shows no panel");
   assert.equal(
     await page.locator("#run-summary-label").innerText(),
@@ -225,11 +226,13 @@ let browser;
     await page.locator("#run-summary-dot").getAttribute("class"),
     /tone-success/,
   );
-  assert.equal(await summary.getAttribute("aria-label"), "切换 Run · 已注册 Run");
-  assert.equal(await summary.getAttribute("title"), SELECTED);
+  assert.equal(
+    await summary.getAttribute("aria-label"),
+    "切换 Run · 当前 可验证的 Run 标签 / readable Run label",
+  );
   // Opening reveals only the selected Run; the ended Run is folded by default.
   await summary.click();
-  assert.equal(await runs.evaluate((node) => node.open), true);
+  assert.equal(await isOpen(), true);
   assert.equal(await panel.isVisible(), true);
   assert.equal(await page.locator(".run-chip").count(), 1);
   assert.equal(await toggle.innerText(), "显示全部 (1)");
@@ -277,7 +280,7 @@ let browser;
   // A refresh is a click outside the dropdown, so it closes; the next open still works.
   healthLabels = { [SELECTED]: "Long readable label ".repeat(12) };
   await refresh();
-  assert.equal(await runs.evaluate((node) => node.open), false, "outside click closes");
+  assert.equal(await isOpen(), false, "outside click closes");
   await summary.click();
   assert.equal(
     await summary.evaluate((node) => node.getBoundingClientRect().height < 42),
@@ -302,10 +305,16 @@ let browser;
   await toggle.click();
   // The summary and the toggle speak the page's language.
   await page.locator("#language").click();
-  assert.equal(await runs.evaluate((node) => node.open), false, "language click closes");
+  assert.equal(await isOpen(), false, "language click closes");
   await summary.click();
   assert.equal(await page.locator("#runs-label").textContent(), "Registered Runs");
-  assert.equal(await summary.getAttribute("aria-label"), "Switch Run · Registered Runs");
+  assert.equal(
+    (await summary.getAttribute("aria-label")).startsWith(
+      "Switch Run · current Long readable label",
+    ),
+    true,
+    "the English accessible name names the selected Run",
+  );
   assert.equal(await toggle.innerText(), "Show all (1)");
   await toggle.click();
   assert.equal(await toggle.innerText(), "Collapse");
@@ -315,10 +324,10 @@ let browser;
   await toggle.click();
   assert.equal(await toggle.getAttribute("aria-expanded"), "false");
   // Escape closes the dropdown and returns focus to the summary.
-  assert.equal(await runs.evaluate((node) => node.open), true);
+  assert.equal(await isOpen(), true);
   await toggle.focus();
   await page.keyboard.press("Escape");
-  assert.equal(await runs.evaluate((node) => node.open), false);
+  assert.equal(await isOpen(), false);
   assert.equal(
     await page.evaluate(() => document.activeElement.id),
     "run-summary",
@@ -327,7 +336,7 @@ let browser;
   // A click outside the open dropdown closes it.
   await summary.click();
   await page.locator("#run-heading").click();
-  assert.equal(await runs.evaluate((node) => node.open), false);
+  assert.equal(await isOpen(), false);
   // The selected Run stays visible even after it ends; collapsing hides only others.
   healthStates = { [SELECTED]: "completed", [SECOND]: "completed" };
   await refresh();
@@ -357,7 +366,7 @@ let browser;
     [375, 812],
   ]) {
     await page.setViewportSize({ width, height });
-    if (!(await runs.evaluate((node) => node.open))) await summary.click();
+    if (!(await isOpen())) await summary.click();
     assert.equal(await panel.isVisible(), true, "panel visible at " + width);
     assert.equal(
       await page.evaluate(
