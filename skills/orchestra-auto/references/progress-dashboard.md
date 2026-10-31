@@ -72,12 +72,19 @@ does not open a browser; automatic opening (`open`) is only for the first dispat
 ## Reading the visual dashboard
 
 The single bundled page defaults to Chinese and has an English switch. Both bundles ship the
-same page bytes. A light canvas; a left sidebar after the brand and before the section navigation
-lists the Runs, each with a status dot driven by `/health` `run_states` (a neutral dot for an
-unknown status), a readable label (falling back to the Run ID) and an unavailable marker. Ended
+same page bytes. A light canvas; a Run dropdown sits at the right of the top bar, inside the
+actions before the language button. Its summary shows the selected Run's status dot (driven by
+`/health` `run_states`; a neutral dot for an unknown status), its readable label (falling back to
+the Run ID) and an expand arrow, with a bilingual accessible label. The panel lists the Runs, each
+with a status dot, a readable label (falling back to the Run ID) and an unavailable marker. Ended
 Runs (`completed`/`cancelled`/`failed`) are collapsed by default, the selected Run always stays
 visible, and the keyboard-operable `#run-toggle` shows "Show all (N)" while items are hidden and
-"Collapse" once expanded. The top bar and main area order the Run
+"Collapse" once expanded. When `run_states` is missing (an older service) every status stays
+unknown and nothing is folded; the `/health` contract is unchanged. The panel is absolutely
+positioned below the summary and right aligned, at most 360px wide and 60vh tall, scrolls
+internally, and ellipsizes long labels on one line without widening the page. Escape closes the
+dropdown and returns focus to its summary; a click outside closes it too. The top bar and main
+area order the Run
 overview, attention items, task statistics, static reference flow, dependency graph, tasks and
 workers, delivery evidence and events. No external fonts, assets or frontend packages load. A
 snapshot refreshes every three seconds, and every single read — snapshot or Run list — is bounded by
@@ -86,7 +93,7 @@ the last valid view, and the next poll simply retries; a stuck request never sto
 list read that fails stays silent and never changes the snapshot view. The Run list shows each
 Run's readable label when `/health` supplies one, falls back to the Run ID otherwise, and reveals
 the full Run ID when a chip is hovered. On a narrow screen the sidebar becomes a top strip and the
-Run list stays visible and wraps. Task filters,
+dropdown stays inside the viewport, scrolls internally and never widens the page. Task filters,
 expanded details, graph scroll and language survive updates. The in-page refresh button re-reads
 immediately, aborting a request that is still waiting instead of queueing behind it, and returning
 the tab to the foreground (visible tab, page restored from the back/forward cache, or window focus)

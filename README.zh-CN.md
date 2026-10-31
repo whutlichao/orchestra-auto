@@ -405,7 +405,7 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 只观察显式提交的事实，查询错误保留最后有效快照并显示错误横幅。
 
 单例服务只在 `127.0.0.1` 上暴露三条只读 GET 路由：`/health`（服务状态、已注册 Run ID、可读标签
-与投影 `run_states`）、`/?run=<id>`（页面，在左侧边栏列出所有已注册 Run 并渲染所选 Run）与
+与投影 `run_states`）、`/?run=<id>`（页面，在顶栏右侧下拉列出所有已注册 Run 并渲染所选 Run）与
 `/snapshot?run=<id>`（仅该 Run 的快照）。跨 Run 访问仅限 Run 列表；响应只出现 Run ID，绝不出现
 状态路径；不可读的 Run 标为不可用，服务与 `open` 绝不删除。只有显式 `registry prune` 会归档已结束 Run
 到注册表的 `archive/` 并移除其描述符。所有响应只支持 GET，并带 CSP、

@@ -4,7 +4,8 @@
  * tests/test_progress_dashboard.py. Run this only in an environment that already provides
  * Playwright and Chromium; when they are absent the script is simply not run.
  *
- * It drives one singleton service with TWO registered Runs:
+ * It drives one singleton service with TWO registered Runs through the top-bar Run
+ * dropdown:
  * PLAYWRIGHT_MODULE=/external/node_modules/playwright \
  *   node tests/progress_dashboard_browser.cjs 'http://127.0.0.1:PORT/?run=alpha&second=beta' EVIDENCE_DIR
  */
@@ -180,41 +181,59 @@ let browser;
     await page.waitForTimeout(180);
   }
   await refresh();
-  // The Run list lives in the left sidebar, after the brand and before the navigation.
+  // The Run list is a dropdown at the right of the top bar: `.topbar .actions #runs`,
+  // a native details element placed before the language button.
   assert.equal(
-    await page.locator(".sidebar #runs").count(),
+    await page.locator(".topbar .actions #runs").count(),
     1,
-    "the Run list sits inside the sidebar",
+    "the Run list sits inside the top-bar actions",
   );
   assert.equal(
     await page.evaluate(() => {
-      const sidebar = document.querySelector(".sidebar");
-      const brand = sidebar && sidebar.querySelector(".brand");
-      const runs = sidebar && sidebar.querySelector(".runs");
-      const nav = sidebar && sidebar.querySelector("nav");
+      const actions = document.querySelector(".topbar .actions");
+      const runs = actions && actions.querySelector("#runs");
+      const language = actions && actions.querySelector("#language");
       return Boolean(
-        brand &&
-          runs &&
-          nav &&
-          brand.compareDocumentPosition(runs) &
-            Node.DOCUMENT_POSITION_FOLLOWING &&
-          runs.compareDocumentPosition(nav) &
+        runs &&
+          language &&
+          runs.tagName === "DETAILS" &&
+          runs.querySelector("summary#run-summary") &&
+          runs.compareDocumentPosition(language) &
             Node.DOCUMENT_POSITION_FOLLOWING,
       );
     }),
     true,
-    "the Run list sits after the brand and before the navigation",
+    "the Run dropdown is a details element before the language button",
   );
-  // Ended Runs are folded by default; the selected Run never is.
+  const runs = page.locator("#runs");
+  const summary = page.locator("#run-summary");
+  const panel = page.locator(".run-panel");
+  const toggle = page.locator("#run-toggle");
+  // Closed by default; the summary shows the selected Run's readable label, its
+  // state dot and the full Run ID on hover.
+  assert.equal(await runs.evaluate((node) => node.open), false, "starts closed");
+  assert.equal(await panel.isVisible(), false, "a closed dropdown shows no panel");
+  assert.equal(
+    await page.locator("#run-summary-label").innerText(),
+    "可验证的 Run 标签 / readable Run label",
+  );
+  assert.equal(
+    await page.locator("#run-summary-dot").getAttribute("data-state"),
+    "active",
+  );
+  assert.match(
+    await page.locator("#run-summary-dot").getAttribute("class"),
+    /tone-success/,
+  );
+  assert.equal(await summary.getAttribute("aria-label"), "切换 Run · 已注册 Run");
+  assert.equal(await summary.getAttribute("title"), SELECTED);
+  // Opening reveals only the selected Run; the ended Run is folded by default.
+  await summary.click();
+  assert.equal(await runs.evaluate((node) => node.open), true);
+  assert.equal(await panel.isVisible(), true);
   assert.equal(await page.locator(".run-chip").count(), 1);
-  assert.equal(
-    await page.locator("#run-toggle").innerText(),
-    "显示全部 (1)",
-  );
-  assert.equal(
-    await page.locator("#run-toggle").getAttribute("aria-expanded"),
-    "false",
-  );
+  assert.equal(await toggle.innerText(), "显示全部 (1)");
+  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
   assert.equal(
     await page
       .locator('.run-chip[aria-current="true"] .run-dot')
@@ -236,13 +255,10 @@ let browser;
     SELECTED,
     "the full Run ID stays reachable on hover",
   );
-  await page.locator("#run-toggle").click();
+  await toggle.click();
   assert.equal(await page.locator(".run-chip").count(), 2);
-  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
-  assert.equal(
-    await page.locator("#run-toggle").getAttribute("aria-expanded"),
-    "true",
-  );
+  assert.equal(await toggle.innerText(), "收起");
+  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
   assert.equal(
     await page.locator('.run-chip[title="' + SECOND + '"]').innerText(),
     SECOND,
@@ -254,15 +270,19 @@ let browser;
       .getAttribute("data-state"),
     "completed",
   );
-  // A long label is truncated with an ellipsis instead of widening the page.
+  await toggle.click();
+  assert.equal(await page.locator(".run-chip").count(), 1);
+  assert.equal(await toggle.innerText(), "显示全部 (1)");
+  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+  // A refresh is a click outside the dropdown, so it closes; the next open still works.
   healthLabels = { [SELECTED]: "Long readable label ".repeat(12) };
   await refresh();
+  assert.equal(await runs.evaluate((node) => node.open), false, "outside click closes");
+  await summary.click();
   assert.equal(
-    await page
-      .locator('.run-chip[aria-current="true"]')
-      .evaluate((node) => node.getBoundingClientRect().height < 30),
+    await summary.evaluate((node) => node.getBoundingClientRect().height < 42),
     true,
-    "a long label stays on one line",
+    "a long label stays on one line in the summary",
   );
   assert.equal(
     await page.evaluate(
@@ -271,28 +291,98 @@ let browser;
     true,
     "a long label does not widen the page",
   );
-  // The toggle speaks the page's language.
+  await toggle.click();
+  assert.equal(
+    await page
+      .locator('.run-chip[aria-current="true"]')
+      .evaluate((node) => node.getBoundingClientRect().height < 30),
+    true,
+    "a long chip label stays on one line",
+  );
+  await toggle.click();
+  // The summary and the toggle speak the page's language.
   await page.locator("#language").click();
-  assert.equal(await page.locator("#run-toggle").innerText(), "Collapse");
+  assert.equal(await runs.evaluate((node) => node.open), false, "language click closes");
+  await summary.click();
+  assert.equal(await page.locator("#runs-label").textContent(), "Registered Runs");
+  assert.equal(await summary.getAttribute("aria-label"), "Switch Run · Registered Runs");
+  assert.equal(await toggle.innerText(), "Show all (1)");
+  await toggle.click();
+  assert.equal(await toggle.innerText(), "Collapse");
   await page.locator("#language").click();
-  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
+  await summary.click();
+  assert.equal(await toggle.innerText(), "收起");
+  await toggle.click();
+  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+  // Escape closes the dropdown and returns focus to the summary.
+  assert.equal(await runs.evaluate((node) => node.open), true);
+  await toggle.focus();
+  await page.keyboard.press("Escape");
+  assert.equal(await runs.evaluate((node) => node.open), false);
+  assert.equal(
+    await page.evaluate(() => document.activeElement.id),
+    "run-summary",
+    "Escape returns focus to the summary",
+  );
+  // A click outside the open dropdown closes it.
+  await summary.click();
+  await page.locator("#run-heading").click();
+  assert.equal(await runs.evaluate((node) => node.open), false);
   // The selected Run stays visible even after it ends; collapsing hides only others.
   healthStates = { [SELECTED]: "completed", [SECOND]: "completed" };
   await refresh();
-  assert.equal(await page.locator("#run-toggle").innerText(), "收起");
-  await page.locator("#run-toggle").click();
+  await summary.click();
   assert.equal(await page.locator(".run-chip").count(), 1);
   assert.equal(
     await page.locator('.run-chip[aria-current="true"]').getAttribute("title"),
     SELECTED,
     "the selected Run stays visible even when it has ended",
   );
-  assert.equal(await page.locator("#run-toggle").innerText(), "显示全部 (1)");
+  assert.equal(await toggle.innerText(), "显示全部 (1)");
+  await toggle.click();
+  assert.equal(await page.locator(".run-chip").count(), 2);
+  assert.equal(await toggle.innerText(), "收起");
+  await toggle.click();
   // Without run_states (an older service) nothing is folded away.
   healthStates = null;
   await refresh();
-  assert.equal(await page.locator("#run-toggle").isHidden(), true);
+  await summary.click();
+  assert.equal(await toggle.isHidden(), true);
   assert.equal(await page.locator(".run-chip").count(), 2);
+  // The open dropdown stays inside every viewport and never widens the page.
+  for (const [width, height] of [
+    [1440, 900],
+    [1920, 1080],
+    [768, 1024],
+    [375, 812],
+  ]) {
+    await page.setViewportSize({ width, height });
+    if (!(await runs.evaluate((node) => node.open))) await summary.click();
+    assert.equal(await panel.isVisible(), true, "panel visible at " + width);
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+      "open dropdown causes no horizontal overflow at " + width,
+    );
+    const box = await panel.boundingBox();
+    assert.ok(box, "the open panel has a box at " + width);
+    assert.ok(
+      box.x >= -0.5 && box.x + box.width <= width + 0.5,
+      "the panel stays inside the viewport horizontally at " + width,
+    );
+    assert.ok(
+      box.y >= -0.5 && box.y + box.height <= height + 0.5,
+      "the panel stays inside the viewport vertically at " + width,
+    );
+    if (output)
+      await page.screenshot({
+        path: path.join(output, `dropdown-${width}-open.png`),
+      });
+    results.push(`dropdown ${width}x${height}: open panel stays inside the viewport`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
   healthStates = { [SELECTED]: "active", [SECOND]: "completed" };
   await refresh();
   healthLabels = { [SELECTED]: "可验证的 Run 标签 / readable Run label" };
