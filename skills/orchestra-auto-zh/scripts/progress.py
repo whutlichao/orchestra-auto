@@ -292,29 +292,6 @@ def ensure_private_directory(path):
     os.chmod(path, REGISTRY_DIRECTORY_MODE)
 
 
-def atomic_write_json(path, payload, directory=None, prefix=None):
-    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
-    directory = Path(directory or path.parent)
-    prefix = prefix or '.' + Path(path).name + '-'
-    fd, name = tempfile.mkstemp(prefix=prefix, dir=directory)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            json.dump(payload, output, ensure_ascii=False, indent=2)
-            output.write('\n')
-            output.flush()
-            os.fsync(output.fileno())
-        os.chmod(name, 0o600)
-        os.replace(name, path)
-        dfd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
-
-
 def _fsync_directory(directory):
     fd = os.open(directory, os.O_RDONLY)
     try:
@@ -323,10 +300,10 @@ def _fsync_directory(directory):
         os.close(fd)
 
 
-def atomic_write_bytes(path, payload, directory=None):
-    """Write one exact byte payload atomically: temp, fsync, rename, directory fsync."""
+def _atomic_write(path, payload, directory=None, prefix=None):
+    """Write exact bytes atomically: temp file, fsync, rename, directory fsync."""
     directory = Path(directory or path.parent)
-    prefix = '.' + Path(path).name + '-'
+    prefix = prefix or '.' + Path(path).name + '-'
     fd, name = tempfile.mkstemp(prefix=prefix, dir=directory)
     try:
         with os.fdopen(fd, 'wb') as output:
@@ -339,6 +316,17 @@ def atomic_write_bytes(path, payload, directory=None):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def atomic_write_json(path, payload, directory=None, prefix=None):
+    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    _atomic_write(path, encoded, directory, prefix)
+
+
+def atomic_write_bytes(path, payload, directory=None):
+    """Write one exact byte payload atomically: temp, fsync, rename, directory fsync."""
+    _atomic_write(path, payload, directory)
 
 
 def read_json_object(path, reason):
@@ -431,7 +419,7 @@ def _timestamp_value(value):
         return None
 
 
-def _run_time(descriptor, run):
+def _prune_age_basis(descriptor, run):
     """The prune age basis: ended_at, updated_at, last_observed, registered_at."""
     for key in ('ended_at', 'updated_at', 'last_observed'):
         stamp = _timestamp_value(run.get(key))
@@ -498,11 +486,11 @@ def _move_directory(source, destination):
         raise
 
 
-def _remove_archive(directory):
-    if directory.is_symlink():
-        directory.unlink()
-    elif directory.exists():
-        shutil.rmtree(directory)
+def _remove_path(path):
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
@@ -529,15 +517,13 @@ def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
         return 'failed'
     destination = archive_run / source.name
     if source.name == 'descriptor.json' or source.is_symlink() or not source.is_dir():
-        _remove_archive(archive_run)
+        _remove_path(archive_run)
         return 'conflict' if source.name == 'descriptor.json' else 'failed'
     if destination.exists() or destination.is_symlink():
-        _remove_archive(archive_run)
+        _remove_path(archive_run)
         return 'conflict'
-    moved = False
     try:
         _move_directory(source, destination)
-        moved = True
         _fsync_directory(archive_run)
         _fsync_directory(archive_root)
         atomic_write_bytes(archive_run / 'descriptor.json', raw_descriptor, archive_run)
@@ -545,14 +531,22 @@ def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
         _fsync_directory(descriptor_path.parent)
     except Exception:
         try:
-            if moved:
+            # A cross-filesystem move installs the verified copy at ``destination``
+            # before deleting the source. If that deletion fails halfway, the
+            # archive holds the only complete copy: put it back before removing it.
+            if destination.is_symlink() or destination.exists():
+                if source.is_symlink() or source.exists():
+                    _remove_path(source)
                 _move_directory(destination, source)
-            _remove_archive(archive_run)
-            if not descriptor_path.exists():
-                atomic_write_bytes(descriptor_path, raw_descriptor,
-                                   descriptor_path.parent)
+            _remove_path(archive_run)
         except Exception:
             pass
+        if not descriptor_path.exists():
+            try:
+                atomic_write_bytes(descriptor_path, raw_descriptor,
+                                   descriptor_path.parent)
+            except Exception:
+                pass
         return 'failed'
     return 'ok'
 
@@ -595,9 +589,11 @@ def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
                 {'run_id': path.stem, 'reason': 'descriptor_unreadable'})
             continue
         descriptors.append((path, descriptor, raw))
-    ordered = sorted(descriptors,
-                     key=lambda item: (item[1].get('registered_at') or '',
-                                       item[1]['run_id']), reverse=True)
+    ordered = sorted(
+        descriptors,
+        key=lambda item: (_timestamp_value(item[1].get('registered_at'))
+                          or float('-inf'), item[1]['run_id']),
+        reverse=True)
     retained = {descriptor['run_id'] for _path, descriptor, _raw in ordered[:keep]}
     failed = False
     for path, descriptor, raw in descriptors:
@@ -608,14 +604,14 @@ def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
             report['skipped'].append({'run_id': run_id, 'reason': 'state_unreadable'})
             continue
         status = run.get('status')
-        if status not in RUN_STATES:
+        if not isinstance(status, str) or status not in RUN_STATES:
             report['skipped'].append({'run_id': run_id,
                                       'reason': 'state_invalid_status'})
             continue
         if status not in TERMINAL_RUN_STATES or run_id in retained:
             report['kept'].append(run_id)
             continue
-        stamp = _run_time(descriptor, run)
+        stamp = _prune_age_basis(descriptor, run)
         if stamp is None:
             report['skipped'].append({'run_id': run_id, 'reason': 'timestamp_missing'})
             continue
@@ -1213,7 +1209,7 @@ def readable_run_views(descriptors):
             if not label:
                 label = text_label(run.get('title'))
             status = run.get('status')
-            if status in RUN_STATES:
+            if isinstance(status, str) and status in RUN_STATES:
                 states[descriptor['run_id']] = status
         if label:
             labels[descriptor['run_id']] = label[:RUN_LABEL_MAX_CHARS]

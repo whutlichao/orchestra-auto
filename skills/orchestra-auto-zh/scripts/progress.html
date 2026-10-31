@@ -1646,6 +1646,14 @@
         return Object.hasOwn(runStates, runId) ? runStates[runId] : "unknown";
       }
 
+      // Ended Runs fold by default, except the one currently rendered.
+      function foldedByDefault(runId) {
+        return (
+          runId !== selectedRun &&
+          TERMINAL_RUN_STATES.has(runState(runId))
+        );
+      }
+
       function renderRuns() {
         runsLabel.textContent = tr("已注册 Run", "Registered Runs");
         runChips.replaceChildren();
@@ -1656,11 +1664,7 @@
         const collapsed = new Set();
         if (!runsExpanded)
           for (const runId of listed)
-            if (
-              runId !== selectedRun &&
-              TERMINAL_RUN_STATES.has(runState(runId))
-            )
-              collapsed.add(runId);
+            if (foldedByDefault(runId)) collapsed.add(runId);
         for (const runId of listed) {
           if (collapsed.has(runId)) continue;
           const unavailable = unavailableRuns.includes(runId);
@@ -1704,11 +1708,7 @@
             refresh({ force: true });
           });
         }
-        const hiddenCount = listed.filter(
-          (runId) =>
-            runId !== selectedRun &&
-            TERMINAL_RUN_STATES.has(runState(runId)),
-        ).length;
+        const hiddenCount = listed.filter(foldedByDefault).length;
         runToggle.hidden = hiddenCount === 0;
         runToggle.textContent = runsExpanded
           ? tr("收起", "Collapse")

@@ -1,4 +1,5 @@
 """Public CLI, snapshot, registry and HTTP contracts for the progress sidecar."""
+import errno
 import fcntl
 import time
 import concurrent.futures
@@ -6,6 +7,7 @@ import http.client
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import stat
 import threading
@@ -777,6 +779,18 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(len(calls), len(descriptors), calls)
         self.assertEqual(len(set(calls)), len(calls), 'a state was parsed twice')
 
+    def test_health_omits_a_non_string_status_without_failing(self):
+        state = self.make_run('bad-status', 'run1', 'active')
+        self.set_run_times(state, status=[])
+        self.progress_module().register(
+            {'run_id': 'run1', 'state_path': str(state)}, home=self.home)
+        base = self.registry_service()
+        status, _headers, body = self.http_get(base + '/health')
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertEqual(health['runs'], ['run1'])
+        self.assertEqual(health['run_states'], {})
+
     def test_registry_prune_only_archives_terminal_runs(self):
         terminal = {
             'run-completed': self.make_run('completed', 'run-completed', 'completed'),
@@ -828,6 +842,35 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertEqual(report['pruned'], ['run-early'])
         self.assertEqual(sorted(report['kept']), ['run-exact', 'run-late'])
+
+    def test_registry_prune_skips_a_non_string_status(self):
+        state = self.make_run('bad-status', 'run1', 'completed')
+        self.set_run_times(state, status=[], ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        result = self.prune_cli('--keep', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['skipped'], [
+            {'run_id': 'run1', 'reason': 'state_invalid_status'}])
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+
+    def test_registry_prune_orders_retention_by_timestamp_not_string(self):
+        older = self.make_run('older', 'run-older', 'completed')
+        newer = self.make_run('newer', 'run-newer', 'completed')
+        for state in (older, newer):
+            self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        # Lexicographically the older instant sorts first, but chronologically the
+        # newer instant is 23:00Z and must win the single retention slot.
+        self.register_with_time(older, 'run-older', '2026-01-01T00:00:00+02:00')
+        self.register_with_time(newer, 'run-newer', '2025-12-31T23:00:00+00:00')
+        result = self.prune_cli('--keep', '1', '--older-than-days', '0', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['kept'], ['run-newer'])
+        self.assertEqual(report['pruned'], ['run-older'])
+        self.assertTrue((newer / 'progress.json').exists())
+        self.assertFalse((older / 'progress.json').exists())
 
     def test_registry_prune_keeps_the_newest_ten_descriptors_regardless_of_status(self):
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -990,6 +1033,49 @@ class ProgressTests(unittest.TestCase):
                                           now_timestamp=datetime(2026, 1, 1,
                                                                  tzinfo=timezone.utc)
                                           .timestamp())
+        self.assertTrue(failed)
+        self.assertEqual(report['pruned'], [])
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['archive_failed'])
+        self.assertTrue((state / 'progress.json').exists())
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+        self.assertFalse((self.home / 'archive' / 'run1').exists())
+
+    def test_registry_prune_restores_state_after_cross_filesystem_cleanup_failure(self):
+        state = self.make_run('completed', 'run1', 'completed')
+        self.set_run_times(state, ended_at='2020-01-01T00:00:00+00:00')
+        self.register_with_time(state, 'run1', '2026-01-01T00:00:00+00:00')
+        module = self.progress_module()
+        real_rename = os.rename
+        real_rmtree = shutil.rmtree
+        first_rename = [True]
+        failed_delete = [False]
+
+        def rename(source, destination):
+            # Force the cross-filesystem branch once; later renames (the staging
+            # install and the rollback) proceed normally.
+            if first_rename[0]:
+                first_rename[0] = False
+                raise OSError(errno.EXDEV, 'cross-device link')
+            return real_rename(source, destination)
+
+        def rmtree(path, *args, **kwargs):
+            # The verified copy is already installed when deleting the original
+            # source fails halfway through; the rollback must restore the missing
+            # file from the archive instead of dropping the archive.
+            if Path(path) == state and not failed_delete[0]:
+                failed_delete[0] = True
+                (Path(path) / 'progress.json').unlink()
+                raise OSError('directory busy')
+            return real_rmtree(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(module.os, 'rename', rename), \
+                unittest.mock.patch.object(module.shutil, 'rmtree', rmtree):
+            report, failed = module.prune(
+                home=self.home, older_than_days=7, keep=0,
+                now_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc)
+                .timestamp())
         self.assertTrue(failed)
         self.assertEqual(report['pruned'], [])
         self.assertEqual(report['archived'], [])
@@ -1172,10 +1258,12 @@ class ProgressTests(unittest.TestCase):
             self.assertIn('收起', script, language)
             self.assertIn('Collapse', script, language)
             render = braced_block(script, 'function renderRuns()')
-            self.assertIn('runState(runId)', render, language)
+            folded = braced_block(script, 'function foldedByDefault(runId)')
+            self.assertIn('runState(runId)', folded, language)
             self.assertIn('Object.hasOwn(runStates, runId)', script, language)
-            self.assertIn('TERMINAL_RUN_STATES.has', render, language)
-            self.assertIn('selectedRun', render, language)
+            self.assertIn('TERMINAL_RUN_STATES.has', folded, language)
+            self.assertIn('selectedRun', folded, language)
+            self.assertIn('foldedByDefault', render, language)
             self.assertIn('runToggle', render, language)
             self.assertIn('run-dot', render, language)
             self.assertIn('aria-expanded', render, language)

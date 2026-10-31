@@ -246,11 +246,11 @@ $ORCA_PROGRESS_HOME
 `registry.open(run) -> {url, pid, degraded, reason}`；HTTP 层只渲染只读快照。`GET /health` 返回
 `{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`；`protocol_version` 从
 `1` 开始。`runs` 仍是有序的 Run ID 字符串数组。`run_labels` 把每个 Run ID 映射为简短可读标签：
-优先使用已校验的 descriptor label；为空时只读取该 Run 已注册的状态并取 `run.title`；状态不可读
-则静默省略该映射；所有值去除首尾空白并截断到 120 个字符。`run_states` 把每个 state 可读且
-`run.status` 属于 `RUN_STATES` 的 Run 映射为该状态；不可读的 state 与 `run_labels` 一样静默
-省略。`run_labels` 与 `run_states` 在同一次 state 读取中产出，同一 Run 的 `progress.json`
-绝不重复解析。响应绝不包含状态路径。`GET /?run=<id>` 渲染页面，
+优先使用已校验的 descriptor label；否则回退到该 Run 自己已注册状态中的 `run.title`；同一份
+state 读取同时产出两个映射，状态不可读则静默省略该映射；所有值去除首尾空白并截断到 120 个字符。
+`run_states` 把每个 state 可读且 `run.status` 属于 `RUN_STATES` 的 Run 映射为该状态；不可读的
+state 与 `run_labels` 一样静默省略。`run_labels` 与 `run_states` 在同一次 state 读取中产出，
+同一 Run 的 `progress.json` 绝不重复解析。响应绝不包含状态路径。`GET /?run=<id>` 渲染页面，
 `GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不返回其他 Run 的数据。
 
 **显式清理（registry prune）。** 服务与 `open` 永不清理注册表；只有显式命令会归档已结束 Run：
@@ -287,8 +287,8 @@ python3 PROGRESS --registry "$ORCA_PROGRESS_HOME" registry prune \
 | `GET /snapshot?run=<id>` | 该 Run 的只读快照，不含任何其他 Run 的数据 |
 
 隔离靠每次请求只解析一个描述符：快照只读取所选 Run 的 `progress.json`，且必须经过共用的状态路径校验器；
-响应只出现 Run ID 与简短标签，绝不出现状态路径。跨 Run 读取仅限 `/health` 推导标签：descriptor 无
-label 时只读取该 Run 自己的状态取 `run.title`，页面只展示 Run ID 列表。描述符不可读、
+响应只出现 Run ID 与简短标签，绝不出现状态路径。跨 Run 读取仅限 `/health` 为每个已注册 Run 读取
+其自己的 state 一次，以产出标签与状态；页面只展示 Run ID 列表。描述符不可读、
 或 `progress.json` 缺失/损坏时返回 `503` 与 `Snapshot unavailable`，并在 Run 列表中标记为不可用；
 服务与 `open` 绝不删除、绝不修复描述符或 state，唯一清理入口是显式 `registry prune`（只归档
 已结束 Run）；未知 Run ID 返回 `404`。某个 Run 不可用时页面保留 Run 列表，绝不悄悄显示

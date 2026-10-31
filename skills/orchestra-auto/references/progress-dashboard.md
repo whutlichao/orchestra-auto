@@ -302,13 +302,13 @@ timeout is degraded: no second service is ever started.
 renders read-only snapshots. `GET /health` returns
 `{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`; `protocol_version`
 starts at `1`. `runs` stays an ordered array of Run ID strings. `run_labels` maps each Run ID to a
-short readable label: the validated descriptor label wins; when it is empty, the service reads only
-that Run's registered state and uses `run.title`; a state that cannot be read is silently omitted,
-and every value is stripped of surrounding whitespace and truncated to 120 characters. `run_states`
-maps each Run whose state is readable and whose `run.status` belongs to `RUN_STATES` to that
-status; unreadable states are silently omitted exactly like `run_labels`. `run_labels` and
-`run_states` come from the same state read; a Run's `progress.json` is never parsed twice. The
-response never includes a state path. `GET /?run=<id>`
+short readable label: the validated descriptor label wins; otherwise it falls back to `run.title`
+from that Run's own registered state, which `/health` reads once for both maps; a state that cannot
+be read is silently omitted, and every value is stripped of surrounding whitespace and truncated to
+120 characters. `run_states` maps each Run whose state is readable and whose `run.status` belongs
+to `RUN_STATES` to that status; unreadable states are silently omitted exactly like `run_labels`.
+`run_labels` and `run_states` come from the same state read; a Run's `progress.json` is never parsed
+twice. The response never includes a state path. `GET /?run=<id>`
 renders the page and `GET /snapshot?run=<id>` returns that Run's snapshot; an unknown Run is an
 error, never another Run's data.
 
@@ -352,9 +352,8 @@ Orca and never starts the service; the service never runs it automatically, and 
 
 Run isolation is one descriptor lookup per request: each snapshot reads only the selected Run's
 `progress.json` through the shared state-path validator, and responses name Run IDs and short
-labels, never a state path. Cross-Run reading is limited to `/health` deriving a label: when a
-descriptor has no label it may read only that Run's own state for `run.title`, and the page shows
-the Run ID list. A descriptor
+labels, never a state path. Cross-Run reading is limited to `/health` reading each registered Run's
+own state once to derive labels and states; the page shows the Run ID list. A descriptor
 that cannot be read, or whose `progress.json` is missing or corrupt, answers `503` with
 `Snapshot unavailable` and a Run list entry marked unavailable; a descriptor or state is never deleted
 or repaired by the service or `open`, and the only cleanup entry is an explicit `registry prune`,
