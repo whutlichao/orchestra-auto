@@ -41,6 +41,7 @@ MERGE = "b" * 40
 MAIN_HEAD = "e" * 40
 ACCEPTANCE_RECORD_ID = "11111111-1111-4111-8111-111111111111"
 PENDING_RECORD_ID = "22222222-2222-4222-8222-222222222222"
+THIRD_RECORD_ID = "33333333-3333-4333-8333-333333333333"
 
 
 def utc_now():
@@ -299,6 +300,77 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual(entries[0]["answer_location"], "tickets/task-39-answer.md")
         self.assertEqual(entries[0]["record_id"], ACCEPTANCE_RECORD_ID)
         self.assertEqual(entries[0]["accepted_sha"], ACCEPTED)
+
+    def test_closeout_uses_latest_attempt_and_keeps_earlier_acceptance_history(self):
+        earlier = acceptance_record()
+        earlier["accepted_sha"] = "c" * 40
+        earlier["pr"]["head_at_acceptance"] = "c" * 40
+        earlier["levels"]["integrated"]["value"] = False
+        earlier["levels"]["merged"] = {
+            "value": False, "evidence_ref": "evidence/attempt-1.json",
+            "at": earlier["accepted_at"],
+        }
+        earlier["levels"]["tracker_closed"]["value"] = False
+        latest = acceptance_record(attempt=2)
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **earlier},
+                {"record_id": PENDING_RECORD_ID, **latest},
+            ]}))
+
+        self.assertTrue(checklist["ready"], checklist["blocking"])
+        self.assertEqual(checklist["blocking"], [])
+        self.assertEqual([entry["attempt"] for entry in row(checklist, 1)["detail"]["entries"]],
+                         [1, 2])
+        self.assertEqual(row(checklist, 2)["status"], "ok")
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+
+    def test_newer_invalid_attempt_does_not_fall_back_to_older_valid_attempt(self):
+        earlier = acceptance_record()
+        earlier["levels"]["integrated"]["value"] = False
+        earlier["levels"]["merged"] = {
+            "value": False, "evidence_ref": "evidence/attempt-1.json",
+            "at": earlier["accepted_at"],
+        }
+        earlier["levels"]["tracker_closed"]["value"] = False
+        latest = acceptance_record(attempt=2)
+        invalid = acceptance_record(attempt=3, accepted_sha="invalid-sha")
+        invalid["levels"]["merged"] = {
+            "value": False, "evidence_ref": "evidence/attempt-3.json",
+            "at": invalid["accepted_at"],
+        }
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **earlier},
+                {"record_id": PENDING_RECORD_ID, **latest},
+                {"record_id": THIRD_RECORD_ID, **invalid},
+            ]}))
+
+        self.assertEqual(row(checklist, 1)["status"], "blocked")
+        self.assertEqual([entry["attempt"] for entry in row(checklist, 1)["detail"]["entries"]],
+                         [1, 2, 3])
+        self.assertFalse(checklist["ready"])
+        for index in (2, 3, 4):
+            with self.subTest(row=index):
+                self.assertEqual(row(checklist, index)["status"], "blocked")
+
+    def test_conflicting_records_at_the_latest_attempt_remain_divergent(self):
+        first = acceptance_record(attempt=2)
+        conflict = copy.deepcopy(first)
+        conflict["levels"]["implemented"]["value"] = False
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **first},
+                {"record_id": PENDING_RECORD_ID, **conflict},
+            ]}))
+
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        self.assertEqual(row(checklist, 1)["status"], "blocked")
+        self.assertTrue(row(checklist, 1)["detail"]["divergent"])
+        self.assertIn("divergent acceptance records at attempt 2",
+                      " ".join(row(checklist, 1)["detail"]["problems"]))
 
     def test_row_two_needs_the_pr_host_merged_state_base_and_merge_sha(self):
         for broken in (
