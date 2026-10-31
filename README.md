@@ -460,12 +460,15 @@ remain text. Local access is trusted; do not forward the port. It can only obser
 submitted facts, and fetch errors retain the last valid snapshot with an error banner.
 
 The singleton service exposes three read-only GET routes on `127.0.0.1` only: `/health` (the
-service plus the registered Run IDs), `/?run=<id>` (the page, listing every registered Run and
-rendering the selected one) and `/snapshot?run=<id>` (that Run's snapshot only). Cross-Run access is
-limited to the Run list; responses name Run IDs, never state paths; an unreadable Run shows as
-unavailable and is never deleted. Every response is GET-only with a CSP, `Cache-Control: no-store`
-and `X-Content-Type-Options: nosniff`, and the `Host` header must be `localhost` or `127.0.0.1`.
-`serve --state` remains for the DEMO, tests and single-Run viewing and never registers.
+service plus the registered Run IDs, their readable labels and projected `run_states`),
+`/?run=<id>` (the page, listing every registered Run in the left sidebar and rendering the selected
+one) and `/snapshot?run=<id>` (that Run's snapshot only). Cross-Run access is limited to the Run
+list; responses name Run IDs, never state paths; an unreadable Run shows as unavailable and is
+never deleted by the service or `open`. Only an explicit `registry prune` archives ended Runs into
+the registry's `archive/` and removes their descriptors. Every response is GET-only with a CSP,
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and the `Host` header must be
+`localhost` or `127.0.0.1`. `serve --state` remains for the DEMO, tests and single-Run viewing and
+never registers.
 See the [protocol and workflow ownership](skills/orchestra-auto/references/progress-dashboard.md)
 for JSON commands, nested task/dispatch/attempt reports, warning-and-continue wrappers, recovery,
 and the exact dispatch/question/acceptance/merge/tracker/close-out checkpoints.

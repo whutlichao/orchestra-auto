@@ -54,12 +54,16 @@ REAL Run 首次派活前。
 
 ## 阅读可视化看板
 
-两个安装包提供 byte-identical 的同一页面，默认中文，可切换 English。浅色画布、固定左导航与顶栏
-依次组织运行概览、关注事项、任务统计、静态参考流程、依赖图、任务与 Worker、交付证据和事件；
-不加载远程字体、资源或前端包。每三秒读取一次，且每次读取（快照或 Run 列表）都有 8 秒超时。
-快照读取失败或超时会带时间记录错误并保留最后有效视图，下一轮轮询直接重试；挂起的请求不会让页面
-停摆。Run 列表读取失败保持静默，绝不影响快照视图。`/health` 提供标签时 Run 列表显示可读标签，
-否则回退显示 Run ID；悬停 chip 可看到完整 Run ID。筛选、展开明细、依赖图滚动位置及语言在刷新后保留。
+两个安装包提供 byte-identical 的同一页面，默认中文，可切换 English。浅色画布；左侧侧边栏在品牌之后、
+页面导航之前列出 Run，每个条目有状态点（由 `/health` 的 `run_states` 驱动，未知状态用中性色）、
+可读标题（缺失时回退 Run ID）与不可用标记；已结束 Run（`completed`/`cancelled`/`failed`）默认折叠，
+当前选中的 Run 始终可见，键盘可操作的 `#run-toggle` 在有隐藏项时显示「显示全部 (N)」，展开后显示
+「收起」。顶栏与主区依次组织运行概览、关注事项、任务统计、静态参考流程、依赖图、任务与 Worker、
+交付证据和事件；不加载远程字体、资源或前端包。每三秒读取一次，且每次读取（快照或 Run 列表）都有
+8 秒超时。快照读取失败或超时会带时间记录错误并保留最后有效视图，下一轮轮询直接重试；挂起的请求
+不会让页面停摆。Run 列表读取失败保持静默，绝不影响快照视图。`/health` 提供标签时 Run 列表显示
+可读标签，否则回退显示 Run ID；悬停 chip 可看到完整 Run ID。窄屏下侧边栏变为顶部横条，Run 列表
+仍然可见并换行。筛选、展开明细、依赖图滚动位置及语言在刷新后保留。
 页面内「刷新」按钮立即重读，并中断仍在等待的
 请求而不是排在它后面；标签页回到前台（变为可见、从往返缓存恢复、窗口获得焦点）会立即读取一次，
 不必等下一个三秒周期；这些事件做了防抖，一次回到前台只发一次读取。
@@ -209,6 +213,10 @@ $ORCA_PROGRESS_HOME
 ├── server.json          # {pid, port, protocol_version, started_at, binary_version}
 ├── startup.lock         # 仅在启动期间持有的 flock
 ├── starting.json        # {pid, port}：启动崩溃窗口
+├── archive/             # 显式 registry prune 的可逆归档（0700）
+│   └── run_xxx/
+│       ├── descriptor.json
+│       └── <state-dir>/
 └── runs/
     └── run_xxx.json     # {run_id, state_path, registered_at, label}
 ```
@@ -236,17 +244,45 @@ $ORCA_PROGRESS_HOME
 
 **接口。** 脚本暴露 `registry.register(run)`、`registry.discover()`、`registry.probe()` 与
 `registry.open(run) -> {url, pid, degraded, reason}`；HTTP 层只渲染只读快照。`GET /health` 返回
-`{ok, protocol_version, pid, started_at, runs, run_labels}`；`protocol_version` 从 `1` 开始。
-`runs` 仍是有序的 Run ID 字符串数组。`run_labels` 把每个 Run ID 映射为简短可读标签：优先使用
-已校验的 descriptor label；为空时只读取该 Run 已注册的状态并取 `run.title`；状态不可读则静默
-省略该映射；所有值去除首尾空白并截断到 120 个字符。响应绝不包含状态路径。`GET /?run=<id>` 渲染页面，
+`{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`；`protocol_version` 从
+`1` 开始。`runs` 仍是有序的 Run ID 字符串数组。`run_labels` 把每个 Run ID 映射为简短可读标签：
+优先使用已校验的 descriptor label；为空时只读取该 Run 已注册的状态并取 `run.title`；状态不可读
+则静默省略该映射；所有值去除首尾空白并截断到 120 个字符。`run_states` 把每个 state 可读且
+`run.status` 属于 `RUN_STATES` 的 Run 映射为该状态；不可读的 state 与 `run_labels` 一样静默
+省略。`run_labels` 与 `run_states` 在同一次 state 读取中产出，同一 Run 的 `progress.json`
+绝不重复解析。响应绝不包含状态路径。`GET /?run=<id>` 渲染页面，
 `GET /snapshot?run=<id>` 返回该 Run 的快照；未知 Run 返回错误，绝不返回其他 Run 的数据。
+
+**显式清理（registry prune）。** 服务与 `open` 永不清理注册表；只有显式命令会归档已结束 Run：
+
+```bash
+python3 PROGRESS --registry "$ORCA_PROGRESS_HOME" registry prune \
+  [--older-than-days 7] [--keep 10] [--dry-run] [--json]
+```
+
+`--older-than-days` 默认 7 天，`--keep` 默认 10（保留最近 10 个 Run）；两者都必须是非负整数，
+非法输入退出码 1。命令只处理 `completed`、`cancelled`、`failed` 终态 Run。保留集合按 descriptor
+的 `registered_at` 降序取前 `--keep` 个 Run ID，无论状态。年龄基准优先 `run.ended_at`，缺失时
+依次回退 `run.updated_at`、`run.last_observed`、descriptor 的 `registered_at`；恰好等于阈值
+保留，只有严格早于才清理。不可读的 descriptor 或 state（缺失、损坏、校验失败）永不清理，记入
+`skipped` 并报告原因；非终态 Run 记入 `kept`。`--dry-run` 只计算并输出，绝不创建、移动或删除
+任何文件。
+
+成功清理时，先创建 `0700` 的 `$ORCA_PROGRESS_HOME/archive/<run_id>/`（已存在则跳过该 Run 并报告
+`archive_conflict`，绝不覆盖），把 state 目录移入其中（同一文件系统用 rename；跨文件系统则复制并校验
+后删除原目录，复制失败保留原目录），并 fsync 归档目录；然后把 descriptor 原文写入
+`archive/<run_id>/descriptor.json` 并 fsync；全部成功后才删除 `runs/<run_id>.json` 并 fsync
+`runs/`。任何一步失败都回滚，保留 descriptor 与原 state，报告 `archive_failed` 并以退出码 1
+结束。`--json` 输出
+`{"pruned": [...], "archived": [...], "kept": [...], "skipped": [{"run_id": ..., "reason": ...}]}`；
+`pruned` 是已从注册表移除（dry-run 时为将要移除）的 Run，`archived` 是本次真正归档 state 的 Run。
+非 JSON 输出同样的摘要。该命令不调用 Orca、不启动服务；服务与 `open` 绝不自动调用 prune。
 
 **HTTP 面与 Run 隔离。** 服务只暴露三条 GET 路由，没有任何写 API：
 
 | 路由 | 返回 |
 | --- | --- |
-| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels}`：服务状态、已注册 Run ID 及其简短可读标签（优先 descriptor label，其次该 Run 已注册状态的 `run.title`；不可读状态省略），绝不含状态路径 |
+| `GET /health` | `{ok, protocol_version, pid, started_at, runs, run_labels, run_states}`：服务状态、已注册 Run ID、简短可读标签（优先 descriptor label，其次该 Run 已注册状态的 `run.title`；不可读状态省略）与投影状态（只含 state 可读且状态合法的 Run），绝不含状态路径 |
 | `GET /?run=<id>` | 页面：由 `/health` 生成的 Run 列表（每个 chip 有标签时显示可读标签，悬停显示完整 Run ID），加上所选 Run 的 tasks、workers、deliveries、events、时效与健康投影，以及「警告不是启动失败」提示 |
 | `GET /snapshot?run=<id>` | 该 Run 的只读快照，不含任何其他 Run 的数据 |
 
@@ -254,7 +290,8 @@ $ORCA_PROGRESS_HOME
 响应只出现 Run ID 与简短标签，绝不出现状态路径。跨 Run 读取仅限 `/health` 推导标签：descriptor 无
 label 时只读取该 Run 自己的状态取 `run.title`，页面只展示 Run ID 列表。描述符不可读、
 或 `progress.json` 缺失/损坏时返回 `503` 与 `Snapshot unavailable`，并在 Run 列表中标记为不可用；
-描述符绝不删除、绝不修复；未知 Run ID 返回 `404`。某个 Run 不可用时页面保留 Run 列表，绝不悄悄显示
+服务与 `open` 绝不删除、绝不修复描述符或 state，唯一清理入口是显式 `registry prune`（只归档
+已结束 Run）；未知 Run ID 返回 `404`。某个 Run 不可用时页面保留 Run 列表，绝不悄悄显示
 另一个 Run 的数据。服务不保存任何按 Run 的状态，因此可重启：`progress.json` 仍是事实来源，服务中断
 只是一个 gap。
 
@@ -355,7 +392,8 @@ coordinator 拥有验证状态。每个动作完成后，在处理该动作的�
 时这是 `degraded/lock_busy` 且退出 `0`。稍后用相同事件 ID 重试。进程退出释放锁。不要删除活跃锁文件
 或自动修复。损坏/未知版本快照报错且不覆盖：先保存证据，将已知正确审计备份恢复到另一个仓库外目录，
 再显式对账后续事实。不迁移、不截断、不猜测重建，备份也必须在仓库外。事件历史持续增长，是本地审计
-记录，不是数据库或保留服务；完成的 Run 目录按本地策略归档。
+记录，不是数据库或保留服务；已结束 Run 目录只能由显式 `registry prune` 归档，服务与 `open`
+绝不自动调用。
 
 服务仅绑定 IPv4 localhost，无写 API，不提供任意路径或文件正文，不加载外部资产。文本全部安全渲染，
 仅 HTTP(S) 引用可点击；文件路径、commit ID 等仅为文本。默认也没有原始 inbox/终端/消息视图。
