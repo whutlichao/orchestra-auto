@@ -107,6 +107,18 @@ CI；仓库没有可用 CI 时，才在本地跑一次等价的全量门禁作�
 条件不满足时保留现场，报告“远端已合并，本地同步阻塞”，暂停后续合并；不自动 stash、
 reset、checkout 或创建本地 merge commit。网络错误查明后可重试一次。
 
+**fork 仓库的同步方向不同。** PR 合进 *upstream* 时，无参 `git pull --ff-only` 拉的是
+`origin/<默认分支>`——fork 自己的 main——而那次合并从没动过它。这次 pull 是 no-op，本地 main
+从此永久落后，上面的 ancestry 核对随后必败：本节只会报“远端已合并，本地同步阻塞”，并暂停之后
+所有合并，而同一节又禁止 reset、checkout 与本地 merge commit，没有任何合法出口。所以 fork 的
+同步动作是：`git fetch upstream` → 把本地目标主分支快进到 `upstream/<默认分支>` → 推到 fork
+远端。在这个动作下 `git merge-base --is-ancestor <merge_sha> HEAD` 仍然成立，其余前置条件不变
+——主工作副本位于目标主分支，工作区与 index 干净。硬约束逐条保留：不 reset、不自动 stash、
+不切换用户当前分支、不创建本地 merge commit；只允许快进，不能快进时按“本地同步阻塞”报告，
+绝不强行推进。只要 fork 的默认分支保持 upstream 的纯镜像（§4.3），这就恒成立；已经带有私有
+提交的 fork 先处理掉那些提交，而不是依赖 base ref 的选择。台账与收尾第 5 行读的仍是
+“本地目标主分支已同步”，语义不变，不要求改脚本。
+
 ### §6.6 验收记录与四级状态
 
 门禁结论要么持久落盘，要么等于没发生。在 release worker 或告诉任何人门禁通过之前，先把它记成

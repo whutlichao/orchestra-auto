@@ -29,7 +29,7 @@ Orca 的这条默认**。
   --worktree new-top-level --name <票 slug> --setup run --agent <§0 的 worker> --json
 ```
 
-- `--worktree new-top-level`：独立顶层 worktree，从仓库默认 base ref 切。
+- `--worktree new-top-level`：独立顶层 worktree，从下文选定的 base ref 切。
   **不许 `current`，不许 `new-child`**——前者就是 main，后者可能落在 main 的子目录里。
 - `--name`：用票 slug，方便事后认领与打回时定位。
 - `--agent <§0 的 worker>`：**必须显式写，没有「用默认」的写法**——`worker-start` 在 `--agent`
@@ -44,6 +44,27 @@ Orca 的这条默认**。
 - `--spec` 一次成型（`worker-start --spec` 会同时建 Task 与 attempt）。只有在多票有依赖、
   需要计划式 fan-out 或重试已知 Task 时才用 `task-create` + `worker-start --task <id>`。
 - 回执拿到后**立刻**走 §4.3.1 确认 turn 真的开始，并核验 §4.5 的收件器与等待方式。
+
+**base ref：每个仓库只读一次 fork 状态，在首次向它派活之前。** 事实是现成的，skill 只是要读它：
+
+```bash
+orca repo show --repo <selector> --json            # 非 fork 时 result.repo.upstream 为 null
+orca repo search-refs --repo <selector> --query <默认分支> --json
+```
+
+- `upstream` 为 **null**（自有仓库）：维持现状。从仓库默认 base ref 切 worktree，不传
+  `--base-branch`。
+- `upstream` 非 **null**（fork）：先 `git fetch upstream`，从 `upstream/<默认分支>` 切，并显式
+  传 `--base-branch upstream/<默认分支>`。少了这一步，fork main 的私有提交会作为 gap 一起进入
+  PR——worker 分支等于 `upstream` 的共同祖先 + fork 堆在自己 main 上的全部提交 + 本票改动，
+  而 upstream 从来没有那段历史。
+- 判断依据是**交付终点**——PR 落到哪个仓库——不是改动大小或票型。这是仓库级的事实，一次定下，
+  不是逐票临时判断；同一仓库后续的主张必须与它一致。
+- 确实依赖 fork 私有提交的票是唯一例外：传 `--base-branch origin/<默认分支>`，并写明理由。
+
+**fork 的默认分支保持纯镜像。** 它只应是 upstream 默认分支的镜像；私人改动走自己的分支或
+PR，不要堆在 fork 的 main 上。在这个约定下 §6.5.1 的 `--ff-only` 同步恒成立。已经积累了私有
+提交的 fork 要先把它们处理掉——合入 upstream 或丢弃——不要靠 base 选择再掩盖一轮。
 
 ### 4.3.0 前置 skill：按阶段与票型选，不按通道
 

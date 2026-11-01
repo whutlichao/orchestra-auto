@@ -88,8 +88,9 @@ G-docs 只验收设计阶段；设计文件的 PR 通过 G-merge 并自动合并
 - 每票是垂直 tracer bullet（穿全层、可独立验证、单 context 装得下），blocking edges 已声明；
   wide refactor 走 expand–contract 而不是硬切。
 - 票据先发布到配置的 tracker（远端 issue 或已提交的本地文件）。长程路径由 worker 从默认
-  base 切 integration branch，每个 implementer 从 integration branch 切自己的分支；下游票
-  只需等 blocker 合入 integration branch，不必等整张图合并。
+  base 切 integration branch（fork 时为 `upstream/<默认分支>`，见 §4.3），每个 implementer
+  从 integration branch 切自己的分支；下游票只需等 blocker 合入 integration branch，不必等
+  整张图合并。
 - **长程入口检查**：存在 spec 指针；每票有标题、要构建什么、验收标准与状态；每个 blocker 指向
   真实存在的票；图无环；frontier 至少有一张票；tracker 可达，本地票文件从 worktree 可见；
   每票能装进一个新鲜 context。任一不满足就回 `to-tickets`，不派 `implement-spec`。

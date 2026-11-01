@@ -50,7 +50,7 @@ PR skill：<绝对路径>/pr/SKILL.md——用它写唯一的集成 PR 正文。
 Tracker：<docs/agents/issue-tracker.md 或本地票目录绝对路径>。
 Spec：<绝对路径或 issue URL>。
 Tickets：<tracker 查询 / 本地目录；写明 frontier 与阻塞边>。
-Integration branch：<名称>；base：<默认 base ref>。
+Integration branch：<名称>；base：<默认 base ref；fork 时为 upstream/<默认分支>，绝不用 fork 自己的 main>。
 并发：最多 <N> 个 implementer；用户或仓库未另说时默认 3。
 ```
 

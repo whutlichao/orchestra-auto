@@ -136,8 +136,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 22,592 (−25.2%) | 7,552 → 5,648 |
-| Chinese | 24,359 → 19,470 (−20.1%) | 6,089 → 4,867 |
+| English | 30,208 → 22,949 (−24.0%) | 7,552 → 5,737 |
+| Chinese | 24,359 → 19,913 (−18.3%) | 6,089 → 4,978 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 

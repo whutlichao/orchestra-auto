@@ -176,8 +176,7 @@ Every pre-dispatch run writes a durable ledger `kind: preflight` receipt first t
 
 ### 4.1 Read-only exploration
 
-Gather the facts needed to write the spec on main first (three parallel reads at most).
-**Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is the signal to dispatch, not a licence to skip it.
+Gather the facts needed to write the spec on main first (three parallel reads at most). **Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is the signal to dispatch, not a licence to skip it.
 
 ### 4.2 Fetch the orchestration guide
 
@@ -196,12 +195,15 @@ Every task worker must be started as an isolated top-level worktree with an expl
 
 - `--worktree new-top-level` only. **Never `current` (= main), never `new-child`** (may land in a
   subdirectory of main). If the session cwd is not the target repo, add `--repo <selector>`.
+- **Base ref: the fork decides it, once per repository.** `orca repo show --repo <selector> --json`
+  → `result.repo.upstream` null: default base ref, no `--base-branch`; non-null: `git fetch upstream`
+  and `--base-branch upstream/<default branch>`, or fork main's private commits gap the upstream PR.
+  Judge by **delivery endpoint**, not size or type; exceptions and the `search-refs` check:
+  [dispatch loop](references/dispatch-loop.md) §4.3.
+- **A fork's main stays a pure mirror**, so §6.5.1's ff-only sync always holds: clear accumulated private commits upstream or drop them, never hide them behind a base choice.
 - `--agent` is **required and explicit**; there is no "use the default" form — `worker-start`
   raises `agent_unconfigured` when it is missing or unrecognized. Its value comes from §0's live
   read; judge usability from the live disabled list, not `which`.
-- A long-horizon worker uses the same flags with `--name <feature>-integration`; it creates its
-  own nested implementer worktrees, or degrades to serial work. Prove that capability before it
-  spends the map: [long-horizon tickets](references/long-horizon-tickets.md).
 - Full flags, per-agent notes and narrative: [dispatch loop](references/dispatch-loop.md).
 
 ### 4.3.1 Confirming the turn started after dispatch
@@ -286,14 +288,11 @@ each PR's merge SHA, the local sync and the final main HEAD, and say why a merge
 
 ## 8. Planning dependency initialization (on demand)
 
-Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their repository
-configuration is missing, check the planning setup. Reuse the existing tracker and docs configuration;
-confirm new governance files, labels or PRs belong to the round. When genuinely needed, a worker lands it in an isolated worktree and the coordinator accepts it.
+Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their repository configuration is missing, check the planning setup. Reuse the existing tracker and docs configuration; confirm new governance files, labels or PRs belong to the round. When genuinely needed, a worker lands it in an isolated worktree and the coordinator accepts it.
 
 ## 9. Failure and reporting discipline
 
 When the CLI will not start, a `worker-start` receipt is `state: failed`, a breaker trips, or the Orca
 app restarts, follow [failure and reporting](references/failure-and-reporting.md) instead of
 improvising: gather evidence before deciding, report the exact error, and never relaunch
-unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See
-[long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.
+unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See [long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.
