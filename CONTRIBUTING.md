@@ -54,7 +54,13 @@ python3 -m unittest tests.test_acceptance -v           # acceptance records + fo
 python3 -m unittest tests.test_closeout -v             # closeout checklist + release gate
 python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
 python3 -m unittest tests.test_inbox_loop -v              # script behaviour
+python3 -m unittest tests.test_chain -v                   # chain resume + exit checks
 ```
+
+GitHub Actions runs that same suite on `ubuntu-latest` and `macos-latest`, on Python 3.10 and 3.14,
+and the `tests` check is required to merge into `main`. A red check is not a separate CI-only gate:
+if it passes locally and fails there, the difference is the platform, and that is worth a line in
+the issue.
 
 ### If you change the inbox script
 

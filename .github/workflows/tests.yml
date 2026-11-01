@@ -1,0 +1,40 @@
+name: tests
+
+# The suite is hermetic — no network, no credentials, standard library only — so there is nothing
+# to install and nothing to cache. It is the same command CONTRIBUTING tells a contributor to run,
+# which is the point: a green check here means the contract tests that guard both bundles, the
+# reference links, the eval counts and the entrypoint size table all still hold.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor: the package tests use zip(..., strict=True). 3.14 is the current
+        # release. Both operating systems are supported by the skill itself (POSIX file locks and
+        # select); Windows is not, so it is not in the matrix.
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Run the suite
+        run: python -m unittest discover -s tests
