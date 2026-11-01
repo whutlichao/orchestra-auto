@@ -4,7 +4,11 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-unittest%20discover-blue)](#verification) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-An Agent Skill for anyone running [Matt Pocock's engineering skill chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/). A coordinator dispatches a worker into its own worktree, the ticket passes its gates, and the coordinator merges; you appear only for decisions and one-way doors. Dispatch is easy — the last 20% is supervision, and that is what this package encodes.
+An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges without you. You interrupt for a decision or a one-way door — not between steps.
+
+The chain is his, unchanged. What this repository adds is what a chain needs to run unattended on Orca: which step runs next, where the worker lands, what an artifact must carry before the next step consumes it, when a merge is automatic, and where a human has to interrupt. Two commands answer the first and third from the record instead of from memory: `scripts/chain.py resume` and `scripts/chain.py exit-check`.
+
+![Say it once: Matt Pocock's chain runs on Orca, and the human only interrupts at a gate](docs/demo/cover-en.png)
 
 <video src="https://github.com/user-attachments/assets/c375a505-a7eb-436a-89d3-e08bce5f16f6" controls width="720" poster="docs/demo/orchestra-auto-poster.jpg"></video>
 
@@ -40,6 +44,20 @@ Orca wraps one loop around a step of the chain:
 4. A decision or a one-way door comes back to you; otherwise the coordinator merges the PR and syncs main.
 
 The next step is another lap: another worker, another new worktree. The spec names the skill's absolute path on disk; if the spec does not say it, the worker does not do it.
+
+### Between laps: resume and exit checks
+
+A lap ends with a ledger record, so the next lap does not have to be reconstructed from the conversation:
+
+```bash
+python3 scripts/chain.py resume --run-id <run_id>          # where the chain continues, and why
+python3 scripts/chain.py exit-check --step to-spec --artifact spec.md
+python3 scripts/chain.py exit-check --step to-tickets --artifact tickets.md
+```
+
+`resume` reads the Run's ledger and returns the first position whose gate has no passed acceptance record — `grill`, `spec`, `tickets`, `build`, `review`. `implement` and `implement-spec` share that `build` position on purpose: both close on G-impl, and one record cannot tell them apart. `exit-check` applies the two artifact-shaped floors a spec or a ticket map has to clear before the next step consumes it — a `Test tier:` line and an acceptance section with a testable bullet; an acceptance line in every ticket. Everything else refuses, because the exit signal for those steps is a test run or a PR state and pretending to check it would be worse than declining.
+
+Neither is a verdict. They catch a missing section, never a wrong decision; the gate stays with the coordinator. [chain-run.md](skills/orchestra-auto/references/chain-run.md) states what each may and may not conclude.
 
 | | You invoke his skills yourself | orchestra-auto runs them on Orca |
 | --- | --- | --- |
@@ -108,6 +126,7 @@ The exit status is the answer. The suite needs no network, credentials or partic
 
 - `tests/test_inbox_loop.py` drives the real inbox script against a stub CLI and asserts atomic persistence, duplicate-delivery handling, heartbeat-only acknowledgement, loud CLI failures, the single-consumer lock, the wake contract and child-process lifetime.
 - `tests/test_progress_dashboard.py` covers the progress CLI and the localhost dashboard: snapshot and registry contracts, the singleton startup lock, protocol compatibility, fallbacks, Run isolation, the read-only HTTP surface and the `serve --state` DEMO path.
+- `tests/test_chain.py` covers chain-level resume and the two artifact floors: which acceptance records land a position, why a gap earlier in the chain wins, and what an exit check refuses to judge.
 - `tests/test_ledger.py`, `test_preflight.py`, `test_health.py`, `test_acceptance.py` and `test_closeout.py` cover the stability modules through their declared seams.
 - `tests/test_package_content.py` checks the package itself: parity between the language variants, frontmatter, every relative link, references and their triggers, eval shape, `py_compile`, `bash -n`, the MIT licence and the leak scan. Its prose-contract suite pins the decisions the documents used to get wrong; the anchor test **checks anchors, not full semantic equivalence**, so the two-axis review still reads the diff.
 
@@ -121,8 +140,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 22,520 (−25.5%) | 7,552 → 5,630 |
-| Chinese | 24,359 → 19,112 (−21.5%) | 6,089 → 4,778 |
+| English | 30,208 → 22,592 (−25.2%) | 7,552 → 5,648 |
+| Chinese | 24,359 → 19,470 (−20.1%) | 6,089 → 4,867 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 
@@ -174,7 +193,7 @@ The singleton exposes three read-only GET routes on `127.0.0.1`: `/health` (serv
 ├── README.zh-CN.md             中文说明
 ├── skills.sh.json              skills.sh directory grouping
 ├── skills/
-│   ├── orchestra-auto/         English bundle; references/ holds sixteen files
+│   ├── orchestra-auto/         English bundle; references/ holds seventeen files
 │   └── orchestra-auto-zh/      Chinese bundle, same structure
 ├── launch-kit/                 positioning, demo script, FAQs, channel drafts
 └── tests/                      the unittest suites above

@@ -4,7 +4,11 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-unittest%20discover-blue)](#验证) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-这是一套给在 [Orca](https://www.onorca.dev/) 上执行 [Matt Pocock 工程 skill 链](https://github.com/mattpocock/skills) 的人用的 Agent Skill。coordinator 把 worker 派到独立的 worktree，票按类型过门禁，通过后自动合并；人只在决策类问题和单向门上出现。派活容易，最后 20% 靠监督——这个包把这套监督写成了流程。
+这是一套把 [Matt Pocock 的工程 skill 链](https://github.com/mattpocock/skills) 放到 [Orca](https://www.onorca.dev/) 上**整条跑完**的 Agent Skill：你说一句要什么，coordinator 按格派 worker、每格落独立 worktree、产物过门禁，PR 自己合并。你只在需要决定和单向门上被打断，不是在格与格之间。
+
+链是他的，一格没改。这个仓库补的是「一条链要在 Orca 上无人值守跑下去」所需的那些东西：下一格是哪格、worker 落在哪、产物进入下一格前必须带什么、什么时候合并是自动的、人必须在哪里插进来。其中两件事现在由命令回答，而不靠记忆：`scripts/chain.py resume` 和 `scripts/chain.py exit-check`。
+
+![说一句，整条链自己跑完；人只在门禁处被打断](docs/demo/cover-zh.png)
 
 <video src="https://github.com/user-attachments/assets/c375a505-a7eb-436a-89d3-e08bce5f16f6" controls width="720" poster="docs/demo/orchestra-auto-poster.jpg"></video>
 
@@ -40,6 +44,20 @@ Orca 在链的每一格外包一圈循环：
 4. 决策或单向门回到你这里；否则 coordinator 合并 PR 并同步 main。
 
 下一格是下一次同样的循环：再派一个 worker，再开一个新 worktree。spec 里写这个 skill 在本机的绝对路径；spec 里没写的，worker 不会做。
+
+### 两轮之间：续跑与出口检查
+
+每轮结束都留一条台账记录，所以下一轮不必从对话里重建：
+
+```bash
+python3 scripts/chain.py resume --run-id <run_id>          # 链条从哪个位置继续，以及为什么
+python3 scripts/chain.py exit-check --step to-spec --artifact spec.md
+python3 scripts/chain.py exit-check --step to-tickets --artifact tickets.md
+```
+
+`resume` 读这次 Run 的台账，返回第一个「门禁还没有通过的验收记录」的位置——`grill`、`spec`、`tickets`、`build`、`review`。`implement` 和 `implement-spec` 故意共用 `build` 这个位置：两者都关在 G-impl 上，一条记录分不出是哪一个。`exit-check` 施加两道产物地板：spec 要有 `Test tier:` 行和带可验收条目的验收小节，票图里每一张票都要有验收行。其余步骤直接拒绝——它们的出口信号是测试运行或 PR 状态，假装检查比直说不查更糟。
+
+两者都不是判决。它们只抓缺失的小节，抓不住错误的决定；门禁仍然归 coordinator。[chain-run.md](skills/orchestra-auto-zh/references/chain-run.md) 写明各自能推出什么、不能推出什么。
 
 | | 你自己调用他的 skill | 用 orchestra-auto 在 Orca 上跑 |
 | --- | --- | --- |
@@ -108,6 +126,7 @@ python3 -m unittest discover -s tests -v
 
 - `tests/test_inbox_loop.py` 用桩 CLI 驱动真实收件脚本，断言原子落盘、重复 delivery 处理、只有 heartbeat 的批次才 ack、CLI 错误显式失败、单消费者锁、唤醒契约与子进程生命周期。
 - `tests/test_progress_dashboard.py` 覆盖进度 CLI 与 localhost 看板：snapshot 与注册表契约、单例启动锁、协议兼容、回退、Run 隔离、只读 HTTP 表面与 `serve --state` 的 DEMO 路径。
+- `tests/test_chain.py` 覆盖链级续跑与两道产物地板：哪些验收记录能让一个位置落地、为什么链条更早的缺口优先、以及出口检查拒绝判断什么。
 - `tests/test_ledger.py`、`test_preflight.py`、`test_health.py`、`test_acceptance.py` 与 `test_closeout.py` 通过各自声明的缝覆盖稳定性模块。
 - `tests/test_package_content.py` 检查包本身：两个语言变体结构一致、frontmatter、所有相对链接、reference 及其触发条件、eval 形状、`py_compile`、`bash -n`、MIT 许可与脱敏扫描。其中的散文契约回归钉住文档过去判错的决定；锚点测试**只查锚点，不等于完整语义等价**，所以双轴 review 仍要读 diff。
 
@@ -121,8 +140,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 22,520（−25.5%） | 7,552 → 5,630 |
-| 中文 | 24,359 → 19,112（−21.5%） | 6,089 → 4,778 |
+| 英文 | 30,208 → 22,592（−25.2%） | 7,552 → 5,648 |
+| 中文 | 24,359 → 19,470（−20.1%） | 6,089 → 4,867 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
@@ -174,7 +193,7 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 ├── README.zh-CN.md             本文件
 ├── skills.sh.json              skills.sh 目录页的分组配置
 ├── skills/
-│   ├── orchestra-auto/         英文包；references/ 有 16 个文件
+│   ├── orchestra-auto/         英文包；references/ 有 17 个文件
 │   └── orchestra-auto-zh/      中文包，结构相同
 ├── launch-kit/                 定位、demo 讲稿、FAQ、各渠道草稿
 └── tests/                      上面的 unittest 套件
