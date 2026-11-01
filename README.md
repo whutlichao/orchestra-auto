@@ -2,17 +2,13 @@
 
 **[English](README.md) · [简体中文](README.zh-CN.md)**
 
-[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://img.shields.io/badge/tests-unittest%20discover-blue)](#verification) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml/badge.svg)](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges without you. You interrupt for a decision or a one-way door — not between steps.
 
 The chain is his, unchanged. What this repository adds is what a chain needs to run unattended on Orca: which step runs next, where the worker lands, what an artifact must carry before the next step consumes it, when a merge is automatic, and where a human has to interrupt. Two commands answer the first and third from the record instead of from memory: `scripts/chain.py resume` and `scripts/chain.py exit-check`.
 
 ![Say it once: Matt Pocock's chain runs on Orca, and the human only interrupts at a gate](docs/demo/cover-en.png)
-
-<video src="https://github.com/user-attachments/assets/c375a505-a7eb-436a-89d3-e08bce5f16f6" controls width="720" poster="docs/demo/orchestra-auto-poster.jpg"></video>
-
-[Watch the demo (MP4)](https://github.com/user-attachments/assets/c375a505-a7eb-436a-89d3-e08bce5f16f6)
 
 ```bash
 npx skills add whutlichao/orchestra-auto --skill orchestra-auto
