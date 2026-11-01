@@ -3,6 +3,8 @@ name: diagnose-macos
 # Temporary: find out which tests fail or hang on a macOS runner, and at which point.
 # Deleted once the question is answered.
 on:
+  push:
+    branches: [ci/tests]
   workflow_dispatch:
 
 permissions:
