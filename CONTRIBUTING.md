@@ -57,10 +57,11 @@ python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 python3 -m unittest tests.test_chain -v                   # chain resume + exit checks
 ```
 
-GitHub Actions runs that same suite on `ubuntu-latest` and `macos-latest`, on Python 3.10 and 3.14,
-and the `tests` check is required to merge into `main`. A red check is not a separate CI-only gate:
-if it passes locally and fails there, the difference is the platform, and that is worth a line in
-the issue.
+GitHub Actions runs that same suite on Python 3.10 and 3.14: `ubuntu-latest` runs all ten modules,
+`macos-latest` runs every module except the socket-bound progress one, whose five-second readiness
+budget does not survive a shared runner (the workflow says so where it excludes it). The `tests`
+check is required to merge into `main`. A red check is not a separate CI-only gate: if it passes
+locally and fails there, the difference is the platform, and that is worth a line in the issue.
 
 ### If you change the inbox script
 
