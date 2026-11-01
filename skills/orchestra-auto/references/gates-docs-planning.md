@@ -109,9 +109,10 @@ leaning and let the human decide; record the answer in the audit list.
   in a single context) with declared blocking edges; a wide refactor uses expand–contract rather
   than a hard cut.
 - Tickets are published to the configured tracker first (remote issues or committed local files).
-  In the long-horizon path the worker cuts the integration branch from the default base, and each
-  implementer cuts from that integration branch; a downstream ticket waits only until its blockers
-  are merged into the integration branch, not until the whole map lands.
+  In the long-horizon path the worker cuts the integration branch from the default base (for a
+  fork, `upstream/<default branch>` per §4.3), and each implementer cuts from that integration
+  branch; a downstream ticket waits only until its blockers are merged into the integration
+  branch, not until the whole map lands.
 - **Long-horizon entry check**: a spec pointer exists; every ticket has a title, What to build,
   acceptance criteria and a status; every blocker references an existing ticket; the graph is
   acyclic; at least one ticket is on the frontier; the tracker is reachable and local ticket files

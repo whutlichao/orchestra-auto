@@ -156,10 +156,13 @@ Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆�
 ```
 
 - 只用 `--worktree new-top-level`。**不许 `current`（= main），不许 `new-child`**（可能落在 main 子目录）。会话 cwd 不是目标 repo 时加 `--repo <selector>`。
+- **base ref 由 fork 状态决定，每个仓库只定一次。** `orca repo show --repo <selector> --json` 的
+  `result.repo.upstream` 为 null：从默认 base ref 切，不传 `--base-branch`；非 null：先
+  `git fetch upstream`，并传 `--base-branch upstream/<默认分支>`，否则 fork main 的私有提交会作为
+  gap 进入落到 upstream 的 PR。判断依据是**交付终点**，不是改动大小或票型；例外与 `search-refs`
+  核对见 [派活闭环](references/dispatch-loop.md) §4.3。
+- **fork 的 main 保持纯镜像**，于是 §6.5.1 的 ff-only 同步恒成立：已积累的私有提交先合入 upstream 或丢弃，不要靠 base 选择掩盖。
 - `--agent` **必须显式**；没有「用默认」写法——缺失或不被识别时抛 `agent_unconfigured`。值来自 §0 的实时读取；能否用看禁用列表，不看 `which`。
-- 长程 worker 用同样的参数，`--name <feature>-integration`；它自己建嵌套 implementer
-  worktree，无法隔离时降级为串行。花掉整张票图前先证明该能力：
-  [长程票图](references/long-horizon-tickets.md)。
 - 完整参数与叙述见 [派活闭环](references/dispatch-loop.md)。
 
 ### 4.3.1 派活后确认 turn 开始

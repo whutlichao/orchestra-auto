@@ -142,6 +142,23 @@ not hold, preserve the scene and report "merged remotely, local sync blocked", p
 merges; do not auto-stash, reset, check out, or create a local merge commit. A network error may
 be retried once after diagnosis.
 
+**Fork repositories sync in a different direction.** When the PR merges into *upstream*, plain
+`git pull --ff-only` fetches `origin/<default branch>` — the fork's own main — which that merge
+never touched. The pull is a no-op, the local main falls permanently behind, and the ancestry
+check above then fails for good: the section reports "merged remotely, local sync blocked" and
+pauses every later merge with no legal exit, because the same section forbids reset, checkout and
+a local merge commit. A fork's sync action is therefore: `git fetch upstream`, fast-forward the
+local target main branch to `upstream/<default branch>`, then push that to the fork's remote. Under
+that action `git merge-base --is-ancestor <merge_sha> HEAD` still holds, and the other
+preconditions are unchanged — the main working copy sits on the target main branch, and the
+working tree and index are clean. The hard constraints stay exactly as written: no reset, no
+automatic stash, no switching the user's current branch, no local merge commit; fast-forward only,
+and a branch that cannot fast-forward is reported as "local sync blocked" rather than forced. This
+holds unconditionally while the fork's default branch stays a pure mirror of upstream's (§4.3); a
+fork carrying private commits fixes those first instead of relying on a base-ref choice. The
+ledger and closeout row 5 still read "local target main branch is synced", unchanged — no script
+change follows from this.
+
 ### §6.6 Acceptance records and the four levels
 
 A gate result is durable or it did not happen. Record it as a ledger `kind: acceptance` record
