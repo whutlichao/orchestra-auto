@@ -53,6 +53,7 @@ description: >-
 | `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
 | `references/failed-dispatch-recovery.md` | `worker-start` 回执 `state: failed` |
 | `references/failure-and-reporting.md` | CLI 起不来、熔断触发、或 Orca app 运行中重启时 |
+| `references/chain-run.md` | 两轮之间、崩溃之后，或需要从台账续跑时：链条走到哪个位置、每格产物必须带什么 |
 
 ## 0. 执行编排时初始化；编辑本 skill 不启动编排
 
@@ -199,6 +200,9 @@ coordinator 自行核验可观察结果与证据，失败就列明缺项打回�
 `grill-with-docs → to-spec → to-tickets → implement-spec`；已有清楚 spec 或已开票时从对应阶段进入。
 只要设计、规格或票据的请求就在该阶段产物的 PR 合并后收口，不擅自进入实施。
 用户明确要求保留开放 PR、不要合并时按该例外收口（判据见 §0）。
+
+两轮之间，`scripts/chain.py resume` 从台账报出下一个位置，`exit-check` 施加两道产物地板；
+各自能推出什么、不能推出什么，见 [链条与续跑](references/chain-run.md)。
 
 - 设计票按 G-docs 或 G-wayfinder 验收。若本轮包含 to-spec / to-tickets，继续落盘并核对 tracker；否则报告记录后续入口，不把未授权阶段标成缺陷。
 - 完整票图只派一个长程 worker；它拥有 frontier 与并发。逐票回退（一票一个 worker，默认 3 个）

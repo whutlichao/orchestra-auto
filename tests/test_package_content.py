@@ -34,6 +34,7 @@ SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 #: a new script cannot land with a green suite and no coverage.
 SCRIPT_FILES = (
     "acceptance.py",
+    "chain.py",
     "closeout.py",
     "health.py",
     "inbox-loop.py",
@@ -45,7 +46,7 @@ SCRIPT_FILES = (
     "progress.py",
 )
 PYTHON_SCRIPTS = (
-    "acceptance.py",
+    "acceptance.py", "chain.py",
     "closeout.py", "health.py", "inbox-loop.py", "ledger.py", "preflight.py",
     "progress-demo.py", "progress.py",
 )
@@ -56,6 +57,7 @@ PYTHON_SCRIPTS = (
 BASELINE_EVAL_COUNT = 31
 
 REFERENCE_FILES = (
+    "chain-run.md",
     "dispatch-loop.md",
     "dispatch-preflight.md",
     "failed-dispatch-recovery.md",

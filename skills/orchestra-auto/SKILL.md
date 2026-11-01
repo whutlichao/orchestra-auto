@@ -64,6 +64,7 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
 | `references/failed-dispatch-recovery.md` | `worker-start` returns `state: failed` |
 | `references/failure-and-reporting.md` | The CLI will not start, a breaker trips, or the Orca app restarts mid-run |
+| `references/chain-run.md` | Between two laps, after a crash, or when resuming a Run from the ledger: where the chain continues and what each artifact must carry |
 
 ## 0. Initialize only when executing orchestration; editing this skill does not start a run
 
@@ -73,10 +74,10 @@ no worker, and do not switch roles just because you read the body text. Use §1 
 this round needs a worker.
 
 Read live Orca settings only when about to dispatch; record the default TUI agent and the disabled TUI agent list.
-A user-named agent wins, otherwise use the recorded default. A disabled agent, or a failed, missing or empty read, stops the run.
-Never infer settings from stale exports, this skill, or evals. `worker-start` requires an explicit
-`--agent`; the selection must be absent from the disabled list. Help examples are not an exhaustive
-list of supported agents. Lookup steps: [dispatch preflight](references/dispatch-preflight.md).
+A user-named agent wins, otherwise the recorded default. A disabled agent, or a failed, missing or empty read, stops the run.
+Never infer settings from stale exports, this skill, or evals. `worker-start` requires an explicit `--agent`
+absent from the disabled list. Help examples are not an exhaustive list of supported agents.
+Lookup: [dispatch preflight](references/dispatch-preflight.md).
 
 ```text
 mode orchestra-auto | channel <A|B|C> | intent <task type> | pre-skill <actual path / none> | worker <actual agent / none> | delivery endpoint <answer / report / merged project change / other endpoint the user named>
@@ -264,6 +265,9 @@ spec or existing tickets you enter at the matching stage. A design-only, spec-on
 request closes once that stage's artifact PR is merged, and you do not drift into implementation
 on your own. If the user explicitly asked to keep the PR unmerged, close at that exception (§0).
 
+Between laps, `scripts/chain.py resume` names the next position from the ledger and `exit-check` applies
+the two artifact-shaped floors; [chain run](references/chain-run.md) says what each answer may conclude.
+
 - Design tickets are accepted under G-docs or G-wayfinder. If this round also includes to-spec /
   to-tickets, keep landing and reconcile the tracker: labels/states follow repository conventions,
   implementation tickets exist, and dependencies are queryable. Otherwise the report records the
@@ -275,14 +279,10 @@ on your own. If the user explicitly asked to keep the PR unmerged, close at that
   coordinator's gate. When the same field or interface changes across call sites, the Answer
   enumerates every location and its disposition.
 
-The closing report goes in a durable directory outside the repository and must be readable on its
-own, without depending on `/tmp` persisting. Record: this round's request and delivery endpoint;
-the artifacts with their commit/PR/merge state; key acceptance results and evidence locations; the
-decisions the human made and the ones answered for them; unfinished items; and the worker
-lifecycle count. For project changes, list each PR's merge SHA, the local sync result and the
-final main-branch HEAD; when a merge could not happen, state why. An open PR is this round's
-endpoint only when the user explicitly asked to keep it unmerged, or when repository rules or a
-gate blocked the merge.
+The closing report goes in a durable directory outside the repository, readable without `/tmp`. Record the
+request and endpoint, each artifact's commit/PR/merge state, acceptance results and evidence, the decisions
+the human made and those answered for them, unfinished items and the worker count. For project changes list
+each PR's merge SHA, the local sync and the final main HEAD, and say why a merge did not happen.
 
 ## 8. Planning dependency initialization (on demand)
 
