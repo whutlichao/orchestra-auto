@@ -44,7 +44,8 @@ ROWS = (
      "authority": "PR host API", "repeatable": True,
      "action": "read back and write an observation"},
     {"id": 3, "fact": "the merge covers the accepted head",
-     "authority": "git merge-base --is-ancestor", "repeatable": True,
+     "authority": "git merge-base --is-ancestor / git merges (equivalence)",
+     "repeatable": True,
      "action": "on failure mark divergent and escalate"},
     {"id": 4, "fact": "main contains the merge",
      "authority": "git rev-parse / ancestry", "repeatable": True,
@@ -291,11 +292,34 @@ def _row_two(facts, accepted):
     return _row(2, status, {"problems": problems}, evidence)
 
 
+def _ancestry_covers(ancestry, ancestor, descendant):
+    return any(
+        row.get("ancestor") == ancestor
+        and row.get("descendant") == descendant
+        and row.get("result") is True
+        for row in ancestry)
+
+
+def _equivalence_covers(merges, accepted_sha, merge_sha):
+    return any(
+        row.get("accepted_sha") == accepted_sha
+        and row.get("merge_sha") == merge_sha
+        and row.get("diff_empty") is True
+        for row in merges)
+
+
 def _row_three(facts, accepted):
+    """The merge covers the accepted head: by ancestry, or by content equivalence.
+
+    A merge commit makes the accepted head an ancestor of the merge SHA. A squash or
+    rebase merge rewrites it, so row 3 accepts the record's ``equivalence`` shape and
+    demands git's own ``merges`` row, never the record's word for it.
+    """
     section = _section(facts, "git")
     if section.get("state") != "ok":
         return _row(3, "unknown", {"reason": section.get("reason", "")})
     ancestry = _rows(section, "ancestry")
+    merges = _rows(section, "merges")
     problems, evidence = [], []
     for item in accepted:
         payload = item["payload"]
@@ -304,21 +328,28 @@ def _row_three(facts, accepted):
         if not ACCEPTANCE.is_sha(accepted_sha) or not ACCEPTANCE.is_sha(merge_sha):
             problems.append(
                 "PR " + str(_pr_number(payload)) + ": the accepted SHA and merge SHA "
-                "are needed before ancestry can be checked")
+                "are needed before the merge can be shown to cover the accepted head")
+            continue
+        if isinstance(_level(payload, "merged").get("equivalence"), dict):
+            ref = "git:merges:" + accepted_sha + ".." + merge_sha
+            covered = _equivalence_covers(merges, accepted_sha, merge_sha)
+            evidence.append(_evidence("git", ref, "equivalent" if covered else "unknown"))
+            if not covered:
+                problems.append(
+                    "git has no equivalence proof for the accepted head "
+                    + accepted_sha[:12] + " and the merge " + merge_sha[:12]
+                    + ": the accepted record uses the equivalence shape, so a "
+                    "git.merges row with diff_empty true is required")
             continue
         ref = "git:ancestry:" + accepted_sha + ".." + merge_sha
-        covered = any(
-            row.get("ancestor") == accepted_sha
-            and row.get("descendant") == merge_sha
-            and row.get("result") is True
-            for row in ancestry)
+        covered = _ancestry_covers(ancestry, accepted_sha, merge_sha)
         evidence.append(_evidence("git", ref, "merged" if covered else "not_merged"))
         if not covered:
             problems.append(
                 "git ancestry does not prove the accepted head " + accepted_sha[:12]
                 + " is an ancestor of the merge " + merge_sha[:12])
     if not accepted:
-        problems.append("no accepted PR to check ancestry for")
+        problems.append("no accepted PR to check the merge coverage for")
     status = "blocked" if problems else "ok"
     return _row(3, status, {"problems": problems, "escalate": bool(problems)}, evidence)
 
@@ -342,11 +373,7 @@ def _row_four(facts, accepted):
                 "needed before containment can be checked")
             continue
         ref = "git:ancestry:" + merge_sha + ".." + head
-        contained = any(
-            row.get("ancestor") == merge_sha
-            and row.get("descendant") == head
-            and row.get("result") is True
-            for row in ancestry)
+        contained = _ancestry_covers(ancestry, merge_sha, head)
         evidence.append(_evidence("git", ref, "contained" if contained else "missing"))
         if not contained:
             problems.append(

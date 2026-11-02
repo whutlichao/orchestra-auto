@@ -85,7 +85,10 @@ CI；仓库没有可用 CI 时，才在本地跑一次等价的全量门禁作�
 
 ### §6.5 合并执行与收尾
 
-1. 按 DAG 或 stacked PR 顺序，核对当前 head 与已验收 SHA；使用仓库允许的合并方式逐张合并。
+1. 按 DAG 或 stacked PR 顺序，核对当前 head 与已验收 SHA，再选择一种能让被验收 head 成为
+   merge SHA 祖先的合并方式逐张合并。merge commit 天然满足；squash 与 rebase 不满足，它们按
+   §6.6 的 `equivalence` 形态记录（`git diff <accepted_sha> <merge_sha>` 为空）。G-merge 在
+   合并前先读仓库允许的合并方式；读不到或三者全开时默认 merge commit。
    合并冲突交回该票 worker 在其 worktree 解决，重新过受影响门禁与 G-merge。
 2. 每张合并后执行 §6.5.1，并核对主分支 tree SHA 与已验证的对应前缀一致。只有出现计划外的
    主分支提交、不同的合并结果或待合并 head 变化时，才暂停并更新集成证据。
@@ -142,13 +145,24 @@ python3 "$ACCEPTANCE" show --run-id "$RUN" --ticket 39
 
 | 声明 | 证据 |
 | --- | --- |
-| 合并 | PR host 的 `MERGED`、merge SHA，以及 `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| 合并 | PR host 的 `MERGED`、merge SHA，以及 `levels.merged` 两种证据形态之一：`ancestry {ancestor, descendant, result: true}`（来自 `git merge-base --is-ancestor <accepted_sha> <merge_sha>`），或 `equivalence {accepted_sha, merge_sha, diff_empty: true, command}`（`command` 是返回为空的 `git diff <accepted_sha> <merge_sha>`） |
 | tracker 关闭 | tracker 读回为 `closed`，并带读回时间 |
 | 启动 | `turnStart: observed`，或该 attempt 的产物 / 状态投影引用 |
 | 测试 | 命令、结果与日志引用。`grep` 只证明字符串存在，绝不等于跑过测试 |
 | review | 两个轴（`standards`、`spec`）与 review 引用；豁免要在 spec **和** Answer 里都写明理由 |
 
 `worker_done` 只证明结算。它既不是启动证据，也绝不产生验收：凭它把某级置为 `true` 会被拒绝。
+
+**`levels.merged` 有两种证据形态，每条记录只用其中一种。**`ancestry` 是 merge commit 形态：
+`{ancestor, descendant, result: true}`，两个 SHA 必须分别等于记录的 `accepted_sha` 与该级别的
+`merge_sha`。`equivalence` 是 squash / rebase 形态：`{accepted_sha, merge_sha, diff_empty:
+true, command}`，两个 SHA 重复同样两处取值，`command` 是返回为空的 `git diff`——`grep`、
+`git log` 或 `git rev-parse` 只是点名两个 SHA、从不比较内容，一律拒绝。`validate` 对两种都缺
+和两种都写的记录都报错。`verify` 各按自己的权威核对：`ancestry` 对 git 的 `ancestry` 行，
+`equivalence` 对 git 的 `merges` 行（`{accepted_sha, merge_sha, diff_empty}`），记录自述的
+`diff_empty` 从不当作证明。没有 `merges` 行的 git 读取证明不了等价：那是不可读，不是“空”。
+收尾第 3 行同样认这两种形态；第 4 行（main 含该 merge）在两种形态下都仍是 merge SHA 到
+`main.head` 的 ancestry。
 
 **四级状态**：`implemented`、`integrated`、`merged`、`tracker_closed` 是四个独立的声明，按 PR
 分别记录。票级级别只有在**每个**关联 PR 记录都支持时才为真——一张票可以合理地跨多个 PR，任何一个
@@ -183,7 +197,7 @@ python3 "$CLOSEOUT" show --run-id "$RUN"
 | --- | --- | --- | --- | --- |
 | 1 | 每个 PR 的 accepted SHA | 台账 acceptance 记录 | **否** | 必须在验收时持久化；事后无法重建 |
 | 2 | PR 的 `MERGED`、base 与 merge SHA | PR host API | 是 | 读回并写 observation |
-| 3 | merge 覆盖 accepted head | `git merge-base --is-ancestor` | 是 | 失败 → divergent / 上报 |
+| 3 | merge 覆盖 accepted head | `git merge-base --is-ancestor` / git merges（等价证据） | 是 | 失败 → divergent / 上报 |
 | 4 | main 含该 merge | `git rev-parse` / ancestry | 是 | 记录 ancestry 结果 |
 | 5 | 本地 main 已同步 | `git status` / `rev-parse` / upstream，ff-only | 是 | 阻塞 → 暂停后续合并 |
 | 6 | 每张票已集成 | 集成分支 ancestry / PR `Closes` | 是 | 逐票记录结果 |

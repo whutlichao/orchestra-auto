@@ -16,7 +16,7 @@ Public interface (deep module):
 
 * ``validate(record) -> errors`` — pure schema and minimum-evidence validation.
 * ``verify(record, authority) -> errors`` — cross-check claimed levels against an
-  injected authority snapshot (PR host, tracker, git ancestry).
+  injected authority snapshot (PR host, tracker, git ancestry and git merges).
 * ``aggregate(ticket, records) -> ticket`` — pure four-level aggregation over ledger
   records: every linked PR must support a level, a later observation lowers a level
   without rewriting history, and conflicting records are ``divergent``.
@@ -55,8 +55,8 @@ TERMINALS = ("never_merge",)
 OBSERVATIONS = ("revert", "reopen")
 
 LEVEL_KEYS = (
-    "value", "evidence_ref", "at", "merge_sha", "pr_state", "ancestry", "read_back",
-    "start", "terminal", "decided_by", "reason",
+    "value", "evidence_ref", "at", "merge_sha", "pr_state", "ancestry", "equivalence",
+    "read_back", "start", "terminal", "decided_by", "reason",
 )
 CHECK_KEYS = ("name", "command", "result", "evidence_ref")
 REVIEW_KEYS = ("axis", "result", "evidence_ref", "waiver")
@@ -70,8 +70,17 @@ OBSERVATION_KEYS = (
     "ticket", "pr", "level", "observation", "reason", "evidence_ref", "observed_at",
 )
 
+#: The two documented shapes of ``levels.merged`` evidence, exactly one per record.
+ANCESTRY_KEYS = ("ancestor", "descendant", "result")
+EQUIVALENCE_KEYS = ("accepted_sha", "merge_sha", "diff_empty", "command")
+
 #: A bare ``grep`` proves a string exists in a file; it never proves a command ran.
 _GREP_COMMANDS = ("grep", "egrep", "fgrep", "rg", "ag", "ack")
+#: A merge is proven by content equivalence only through a diff between the two trees.
+#: ``git log``, ``git rev-parse`` and every read-only probe are refused the same way a
+#: grep is: they can name the two SHAs without ever comparing them.
+_DIFF_COMMANDS = ("diff",)
+_GIT_DIFF_SUBCOMMANDS = ("diff", "diff-tree", "diff-index")
 _SHA_TEXT = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 
 PENDING_DIRNAME = "acceptance-pending"
@@ -247,6 +256,67 @@ def _validate_start(level, errors):
         "status-projection evidence")
 
 
+def _is_diff_command(command):
+    """True when ``command`` is a diff rather than a read-only probe.
+
+    Only ``diff`` itself and git's own diff subcommands count. A ``git log``, a
+    ``git rev-parse`` or a ``grep`` can name both SHAs without comparing them, so it
+    proves nothing about equivalence — the same judgement ``_validate_check`` makes
+    about a grep never proving a test ran.
+    """
+    tokens = command.split()
+    if not tokens:
+        return False
+    if tokens[0] in _DIFF_COMMANDS:
+        return True
+    return tokens[0] == "git" and len(tokens) > 1 and tokens[1] in _GIT_DIFF_SUBCOMMANDS
+
+
+def _validate_ancestry(ancestry, record, level, errors):
+    path = "levels.merged.ancestry"
+    if not isinstance(ancestry, dict):
+        errors.append(path + " must record the git ancestry check")
+        return
+    _unknown_keys(ancestry, ANCESTRY_KEYS, path, errors)
+    if ancestry.get("ancestor") != record.get("accepted_sha"):
+        errors.append(path + ".ancestor must be the accepted_sha")
+    if ancestry.get("descendant") != level.get("merge_sha"):
+        errors.append(path + ".descendant must be the merge_sha")
+    if ancestry.get("result") is not True:
+        errors.append(
+            path + ".result must be true: git merge-base "
+            "--is-ancestor <accepted_sha> <merge_sha>")
+
+
+def _validate_equivalence(equivalence, record, level, errors):
+    """A squash or rebase merge: the merge SHA's tree equals the accepted head's.
+
+    The record states it and names the diff that showed it; ``verify`` re-checks it
+    against git, so a stated ``diff_empty`` is never trusted on its own.
+    """
+    path = "levels.merged.equivalence"
+    if not isinstance(equivalence, dict):
+        errors.append(path + " must record the content-equivalence check")
+        return
+    _unknown_keys(equivalence, EQUIVALENCE_KEYS, path, errors)
+    if equivalence.get("accepted_sha") != record.get("accepted_sha"):
+        errors.append(path + ".accepted_sha must be the accepted_sha")
+    if equivalence.get("merge_sha") != level.get("merge_sha"):
+        errors.append(path + ".merge_sha must be the merge_sha")
+    if equivalence.get("diff_empty") is not True:
+        errors.append(
+            path + ".diff_empty must be true: the accepted head and the merge are not "
+            "content-equivalent (git diff <accepted_sha> <merge_sha> was not empty)")
+    command = equivalence.get("command")
+    if not is_nonempty(command):
+        errors.append(
+            path + ".command must name the diff that compared the two trees")
+    elif not _is_diff_command(command):
+        errors.append(
+            path + ".command must be a diff: only git diff / git diff-tree / diff "
+            "compares the two trees, and a read-only probe proves no equivalence")
+
+
 def _validate_level(name, level, record, errors):
     path = "levels." + name
     if not isinstance(level, dict):
@@ -290,20 +360,19 @@ def _validate_level(name, level, record, errors):
         if level.get("pr_state") != "MERGED":
             errors.append("levels.merged.pr_state must be MERGED as reported by the PR host")
         ancestry = level.get("ancestry")
-        if not isinstance(ancestry, dict):
-            errors.append("levels.merged.ancestry must record the git ancestry check")
+        equivalence = level.get("equivalence")
+        if ancestry is None and equivalence is None:
+            errors.append(
+                "levels.merged needs either ancestry {ancestor, descendant, result} "
+                "or equivalence {accepted_sha, merge_sha, diff_empty, command}")
+        elif ancestry is not None and equivalence is not None:
+            errors.append(
+                "levels.merged records both ancestry and equivalence; a merge is proven "
+                "by exactly one of them")
+        elif ancestry is not None:
+            _validate_ancestry(ancestry, record, level, errors)
         else:
-            if ancestry.get("ancestor") != record.get("accepted_sha"):
-                errors.append(
-                    "levels.merged.ancestry.ancestor must be the accepted_sha")
-            expected = level.get("merge_sha")
-            if ancestry.get("descendant") != expected:
-                errors.append(
-                    "levels.merged.ancestry.descendant must be the merge_sha")
-            if ancestry.get("result") is not True:
-                errors.append(
-                    "levels.merged.ancestry.result must be true: git merge-base "
-                    "--is-ancestor <accepted_sha> <merge_sha>")
+            _validate_equivalence(equivalence, record, level, errors)
     elif name == "tracker_closed":
         read_back = level.get("read_back")
         if not isinstance(read_back, dict):
@@ -323,7 +392,8 @@ def validate(record):
 
     Rejects a ``true`` level without an ``evidence_ref`` and every missing piece of the
     minimum evidence the spec names: a merge needs the PR host's ``MERGED`` state, the
-    merge SHA and ancestry; a tracker close needs a read-back; a start needs
+    merge SHA and exactly one of the ``ancestry`` / ``equivalence`` shapes; a tracker
+    close needs a read-back; a start needs
     ``turnStart: observed`` or the attempt's artifact / projection evidence; a test check
     needs command, result and a log (a grep is not a test run); a review needs both axes
     and a reference, or a waiver whose reason is in both the spec and the Answer.
@@ -416,6 +486,8 @@ def _section(snapshot, name, rows_key):
 
     A missing, unreadable or failed section is ``unknown`` with its rows withheld: an
     empty success is never invented, because "nothing there" is not "could not read".
+    An absent ``rows_key`` on a section that reads ``ok`` is unreadable, not empty: a
+    snapshot that predates a new evidence shape cannot prove it either way.
     """
     section = snapshot.get(name) if isinstance(snapshot, dict) else None
     if not isinstance(section, dict):
@@ -425,7 +497,7 @@ def _section(snapshot, name, rows_key):
         return "unknown", name + ": " + (reason if is_nonempty(reason) else "unreadable"), []
     rows = section.get(rows_key)
     if not isinstance(rows, list):
-        return "unknown", name + ": the section carries no rows", []
+        return "unknown", name + ": the section carries no " + rows_key + " rows", []
     return "ok", "", [row for row in rows if isinstance(row, dict)]
 
 
@@ -442,8 +514,10 @@ def verify(record, authority):
 
     Only claimed levels are checked, so a record whose levels are still false needs no
     readable authority. The PR host must report ``MERGED`` with the recorded merge SHA,
-    git ancestry must confirm the merge, and a tracker close needs a ``closed``
-    read-back. ``authority`` is an injected snapshot; this function performs no I/O.
+    and git must confirm the merge: an ``ancestry`` record is proven by the ``ancestry``
+    rows, an ``equivalence`` record by the ``merges`` rows, and neither shape accepts the
+    other's proof. A tracker close needs a ``closed`` read-back. ``authority`` is an
+    injected snapshot; this function performs no I/O.
     """
     errors = []
     levels = record.get("levels") if isinstance(record, dict) else None
@@ -471,11 +545,28 @@ def verify(record, authority):
                     errors.append(
                         "PR host merge_sha does not match the recorded merge_sha")
         git_state, git_reason, ancestry_rows = _section(authority, "git", "ancestry")
-        if git_state != "ok":
+        accepted = record.get("accepted_sha")
+        merge_sha = merged.get("merge_sha")
+        if isinstance(merged.get("equivalence"), dict):
+            # A squash or rebase merge: only git's own ``merges`` rows can prove it, and
+            # the record's own ``diff_empty`` is never trusted.
+            merges_state, merges_reason, merge_rows = _section(authority, "git", "merges")
+            if merges_state != "ok":
+                errors.append(
+                    "git equivalence proof is unreadable: no merges row can prove the "
+                    "accepted head and the merge are content equivalent: "
+                    + merges_reason)
+            elif not any(
+                    item.get("accepted_sha") == accepted
+                    and item.get("merge_sha") == merge_sha
+                    and item.get("diff_empty") is True
+                    for item in merge_rows):
+                errors.append(
+                    "git does not prove the recorded equivalence: no merges row has "
+                    "diff_empty true for the accepted_sha and the merge_sha")
+        elif git_state != "ok":
             errors.append("git ancestry is unreadable: " + git_reason)
         else:
-            accepted = record.get("accepted_sha")
-            merge_sha = merged.get("merge_sha")
             covered = any(
                 item.get("ancestor") == accepted
                 and item.get("descendant") == merge_sha
@@ -755,6 +846,42 @@ def _emit(payload):
     print(json.dumps(payload, ensure_ascii=False))
 
 
+def _merges_rows(snapshot):
+    """The optional git ``merges`` rows, validated, or ``None`` when absent.
+
+    ``ledger.validated_authority`` projects the git section down to ``ancestry``; the
+    equivalence proof rides in ``merges`` and is carried through here so the CLI accepts
+    the same snapshot shape ``verify`` documents. A malformed row is an unreadable
+    authority file, not an empty proof.
+    """
+    section = snapshot.get("git") if isinstance(snapshot, dict) else None
+    rows = section.get("merges") if isinstance(section, dict) else None
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("git.merges must be a list of objects")
+    validated = []
+    for row in rows:
+        for key in ("accepted_sha", "merge_sha"):
+            if not is_sha(row.get(key)):
+                raise ValueError("git.merges rows need " + key)
+        if not isinstance(row.get("diff_empty"), bool):
+            raise ValueError("git.merges.diff_empty must be a boolean")
+        validated.append({"accepted_sha": row["accepted_sha"],
+                          "merge_sha": row["merge_sha"],
+                          "diff_empty": row["diff_empty"]})
+    return validated
+
+
+def _validated_authority(snapshot):
+    """Normalize an authority file and keep the optional git ``merges`` rows."""
+    authority = LEDGER.validated_authority(snapshot)
+    merges = _merges_rows(snapshot)
+    if merges is not None:
+        authority["git"]["merges"] = merges
+    return authority
+
+
 def command_record(args, home):
     try:
         payload = json.loads(args.record)
@@ -770,7 +897,7 @@ def command_record(args, home):
     errors = validate(payload)
     if not errors and args.authority:
         try:
-            authority = LEDGER.validated_authority(
+            authority = _validated_authority(
                 json.loads(Path(args.authority).read_text()))
         except (OSError, ValueError) as error:
             errors = ["cannot read the authority file: " + str(error)]
