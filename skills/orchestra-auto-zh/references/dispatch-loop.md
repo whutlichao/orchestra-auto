@@ -66,6 +66,13 @@ orca repo search-refs --repo <selector> --query <默认分支> --json
 PR，不要堆在 fork 的 main 上。在这个约定下 §6.5.1 的 `--ff-only` 同步恒成立。已经积累了私有
 提交的 fork 要先把它们处理掉——合入 upstream 或丢弃——不要靠 base 选择再掩盖一轮。
 
+**协调者工作区落后会被拒绝派发。** 派发前先核对 coordinator worktree 相对目标 base 的落后量——
+fork 下它跟踪 `origin/main`，worker 却从 `upstream/main` 切，所以先 `git fetch upstream`。
+超过阈值时 Orca 拒绝派发，Task 留在 `ready` 且没有 Dispatch，表面像「worker 没起来」：
+按 §9 取证（`worker-list --run` 的 `stage`/`outcome`、收件器没有投递），拉取/rebase 或重建
+worktree，**不要重派**。`allow-stale-base: true` 只用于落后是预期状态，并在 spec 写明理由
+（Orca 1.4.245 测得阈值 20 个提交，属版本范围观察；以当前 CLI help 与 guide 为准）。
+
 ### 4.3.0 前置 skill：按阶段与票型选，不按通道
 
 spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 skill。没有固定的「通道→skill」映射：
