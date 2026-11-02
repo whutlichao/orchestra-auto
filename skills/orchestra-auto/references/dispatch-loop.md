@@ -84,6 +84,13 @@ convention §6.5.1's `--ff-only` sync holds unconditionally. A fork that already
 private commits clears them first — merge them upstream or drop them — instead of picking a base
 ref that hides them for another round.
 
+**A stale coordinator worktree is refused before dispatch.** Check its lag against the target base
+first — in a fork `git fetch upstream`: the coordinator tracks `origin/main`, the worker cuts from
+`upstream/main`. Past a threshold Orca refuses and the Task stays `ready` with no Dispatch,
+looking like a worker that never started. Gather §9 evidence (`worker-list --run` `stage`/`outcome`,
+empty receiver), pull/rebase or recreate it, never re-dispatch. `allow-stale-base: true` only
+for expected drift, reasoned in the spec (Orca 1.4.245: 20 commits; version-scoped — CLI/guide).
+
 ## 4.3.0 Pre-skill: pick it by stage and ticket type, not by channel
 
 The `Pre-skill:` line in the spec names the skill of the stage you are actually running. There is no
