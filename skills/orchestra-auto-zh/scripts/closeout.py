@@ -372,8 +372,109 @@ def _level(payload, name):
     return level if isinstance(level, dict) else {}
 
 
-def _merge_sha(payload):
-    return _level(payload, "merged").get("merge_sha")
+def _recorded_merge_claim(payload):
+    """The record's own merge claim, kept as recorded evidence only (SP-05).
+
+    Only the accepted head is non-repeatable (row 1); the merge is an authority fact
+    read back later. A claim is still worth keeping: when it contradicts the host it
+    means the record no longer describes the merge that happened.
+    """
+    level = _level(payload, "merged")
+    if level.get("value") is not True:
+        return None
+    if isinstance(level.get("equivalence"), dict):
+        shape = "equivalence"
+    elif isinstance(level.get("ancestry"), dict):
+        shape = "ancestry"
+    else:
+        shape = None
+    return {"merge_sha": level.get("merge_sha"), "shape": shape}
+
+
+def _merge_facts(facts, claims):
+    """Resolve each PR's merge facts from its own PR host row (SP-05).
+
+    Row 2's authority is the PR host, so the state, merge SHA and base come from its
+    row: a closeout re-run after a crash repairs the merge from authority instead of
+    demanding that the pre-merge acceptance record have predicted its SHA. The record's
+    own claim rides along as ``recorded`` evidence and is ``divergent`` only when the
+    host affirmatively reports a different merge SHA or base; a missing or not-yet-
+    merged host row is unproven, never a conflict.
+
+    Rows 3 and 4 read ``merge_sha`` from here too. When the host row is absent or
+    unreadable, the recorded claim is the only merge evidence left and git must still
+    prove it; row 2 already blocks on the missing host row, so no proof is relaxed.
+    """
+    section = _section(facts, "pr_host")
+    rows = _rows(section, "pull_requests") if section.get("state") == "ok" else []
+    resolved = []
+    for claim in claims:
+        payload = claim["payload"]
+        number = _pr_number(payload)
+        host = next((candidate for candidate in rows
+                     if ACCEPTANCE.as_int(candidate.get("pr")) == number), None)
+        state = str(host.get("state", "")).upper() if host is not None else ""
+        host_merge_sha = host.get("merge_sha") if host is not None else None
+        if not ACCEPTANCE.is_sha(host_merge_sha):
+            host_merge_sha = None
+        base = host.get("base") if host is not None else None
+        if not ACCEPTANCE.is_nonempty(base):
+            base = None
+        recorded = _recorded_merge_claim(payload)
+        pr = payload.get("pr") if isinstance(payload.get("pr"), dict) else {}
+        recorded_base = pr.get("base") if ACCEPTANCE.is_nonempty(pr.get("base")) else None
+        recorded_sha = None
+        if recorded is not None:
+            recorded_sha = recorded.get("merge_sha")
+            if not ACCEPTANCE.is_sha(recorded_sha):
+                recorded_sha = None
+        divergence = []
+        if host is not None and state == "MERGED":
+            for field, recorded_value, authority_value in (
+                    ("merge_sha", recorded_sha, host_merge_sha),
+                    ("base", recorded_base, base)):
+                if recorded_value is not None and authority_value is not None \
+                        and recorded_value != authority_value:
+                    divergence.append({
+                        "field": field,
+                        "recorded": recorded_value,
+                        "authority": authority_value,
+                    })
+        merge_sha = host_merge_sha if state == "MERGED" else None
+        merge_source = "pr_host" if merge_sha is not None else ""
+        if merge_sha is None and recorded_sha is not None:
+            merge_sha = recorded_sha
+            merge_source = "recorded"
+        resolved.append({
+            "record_id": claim.get("record_id", ""),
+            "pr": number,
+            "accepted_sha": payload.get("accepted_sha"),
+            "host": host,
+            "state": state,
+            "host_merge_sha": host_merge_sha,
+            "base": base,
+            "recorded": recorded,
+            "merge_sha": merge_sha,
+            "merge_source": merge_source,
+            "divergence": divergence,
+            "divergent": bool(divergence),
+        })
+    return resolved
+
+
+def _merge_detail(entry):
+    """One resolved merge fact as rows 2-4 report it."""
+    recorded = entry["recorded"] or {}
+    return {
+        "pr": entry["pr"],
+        "accepted_sha": entry["accepted_sha"],
+        "state": entry["state"],
+        "merge_sha": entry["merge_sha"],
+        "merge_source": entry["merge_source"],
+        "base": entry["base"],
+        "recorded_merge_sha": recorded.get("merge_sha"),
+        "divergence": entry["divergence"],
+    }
 
 
 def _pr_number(payload):
@@ -404,7 +505,7 @@ def _divergence_detail(claim):
     }
 
 
-def _row_one(run_id, state, reason, accepted, divergent):
+def _row_one(run_id, state, reason, accepted, divergent, merge_divergence=()):
     if state != "ok":
         return _row(1, "unknown", {"reason": reason})
     problems, entries, evidence = [], [], []
@@ -435,6 +536,12 @@ def _row_one(run_id, state, reason, accepted, divergent):
             "PR " + str(claim["pr"]) + ": the acceptance records at attempt "
             + str(claim["attempt"]) + " disagree about the accepted SHA or the level "
             "values; the divergent claim is not a single claim in force")
+    for entry in merge_divergence:
+        fields = ", ".join(item["field"] for item in entry["divergence"])
+        problems.append(
+            "PR " + str(entry["pr"]) + ": the recorded merge claim is divergent from "
+            "the PR host (" + fields + "); the claim in force does not describe the "
+            "merge that happened")
     if not accepted:
         problems.append(
             "no acceptance record is persisted; the accepted SHA must be captured at "
@@ -444,52 +551,62 @@ def _row_one(run_id, state, reason, accepted, divergent):
         "entries": entries,
         "problems": problems,
         "divergent": [_divergence_detail(claim) for claim in divergent],
+        "merge_divergent": [
+            {"pr": entry["pr"], "accepted_sha": entry["accepted_sha"],
+             "divergence": entry["divergence"]}
+            for entry in merge_divergence],
     }
     return _row(1, status, detail, evidence)
 
 
-def _row_two(facts, accepted):
+def _row_two(facts, merges):
+    """The PR host's MERGED state, base and merge SHA, read from each PR's row.
+
+    The merge SHA is the host's, not the record's forecast (SP-05): the record only
+    has to persist the accepted head. A recorded claim that contradicts the host is
+    reported as a divergence, never averaged.
+    """
     section = _section(facts, "pr_host")
     if section.get("state") != "ok":
         return _row(2, "unknown", {"reason": section.get("reason", "")})
-    rows = _rows(section, "pull_requests")
     problems, evidence = [], []
-    if not accepted:
+    if not merges:
         problems.append("no accepted PR to reconcile against the PR host")
-    for item in accepted:
-        payload = item["payload"]
-        number = _pr_number(payload)
-        accepted_sha = payload.get("accepted_sha")
-        merge_sha = _merge_sha(payload)
-        if not ACCEPTANCE.is_sha(merge_sha):
-            problems.append(
-                "PR " + str(number) + ": levels.merged.merge_sha must be the merge "
-                "commit SHA")
+    for entry in merges:
+        number = entry["pr"]
+        accepted_sha = entry["accepted_sha"]
         if not ACCEPTANCE.is_sha(accepted_sha):
             problems.append("PR " + str(number) + ": the accepted SHA is missing")
-        row = next((candidate for candidate in rows
-                    if ACCEPTANCE.as_int(candidate.get("pr")) == number), None)
-        if row is None:
+        if entry["host"] is None:
             problems.append("PR host has no record for PR " + str(number))
             continue
-        state = str(row.get("state", "")).upper()
+        state = entry["state"]
         evidence.append(_evidence(
             "pr_host", "pr_host:pr:" + str(number), state or "unknown"))
         if state != "MERGED":
             problems.append(
-                "PR host reports " + repr(row.get("state")) + " for PR " + str(number)
+                "PR host reports " + repr(state or None) + " for PR " + str(number)
                 + "; a closeout needs MERGED")
-        if row.get("merge_sha") != merge_sha:
+        if not ACCEPTANCE.is_sha(entry["host_merge_sha"]):
             problems.append(
-                "PR " + str(number) + ": PR host merge_sha does not match the accepted "
-                "merge_sha")
-        base = payload.get("pr", {}).get("base") if isinstance(payload.get("pr"), dict) else None
-        if row.get("base") != base:
+                "PR " + str(number) + ": the PR host reports no merge SHA, so the "
+                "merge is not proven")
+        if not ACCEPTANCE.is_nonempty(entry["base"]):
             problems.append(
-                "PR " + str(number) + ": PR host base " + repr(row.get("base"))
-                + " is not the accepted base " + repr(base))
+                "PR " + str(number) + ": the PR host reports no base, so the merge "
+                "target is not proven")
+        for divergence in entry["divergence"]:
+            problems.append(
+                "PR " + str(number) + ": the recorded " + divergence["field"]
+                + " " + repr(divergence["recorded"]) + " contradicts the PR host "
+                + repr(divergence["authority"]) + "; divergent")
     status = "blocked" if problems else "ok"
-    return _row(2, status, {"problems": problems}, evidence)
+    detail = {
+        "problems": problems,
+        "merges": [_merge_detail(entry) for entry in merges],
+        "divergence": [item for entry in merges for item in entry["divergence"]],
+    }
+    return _row(2, status, detail, evidence)
 
 
 def _ancestry_covers(ancestry, ancestor, descendant):
@@ -508,31 +625,37 @@ def _equivalence_covers(merges, accepted_sha, merge_sha):
         for row in merges)
 
 
-def _row_three(facts, accepted):
+def _row_three(facts, merges):
     """The merge covers the accepted head: by ancestry, or by content equivalence.
 
     A merge commit makes the accepted head an ancestor of the merge SHA. A squash or
     rebase merge rewrites it, so row 3 accepts the record's ``equivalence`` shape and
-    demands git's own ``merges`` row, never the record's word for it.
+    demands git's own ``merges`` row, never the record's word for it. The merge SHA is
+    the host's when it has one, so a pre-merge acceptance recovers here (SP-05).
     """
     section = _section(facts, "git")
     if section.get("state") != "ok":
         return _row(3, "unknown", {"reason": section.get("reason", "")})
     ancestry = _rows(section, "ancestry")
-    merges = _rows(section, "merges")
+    record_merges = _rows(section, "merges")
     problems, evidence = [], []
-    for item in accepted:
-        payload = item["payload"]
-        accepted_sha = payload.get("accepted_sha")
-        merge_sha = _merge_sha(payload)
+    for entry in merges:
+        accepted_sha = entry["accepted_sha"]
+        merge_sha = entry["merge_sha"]
+        if entry["divergent"]:
+            problems.append(
+                "PR " + str(entry["pr"]) + ": the merge facts are divergent, so no "
+                "single merge can be shown to cover the accepted head")
+            continue
         if not ACCEPTANCE.is_sha(accepted_sha) or not ACCEPTANCE.is_sha(merge_sha):
             problems.append(
-                "PR " + str(_pr_number(payload)) + ": the accepted SHA and merge SHA "
+                "PR " + str(entry["pr"]) + ": the accepted SHA and merge SHA "
                 "are needed before the merge can be shown to cover the accepted head")
             continue
-        if isinstance(_level(payload, "merged").get("equivalence"), dict):
+        recorded = entry["recorded"] or {}
+        if recorded.get("shape") == "equivalence":
             ref = "git:merges:" + accepted_sha + ".." + merge_sha
-            covered = _equivalence_covers(merges, accepted_sha, merge_sha)
+            covered = _equivalence_covers(record_merges, accepted_sha, merge_sha)
             evidence.append(_evidence("git", ref, "equivalent" if covered else "unknown"))
             if not covered:
                 problems.append(
@@ -548,13 +671,18 @@ def _row_three(facts, accepted):
             problems.append(
                 "git ancestry does not prove the accepted head " + accepted_sha[:12]
                 + " is an ancestor of the merge " + merge_sha[:12])
-    if not accepted:
+    if not merges:
         problems.append("no accepted PR to check the merge coverage for")
     status = "blocked" if problems else "ok"
-    return _row(3, status, {"problems": problems, "escalate": bool(problems)}, evidence)
+    detail = {
+        "problems": problems,
+        "escalate": bool(problems),
+        "merge_divergent": any(entry["divergent"] for entry in merges),
+    }
+    return _row(3, status, detail, evidence)
 
 
-def _row_four(facts, accepted):
+def _row_four(facts, merges):
     section = _section(facts, "git")
     if section.get("state") != "ok":
         return _row(4, "unknown", {"reason": section.get("reason", "")})
@@ -564,12 +692,16 @@ def _row_four(facts, accepted):
     problems, evidence = [], []
     if not ACCEPTANCE.is_sha(head):
         problems.append("git.main.head is missing, so main cannot be checked")
-    for item in accepted:
-        payload = item["payload"]
-        merge_sha = _merge_sha(payload)
+    for entry in merges:
+        merge_sha = entry["merge_sha"]
+        if entry["divergent"]:
+            problems.append(
+                "PR " + str(entry["pr"]) + ": the merge facts are divergent, so main "
+                "cannot be shown to contain the merge")
+            continue
         if not ACCEPTANCE.is_sha(merge_sha) or not ACCEPTANCE.is_sha(head):
             problems.append(
-                "PR " + str(_pr_number(payload)) + ": the merge SHA and main head are "
+                "PR " + str(entry["pr"]) + ": the merge SHA and main head are "
                 "needed before containment can be checked")
             continue
         ref = "git:ancestry:" + merge_sha + ".." + head
@@ -579,10 +711,15 @@ def _row_four(facts, accepted):
             problems.append(
                 "main does not contain the merge " + merge_sha[:12] + " up to "
                 + head[:12])
-    if not accepted:
+    if not merges:
         problems.append("no accepted PR to check containment for")
     status = "blocked" if problems else "ok"
-    return _row(4, status, {"problems": problems, "escalate": bool(problems)}, evidence)
+    detail = {
+        "problems": problems,
+        "escalate": bool(problems),
+        "merge_divergent": any(entry["divergent"] for entry in merges),
+    }
+    return _row(4, status, detail, evidence)
 
 
 def _row_five(facts):
@@ -928,10 +1065,12 @@ def plan(facts):
 
     state, reason, accepted = _accepted_records(normalized)
     claims, divergent = _current_claims(accepted)
-    rows = [_row_one(run_id, state, reason, accepted, divergent)]
-    rows.append(_row_two(normalized, claims))
-    rows.append(_row_three(normalized, claims))
-    rows.append(_row_four(normalized, claims))
+    merges = _merge_facts(normalized, claims)
+    merge_divergent = [entry for entry in merges if entry["divergent"]]
+    rows = [_row_one(run_id, state, reason, accepted, divergent, merge_divergent)]
+    rows.append(_row_two(normalized, merges))
+    rows.append(_row_three(normalized, merges))
+    rows.append(_row_four(normalized, merges))
     rows.append(_row_five(normalized))
     rows.append(_row_six(normalized, claims))
     rows.append(_row_seven(normalized, claims))
@@ -959,9 +1098,10 @@ def plan(facts):
         "rows": rows,
         "ready": not blocking,
         "blocking": blocking,
-        "divergent": bool(divergent),
-        "classification": _classification(rows, pending_open, applied,
-                                          bool(divergent)),
+        "divergent": bool(divergent) or bool(merge_divergent),
+        "classification": _classification(
+            rows, pending_open, applied,
+            bool(divergent) or bool(merge_divergent)),
         # Row 5 pauses later merges on a failed *or* unreadable local-main proof:
         # §6.5.1 preserves the scene when a sync condition cannot be shown to hold.
         "merge_blocked": rows[4]["status"] in ("blocked", "unknown"),
