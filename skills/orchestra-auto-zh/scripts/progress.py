@@ -34,6 +34,13 @@ READABLE_VERSIONS = {1, 2}
 ASSET = Path(__file__).with_name('progress.html')
 BANNER = 'Read-only progress: '
 LOCK_TIMEOUT_SECONDS = 2.0
+#: The per-Run snapshot lock and the registry descriptor lock. See ``locked``
+#: for the order in which a path that needs both must take them.
+PROGRESS_LOCK_NAME = '.progress.lock'
+REGISTRY_LOCK_NAME = '.registry.lock'
+#: A cross-filesystem copy is retried this many times when a writer commits
+#: between verification and deletion, so the final copy keeps that record.
+COPY_VERIFICATION_ATTEMPTS = 3
 
 #: The singleton registry protocol. ``protocol_version`` starts at 1; a service that
 #: does not answer ``/health`` with at least this version is legacy or incompatible.
@@ -248,10 +255,19 @@ def guard_target(directory, target):
         raise ValueError('state and target repository must be separate directory trees')
 
 
+#: Lock order, never reversed: a Run's state lock (``state/PROGRESS_LOCK_NAME``)
+#: is taken before the registry lock (``home/REGISTRY_LOCK_NAME``). The recorder
+#: takes only the Run lock, ``register`` only the registry lock, and ``prune``
+#: takes the Run lock for its whole archive window and the registry lock around
+#: each descriptor check. No path waits for a Run lock while holding the
+#: registry lock.
 @contextmanager
-def locked(directory, timeout=LOCK_TIMEOUT_SECONDS):
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(directory / '.progress.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+def locked(directory, timeout=LOCK_TIMEOUT_SECONDS, create=True,
+           name=PROGRESS_LOCK_NAME):
+    directory = Path(directory)
+    if create:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'a') as lock:
         deadline = time.monotonic() + timeout
         while True:
@@ -516,17 +532,20 @@ def register(run, home=None):
     ensure_private_directory(runs)
     descriptor = validated_descriptor(run)
     path = runs / (descriptor['run_id'] + '.json')
-    registered_at = now()
-    if path.exists():
-        try:
-            existing = validated_descriptor(read_json_object(path, 'descriptor_invalid'))
-            registered_at = existing.get('registered_at') or registered_at
-        except (Degraded, ValueError):
-            pass
-    descriptor['registered_at'] = registered_at
-    stored = {key: descriptor[key] for key in
-              ('run_id', 'state_path', 'registered_at', 'label')}
-    atomic_write_json(path, stored, runs)
+    # The registry lock serializes descriptor updates with prune's identity
+    # check and unlink, so a concurrent register is never silently deleted.
+    with locked(home, name=REGISTRY_LOCK_NAME):
+        registered_at = now()
+        if path.exists():
+            try:
+                existing = validated_descriptor(read_json_object(path, 'descriptor_invalid'))
+                registered_at = existing.get('registered_at') or registered_at
+            except (Degraded, ValueError):
+                pass
+        descriptor['registered_at'] = registered_at
+        stored = {key: descriptor[key] for key in
+                  ('run_id', 'state_path', 'registered_at', 'label')}
+        atomic_write_json(path, stored, runs)
     return stored
 
 
@@ -607,7 +626,15 @@ def _fsync_tree(root):
 
 
 def _move_directory(source, destination):
-    """Rename a directory, or copy + verify + fsync + delete across filesystems."""
+    """Rename a directory, or copy + verify + fsync + delete across filesystems.
+
+    The copy is verified before it is installed and again immediately before the
+    source is deleted. A writer that committed after the first verification is
+    therefore copied again, not deleted with the source. ``_archive_run`` holds
+    the Run write lock across this window; the second verification is defence
+    in depth for a writer that does not honour that lock, never a substitute
+    for it.
+    """
     try:
         os.rename(source, destination)
         return
@@ -616,12 +643,23 @@ def _move_directory(source, destination):
             raise
     staging = destination.parent / ('.state-copy-' + uuid.uuid4().hex)
     try:
-        shutil.copytree(source, staging, symlinks=True)
-        if _tree_manifest(source) != _tree_manifest(staging):
-            raise OSError('state copy verification failed')
-        _fsync_tree(staging)
-        os.rename(staging, destination)
-        shutil.rmtree(source)
+        for _attempt in range(COPY_VERIFICATION_ATTEMPTS):
+            shutil.copytree(source, staging, symlinks=True)
+            # Hash the copy first and the live source last: a write that lands
+            # while either manifest is being built is then seen by the source
+            # snapshot instead of slipping past it.
+            if _tree_manifest(staging) != _tree_manifest(source):
+                _remove_path(staging)
+                continue
+            _fsync_tree(staging)
+            os.rename(staging, destination)
+            if _tree_manifest(destination) == _tree_manifest(source):
+                shutil.rmtree(source)
+                return
+            # A record committed after the copy was verified: install a copy
+            # that includes it instead of deleting the only remaining source.
+            _remove_path(destination)
+        raise OSError('state copy verification failed')
     except Exception:
         if staging.is_symlink():
             staging.unlink()
@@ -637,13 +675,35 @@ def _remove_path(path):
         shutil.rmtree(path)
 
 
+class _DescriptorReplaced(Exception):
+    """The registry descriptor changed after prune selected this Run."""
+
+
+def _descriptor_matches(descriptor_path, raw_descriptor):
+    try:
+        if descriptor_path.is_symlink() or not descriptor_path.is_file():
+            return False
+        return descriptor_path.read_bytes() == raw_descriptor
+    except OSError:
+        return False
+
+
 def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
     """Archive one ended Run reversibly; ``ok``, ``conflict`` or ``failed``.
 
-    The descriptor stays in ``runs/`` until the state is inside ``archive/<run_id>/``
-    and the original descriptor bytes are durable there too. Any failure rolls the
+    Called with the Run write lock held. The descriptor stays in ``runs/`` until
+    the state is inside ``archive/<run_id>/`` and the original descriptor bytes
+    are durable there too. Its identity is checked under the registry lock
+    before the move and again immediately before the unlink, so a descriptor
+    replaced by a concurrent ``register`` is preserved. Any failure rolls the
     move back so the registry descriptor and the original state both survive.
     """
+    try:
+        with locked(home, name=REGISTRY_LOCK_NAME):
+            if not _descriptor_matches(descriptor_path, raw_descriptor):
+                return 'conflict'
+    except (OSError, Degraded):
+        return 'failed'
     source = Path(descriptor['state_path'])
     archive_root = home / REGISTRY_ARCHIVE_DIR
     archive_run = archive_root / descriptor['run_id']
@@ -671,9 +731,12 @@ def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
         _fsync_directory(archive_run)
         _fsync_directory(archive_root)
         atomic_write_bytes(archive_run / 'descriptor.json', raw_descriptor, archive_run)
-        descriptor_path.unlink()
-        _fsync_directory(descriptor_path.parent)
-    except Exception:
+        with locked(home, name=REGISTRY_LOCK_NAME):
+            if not _descriptor_matches(descriptor_path, raw_descriptor):
+                raise _DescriptorReplaced()
+            descriptor_path.unlink()
+            _fsync_directory(descriptor_path.parent)
+    except Exception as error:
         try:
             # A cross-filesystem move installs the verified copy at ``destination``
             # before deleting the source. If that deletion fails halfway, the
@@ -691,8 +754,54 @@ def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
                                    descriptor_path.parent)
             except Exception:
                 pass
-        return 'failed'
+        return 'conflict' if isinstance(error, _DescriptorReplaced) else 'failed'
     return 'ok'
+
+
+def _recheck_and_archive(home, descriptor_path, descriptor, raw_descriptor,
+                         cutoff, retained):
+    """Decide again from live bytes while the caller holds the Run write lock."""
+    run_id = descriptor['run_id']
+    if not _descriptor_matches(descriptor_path, raw_descriptor):
+        return 'skipped', 'descriptor_changed'
+    try:
+        run = read_state(Path(descriptor['state_path']))['run']
+    except (OSError, ValueError, KeyError, TypeError, Degraded):
+        return 'skipped', 'state_unreadable'
+    status = run.get('status')
+    if not isinstance(status, str) or status not in RUN_STATES:
+        return 'skipped', 'state_invalid_status'
+    if status not in TERMINAL_RUN_STATES or run_id in retained:
+        return 'kept', None
+    stamp = _prune_age_basis(descriptor, run)
+    if stamp is None:
+        return 'skipped', 'timestamp_missing'
+    if stamp >= cutoff:
+        return 'kept', None
+    try:
+        return _archive_run(home, descriptor, descriptor_path, raw_descriptor), None
+    except Exception:
+        return 'failed', None
+
+
+def _archive_selected(home, descriptor_path, descriptor, raw_descriptor,
+                      cutoff, retained):
+    """Re-read one selected Run under its write lock, then archive it.
+
+    Returns ``(outcome, reason)``: ``kept``, ``skipped`` (with a reason), or one
+    of ``_archive_run``'s outcomes. A Run that stopped being terminal, or whose
+    descriptor changed since selection, is never archived.
+    """
+    try:
+        with locked(Path(descriptor['state_path']), create=False):
+            return _recheck_and_archive(home, descriptor_path, descriptor,
+                                        raw_descriptor, cutoff, retained)
+    except Degraded as error:
+        if error.reason == 'lock_busy':
+            return 'skipped', 'state_busy'
+        return 'failed', None
+    except OSError:
+        return 'skipped', 'state_unreadable'
 
 
 def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
@@ -702,7 +811,9 @@ def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
     Only ``completed``, ``cancelled`` and ``failed`` Runs are candidates. The newest
     ``keep`` descriptors by ``registered_at`` are always retained, whatever their
     status. An unreadable descriptor or state, a nonterminal Run, a Run without a
-    usable timestamp and any archive conflict or failure are never removed. Returns
+    usable timestamp and any archive conflict or failure are never removed. A
+    selected Run is re-read under its write lock before the archive window opens,
+    so a Run revived by the recorder is kept and its descriptor survives. Returns
     ``(report, failed)``; ``report`` is the JSON contract and ``failed`` is true when
     an archive step failed, in which case the CLI exits 1. ``dry_run`` reads only.
     """
@@ -739,44 +850,64 @@ def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
                           or float('-inf'), item[1]['run_id']),
         reverse=True)
     retained = {descriptor['run_id'] for _path, descriptor, _raw in ordered[:keep]}
-    failed = False
+    decisions = []
     for path, descriptor, raw in descriptors:
         run_id = descriptor['run_id']
         try:
             run = read_state(Path(descriptor['state_path']))['run']
         except (OSError, ValueError, KeyError, TypeError, Degraded):
-            report['skipped'].append({'run_id': run_id, 'reason': 'state_unreadable'})
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'state_unreadable'})
             continue
         status = run.get('status')
         if not isinstance(status, str) or status not in RUN_STATES:
-            report['skipped'].append({'run_id': run_id,
-                                      'reason': 'state_invalid_status'})
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'state_invalid_status'})
             continue
         if status not in TERMINAL_RUN_STATES or run_id in retained:
-            report['kept'].append(run_id)
+            decisions.append({'action': 'kept', 'run_id': run_id})
             continue
         stamp = _prune_age_basis(descriptor, run)
         if stamp is None:
-            report['skipped'].append({'run_id': run_id, 'reason': 'timestamp_missing'})
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'timestamp_missing'})
             continue
         if stamp >= cutoff:
-            report['kept'].append(run_id)
+            decisions.append({'action': 'kept', 'run_id': run_id})
             continue
         if dry_run:
-            report['pruned'].append(run_id)
+            decisions.append({'action': 'pruned', 'run_id': run_id})
             continue
-        try:
-            outcome = _archive_run(home, descriptor, path, raw)
-        except Exception:
-            outcome = 'failed'
-        if outcome == 'ok':
+        decisions.append({'action': 'archive', 'run_id': run_id,
+                          'selection': (path, descriptor, raw)})
+    failed = False
+    for decision in decisions:
+        action = decision['action']
+        run_id = decision['run_id']
+        if action == 'skipped':
+            report['skipped'].append({'run_id': run_id, 'reason': decision['reason']})
+        elif action == 'kept':
+            report['kept'].append(run_id)
+        elif action == 'pruned':
             report['pruned'].append(run_id)
-            report['archived'].append(run_id)
-        elif outcome == 'conflict':
-            report['skipped'].append({'run_id': run_id, 'reason': 'archive_conflict'})
         else:
-            report['skipped'].append({'run_id': run_id, 'reason': 'archive_failed'})
-            failed = True
+            path, descriptor, raw = decision['selection']
+            outcome, reason = _archive_selected(home, path, descriptor, raw,
+                                                cutoff, retained)
+            if outcome == 'kept':
+                report['kept'].append(run_id)
+            elif outcome == 'skipped':
+                report['skipped'].append({'run_id': run_id, 'reason': reason})
+            elif outcome == 'ok':
+                report['pruned'].append(run_id)
+                report['archived'].append(run_id)
+            elif outcome == 'conflict':
+                report['skipped'].append(
+                    {'run_id': run_id, 'reason': 'archive_conflict'})
+            else:
+                report['skipped'].append(
+                    {'run_id': run_id, 'reason': 'archive_failed'})
+                failed = True
     return report, failed
 
 
