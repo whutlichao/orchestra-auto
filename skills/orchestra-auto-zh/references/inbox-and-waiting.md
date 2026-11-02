@@ -37,6 +37,9 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
   <run_id> /tmp/orch-<repo>-<run_id> <coordinator_handle>
 ```
 
+状态目录必须在任何 git 仓库之外，且不能以 `-` 开头；顺序错位时脚本以用法错误退出，不会
+就地建出目录。
+
 按 §3 的方式运行它——作为 harness 能呈现结果的阻塞调用——**不要**用 `nohup … &`。
 脚本把每批投递原子落盘，并在重命名后 fsync 父目录，自动 ack 纯心跳批次，在出现需要你处理的
 事件时**结束进程**：这个结束就是你的唤醒。`--status --json` 只查看目录，不消费队列，
@@ -76,7 +79,8 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
   无未 ack 头部、watch 开启；
 - `1`——致命错误：`phase=error`、`watch.log` 最后一条 `ERROR` 行，或 delivery 文件不可读
   （绝不当作空队列）；
-- `2`——状态目录不存在；
+- `2`——状态目录不存在，或路径参数被安装命令的参数守卫拒绝：它以 `-` 开头，或位于某个 git
+  仓库内；
 - `3`——降级或阻塞：FIFO 头部未 ack（`blocked`）、关闭了 worker watch（`watch_off`），或 loop
   在活跃 phase 上停止且既没写唤醒也没写错误（`loop_not_running`）。
 
@@ -86,7 +90,8 @@ ORCA_CLI_COMMAND=<已确认的可执行文件路径> <SKILL_DIR>/scripts/inbox-l
 
 旧式纯文本 `--status`（不带 `--json`）保留当前的 `0`（有 loop 持有目录）/ `1`（其他一切）退出码，
 保留一个 minor 版本，并在 stderr 打印弃用提示；它以文本形式展示同样的本地事实。新的 `2`/`3`
-只属于 `--json`。安装命令自己的 exit `2`——「另一个实例占用该目录 / 目录已绑定到别的 Run、
+只属于 `--json`，但上面的参数守卫除外——它在两种模式下都以 `2` 拒绝坏路径。安装命令自己的
+exit `2`——「另一个实例占用该目录 / 目录已绑定到别的 Run、
 terminal 或 CLI」——是另一份契约，不变；被拒绝的安装让 owner 的状态目录逐字节保持原样。
 
 唤醒后 `loop: DEAD` 是正常静止状态——loop 是刻意退出的——此时 `state.json` 带 `phase=wake`、
