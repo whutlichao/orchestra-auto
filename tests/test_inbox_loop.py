@@ -176,6 +176,28 @@ sys.stdout.write(json.dumps({"ok": True, "result": {"messages": []}}))
 sys.exit(0)
 '''
 
+# A wrapper that runs the real loop and dies at the exact boundary #72 is about: the wake
+# handoff is already durable, and stdout has not been written yet. Only ``emit`` is replaced,
+# so every other line of the product executes unchanged and the fault is the real one.
+CRASH_BEFORE_STDOUT_TEMPLATE = '''#!__PYTHON__
+import importlib.util, os, sys
+
+path = __MODULE__
+spec = importlib.util.spec_from_file_location("inbox_loop_crash", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def crash_before_stdout(payload, *args, **kwargs):
+    # The injected fault: the durable handoff happened, the wake line never does.
+    os._exit(97)
+
+
+module.emit = crash_before_stdout
+sys.argv = ["inbox-loop.py"] + sys.argv[1:]
+sys.exit(module.main())
+'''
+
 
 def load_inbox_module(skill_dir):
     """Import a skill's inbox-loop.py by path, without touching sys.path."""
@@ -442,6 +464,36 @@ def start_loop(tmp, responses, skill_dir, state, wait_ms=200, env_extra=None,
     return process, fake
 
 
+def start_crashing_loop(tmp, responses, skill_dir, state, wait_ms=200, env_extra=None):
+    """Run the real loop in a wrapper that ``os._exit``s at the ``emit`` boundary.
+
+    The crash lands after the delivery file and the wake handoff are durable and before
+    anything reaches stdout — the exact window #72 is about. The wrapper patches only
+    ``emit``, so the rest of the product runs unchanged.
+    """
+    # The same CLI path a normal ``start_loop`` uses: the binding records the command, so a
+    # replay with a different stub path would be refused as a rebinding instead of running.
+    fake = FakeOrca(tmp / ("fake-" + skill_dir.name), responses).write()
+    wrapper = tmp / ("crash-before-stdout-" + skill_dir.name + ".py")
+    wrapper.write_text(
+        CRASH_BEFORE_STDOUT_TEMPLATE
+        .replace("__PYTHON__", sys.executable)
+        .replace("__MODULE__", repr(str((skill_dir / SCRIPT_RELATIVE).resolve())))
+    )
+    env = dict(os.environ)
+    env["ORCA_CLI_COMMAND"] = str(fake.path)
+    env["WAIT_TIMEOUT_MS"] = str(wait_ms)
+    env["BACKOFF_SECONDS"] = "0.15"
+    env["PENDING_BACKOFF_SECONDS"] = "0.15"
+    env["WORKER_POLL_SECONDS"] = "0.1"
+    env.update(env_extra or {})
+    process = subprocess.Popen(
+        [sys.executable, str(wrapper), "run_test", str(state), "term_coordinator"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    return process, fake
+
+
 def drain(process, timeout=30):
     """Return everything the loop printed, once; later calls reuse the drained text."""
     if getattr(process, "inbox_stdout", None) is None:
@@ -640,8 +692,9 @@ class WakeSignalTests(InboxLoopCase):
         self.assertTrue(saved.exists(), "the wake line named a file that was not saved")
         self.assertEqual(json.loads(saved.read_text())["result"]["deliveryId"], "delivery_new")
         state = read_state(self.state)
-        self.assertIn("delivery_new", state["woken_deliveries"],
-                      "a wake must be durable: a reinstall must not wake for it again")
+        self.assertIn("delivery_new", state["pending_wakes"],
+                      "the send intent must be durable before stdout: a crash between the "
+                      "two is replayed by the next install")
 
     def test_batch_types_are_listed_in_fifo_order(self):
         """``types`` describes the whole batch, in order, not just its first message."""
@@ -742,31 +795,39 @@ class HeartbeatQuietTests(InboxLoopCase):
 
 class ReplayTests(InboxLoopCase):
     def test_replayed_delivery_does_not_overwrite_the_first_read(self):
-        """A FIFO replay of the same deliveryId must not clobber saved evidence.
+        """A FIFO replay never clobbers saved evidence, and stays pending until acked.
 
-        The first install persists the batch and wakes. A second install sees a replay of a
-        batch that is already on disk: that is the coordinator's outstanding duty, not news,
-        so the file must survive untouched and the loop must not wake again for it.
+        The first install persists the batch and wakes. A second install sees the FIFO
+        replay of a delivery with no successful ack receipt: it replays the wake instead of
+        suppressing it, while the saved file must survive untouched. The coordinator's ack
+        is what finally makes the replay quiet.
         """
         first = batch("delivery_replay", [normal(message_id="first_read")])
         replay = batch("delivery_replay", [normal(message_id="second_read")])
         process, _ = self.start([first])
         self.assertEqual(self.wake(process)["deliveryId"], "delivery_replay")
         path = self.deliveries()[0]
-        self.assertIn("delivery_replay", read_state(self.state)["woken_deliveries"],
-                      "the first install announced the batch and must have recorded it")
+        self.assertIn("delivery_replay", read_state(self.state)["pending_wakes"],
+                      "the first install recorded the send intent it still owes")
 
         second, _ = self.start([replay])
+        self.assertEqual(self.wake(second)["deliveryId"], "delivery_replay",
+                         "an unacknowledged delivery is still pending news")
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved["result"]["messages"][0]["id"], "first_read")
+        self.assertEqual(len(self.deliveries()), 1, "replay created a second file")
+
+        load_inbox_module(self.skill_dir).append_receipt(
+            self.state, "delivery_replay", "success")
+        third, _ = self.start([replay])
         try:
             time.sleep(1.0)
-            self.assertIsNone(second.poll(), "a replay of a saved batch must not wake the loop")
-            saved = json.loads(path.read_text())
-            self.assertEqual(saved["result"]["messages"][0]["id"], "first_read")
-            self.assertEqual(len(self.deliveries()), 1, "replay created a second file")
-            self.assertIsNone(read_state(self.state).get("reconciled_delivery_id"),
-                              "an already announced batch is not a reconciliation")
+            self.assertIsNone(third.poll(), "an acknowledged replay must not wake the loop")
+            self.assertEqual(self.stop(third), "", "an acknowledged replay printed a wake")
+            self.assertEqual(read_state(self.state)["pending_wakes"], [],
+                             "the success receipt satisfies the pending send intent")
         finally:
-            self.stop(second)
+            self.stop(third)
 
     def test_pending_marker_survives_a_later_empty_queue(self):
         """An empty queue does not prove the saved batches were handled."""
@@ -774,29 +835,32 @@ class ReplayTests(InboxLoopCase):
         self.wake(process)
         marker = self.state / "NEW-MESSAGE"
         first = marker.read_text()
+        load_inbox_module(self.skill_dir).append_receipt(
+            self.state, "delivery_pending", "success")
         second, _ = self.start([batch("delivery_empty", [])])
         try:
             time.sleep(0.8)
             self.assertIsNone(second.poll(), "an empty queue must not end the loop")
             self.assertTrue(marker.exists(), "the PENDING marker was cleared automatically")
             self.assertEqual(marker.read_text(), first)
-            self.assertEqual(read_state(self.state)["woken_deliveries"], ["delivery_pending"],
-                             "the announced batch stays not-news across the reinstall")
+            self.assertEqual(read_state(self.state)["pending_wakes"], [],
+                             "an acknowledged batch is no longer a pending wake")
             self.assertIsNone(read_state(self.state).get("reconciled_delivery_id"))
         finally:
             self.stop(second)
 
 
 class ReinstallReconciliationTests(InboxLoopCase):
-    """A reinstall must not silently absorb a batch that was saved but never announced.
+    """A reinstall must not silently absorb a batch whose wake was never acknowledged.
 
     The delivery file survives a crash before the wake line; comparing it with the
-    successful receipts is what turns that gap into exactly one wake. The record is local
+    successful receipts turns that gap into exactly one replayed wake per install, and the
+    coordinator's success receipt is what ends the replay. The record is local
     (``state.json``), so the coordinator can transcribe it into the ledger; the consumer
     never writes the ledger itself.
     """
 
-    def test_reinstall_reconciles_the_oldest_never_woken_unacknowledged_batch(self):
+    def test_reinstall_reconciles_the_oldest_unacknowledged_batch(self):
         acknowledged = seed_delivery(self.state, "delivery_acked", [normal()],
                                      mtime=1_700_000_000)
         orphan = seed_delivery(self.state, "delivery_orphan", [normal()],
@@ -819,8 +883,9 @@ class ReinstallReconciliationTests(InboxLoopCase):
 
         state = read_state(self.state)
         self.assertEqual(state["reconciled_delivery_id"], "delivery_orphan")
-        self.assertIn("delivery_orphan", state["woken_deliveries"])
-        self.assertNotIn("delivery_acked", state["woken_deliveries"])
+        self.assertEqual(state["pending_wakes"], ["delivery_orphan"],
+                         "the successful receipt is the only thing that removes a pending "
+                         "wake intent")
         observation = state["observation"]
         self.assertEqual(observation["kind"], "inbox_reconciliation")
         self.assertEqual(observation["saved"], 2)
@@ -848,21 +913,143 @@ class ReinstallReconciliationTests(InboxLoopCase):
         self.assertIn("unreadable delivery file", payload["detail"])
         self.assertEqual(read_state(self.state)["phase"], "error")
 
-    def test_second_reinstall_does_not_wake_again_for_the_same_batch(self):
+    def test_an_acknowledged_batch_is_not_replayed_again(self):
         seed_delivery(self.state, "delivery_orphan", [normal()])
         first, _ = self.start([batch("empty", [])])
         self.assertEqual(self.wake(first)["deliveryId"], "delivery_orphan")
+
+        # No receipt yet: the send intent is still owed, so the next install replays it.
+        second, _ = self.start([batch("empty", [])])
+        self.assertEqual(self.wake(second)["deliveryId"], "delivery_orphan")
         reconciled = read_state(self.state)["reconciled_delivery_id"]
 
-        second, _ = self.start([batch("empty", [])])
+        # The coordinator's success receipt is the verifiable announcement; replay stops.
+        load_inbox_module(self.skill_dir).append_receipt(
+            self.state, "delivery_orphan", "success")
+        third, _ = self.start([batch("empty", [])])
         try:
             time.sleep(1.0)
-            self.assertIsNone(second.poll(),
-                              "a persisted reconciliation must prevent a second wake")
-            self.assertEqual(self.stop(second), "", "the second install printed a wake")
+            self.assertIsNone(third.poll(),
+                              "an acknowledged batch must not be reconciled again")
+            self.assertEqual(self.stop(third), "", "the third install printed a wake")
             self.assertEqual(read_state(self.state)["reconciled_delivery_id"], reconciled)
+            self.assertEqual(read_state(self.state)["pending_wakes"], [])
         finally:
-            self.stop(second)
+            self.stop(third)
+
+
+class WakeHandoffTests(InboxLoopCase):
+    """A wake is owed until the coordinator's success receipt proves it was received (#72).
+
+    stdout is not a durable record: the process can die between the handoff and the line,
+    and the harness may never see the line. The durable handoff is therefore a *pending*
+    send intent, and only a successful ack receipt makes a delivery announced. These cases
+    inject the crash at the real ``emit`` boundary with ``os._exit`` in a subprocess, then
+    assert the next install replays the wake once per delivery id.
+    """
+
+    def assert_exits(self, process, timeout=15.0, what="the reinstall"):
+        """Wait for a loop that must end, and fail loudly when the wake was suppressed."""
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            output = self.stop(process)
+            self.fail(f"{what} never ended (stdout={output!r}): the saved but unemitted "
+                      "wake was suppressed")
+
+    def crash_before_stdout(self, responses):
+        """Run the real loop once and kill it exactly at the emit boundary."""
+        process, fake = start_crashing_loop(self.tmp, responses, self.skill_dir, self.state)
+        self.addCleanup(self.stop, process)
+        self.assert_exits(process, what="the fault-injected loop")
+        self.assertEqual(process.returncode, 97,
+                         "the wrapper did not reach the injected emit boundary")
+        self.assertEqual(drain(process), "", "the injected fault must happen before stdout")
+        return fake
+
+    def test_a_crash_between_announcement_and_stdout_replays_the_wake(self):
+        """The window between the durable handoff and stdout must be replayed, never lost."""
+        self.crash_before_stdout([batch("delivery_crash", [normal()])])
+
+        # The batch exists and nothing has announced it: stdout never carried a line and no
+        # successful ack receipt exists.
+        self.assertEqual(len(self.deliveries()), 1)
+        self.assertEqual([entry["result"] for entry in read_receipts(self.state)], [],
+                         "a non-heartbeat batch must not be acknowledged by the consumer")
+
+        # The reinstall must replay the delivery wake; on the old code the pre-emit
+        # announcement marker suppresses it forever and this loop never ends.
+        replay, _ = self.start([batch("delivery_crash", [normal()])])
+        self.assert_exits(replay)
+        payload = self.wake(replay)
+
+        self.assertEqual(payload["reason"], "delivery")
+        self.assertEqual(payload["deliveryId"], "delivery_crash")
+        self.assertIn("reconciliation", payload["detail"])
+        self.assertTrue(Path(payload["saved"]).exists())
+        state = read_state(self.state)
+        self.assertEqual(state["pending_wakes"], ["delivery_crash"],
+                         "the durable handoff must stay a pending intent, not an announcement")
+        self.assertEqual(state["reconciled_delivery_id"], "delivery_crash")
+
+    def test_a_replayed_wake_is_emitted_exactly_once(self):
+        """Duplicate intents collapse, and one delivery id yields one line per replay."""
+        seed_delivery(self.state, "delivery_replayed", [normal()])
+        seed_state(self.state, {
+            "pending_wakes": ["delivery_replayed", "delivery_replayed"],
+            "woken_deliveries": ["delivery_replayed"],  # the old pre-emit claim: not proof
+        })
+
+        first, fake = self.start([batch("delivery_replayed", [normal()])])
+        self.assert_exits(first)
+        stdout = drain(first)
+        self.assertEqual(first.returncode, 0)
+        self.assertEqual(len(stdout.splitlines()), 1,
+                         f"one delivery id must yield one wake line, got {stdout!r}")
+        self.assertEqual(json.loads(stdout)["deliveryId"], "delivery_replayed")
+        self.assertEqual(read_state(self.state)["pending_wakes"], ["delivery_replayed"],
+                         "duplicate intents must collapse by delivery id")
+        self.assertEqual(fake.calls_starting("orchestration check"), [],
+                         "the replay is reconciled before the queue is read")
+
+        # No ack yet: the intent is still owed, and the next install replays it once more.
+        second, _ = self.start([batch("delivery_replayed", [normal()])])
+        self.assert_exits(second)
+        second_stdout = drain(second)
+        self.assertEqual(len(second_stdout.splitlines()), 1,
+                         "a pending wake must be replayed as exactly one line")
+        self.assertEqual(json.loads(second_stdout)["deliveryId"], "delivery_replayed")
+
+        # The coordinator's real --ack path leaves the success receipt that makes the
+        # delivery verifiably announced; that receipt is what ends the replay.
+        ack = run_ack(self.skill_dir, self.state, "delivery_replayed", fake.path)
+        self.assertEqual(ack.returncode, 0, ack.stderr)
+        self.assertEqual([entry["result"] for entry in read_receipts(self.state)],
+                         ["pending", "success"])
+        third, _ = self.start([batch("delivery_replayed", [normal()])])
+        try:
+            time.sleep(1.0)
+            self.assertIsNone(third.poll(), "an acknowledged delivery must not wake again")
+            self.assertEqual(self.stop(third), "", "an acknowledged delivery printed a wake")
+        finally:
+            self.stop(third)
+        self.assertEqual(read_state(self.state)["pending_wakes"], [],
+                         "the satisfied intent is pruned from the durable pending list")
+
+    def test_reconcile_does_not_suppress_an_unemitted_wake(self):
+        """A pre-emit announcement mark without a success receipt is not proof of a wake."""
+        seed_delivery(self.state, "delivery_unemitted", [normal()])
+        seed_state(self.state, {"woken_deliveries": ["delivery_unemitted"]})
+
+        process, _ = self.start([batch("empty", [])])
+        self.assert_exits(process)
+        payload = self.wake(process)
+
+        self.assertEqual(payload["reason"], "delivery")
+        self.assertEqual(payload["deliveryId"], "delivery_unemitted")
+        self.assertIn("reconciliation", payload["detail"])
+        self.assertEqual(read_state(self.state)["pending_wakes"], ["delivery_unemitted"],
+                         "the durable intent is written before the replayed wake line")
 
 
 def health_state_of(snapshot):
