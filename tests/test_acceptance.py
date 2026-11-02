@@ -109,6 +109,20 @@ def acceptance(**overrides):
     return record
 
 
+def equivalence_record():
+    """A squash/rebase-shaped merge record: no ancestry, content equivalence instead."""
+    record = acceptance()
+    merged = record["levels"]["merged"]
+    merged.pop("ancestry")
+    merged["equivalence"] = {
+        "accepted_sha": sha("a"),
+        "merge_sha": sha("b"),
+        "diff_empty": True,
+        "command": "git diff " + sha("a") + " " + sha("b"),
+    }
+    return record
+
+
 def open_levels(**values):
     """All four levels false with no evidence; used for rejection-style records."""
     return {
@@ -292,7 +306,7 @@ class MinimumEvidenceTests(unittest.TestCase):
         record["levels"]["merged"].pop("merge_sha")
         self.assert_error("merge_sha", record)
 
-    def test_a_merge_without_ancestry_is_rejected(self):
+    def test_a_merge_without_evidence_is_rejected(self):
         record = acceptance()
         record["levels"]["merged"].pop("ancestry")
         self.assert_error("ancestry", record)
@@ -307,6 +321,44 @@ class MinimumEvidenceTests(unittest.TestCase):
         record = acceptance()
         record["levels"]["merged"]["ancestry"]["descendant"] = sha("d")
         self.assert_error("ancestry", record)
+
+    def test_a_squash_merge_is_accepted_as_equivalence_evidence(self):
+        self.assertEqual(self.errors(equivalence_record()), [])
+
+    def test_an_empty_equivalence_diff_is_required(self):
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["diff_empty"] = False
+        self.assert_error("equivalent", record)
+
+    def test_equivalence_must_name_the_recorded_shas(self):
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["accepted_sha"] = sha("c")
+        self.assert_error("accepted_sha", record)
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["merge_sha"] = sha("d")
+        self.assert_error("merge_sha", record)
+
+    def test_equivalence_needs_a_real_diff_command(self):
+        for command in ("", "   ",
+                        "git rev-parse " + sha("a"),
+                        "git log --oneline " + sha("a") + ".." + sha("b"),
+                        "grep -c . change.patch"):
+            with self.subTest(command=command):
+                record = equivalence_record()
+                record["levels"]["merged"]["equivalence"]["command"] = command
+                self.assert_error("diff", record)
+
+    def test_a_merge_needs_ancestry_or_equivalence(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        errors = self.errors(record)
+        self.assertTrue(any("ancestry" in error and "equivalence" in error
+                            for error in errors), errors)
+        record = equivalence_record()
+        record["levels"]["merged"].pop("equivalence")
+        errors = self.errors(record)
+        self.assertTrue(any("ancestry" in error and "equivalence" in error
+                            for error in errors), errors)
 
     def test_a_tracker_close_without_a_read_back_is_rejected(self):
         record = acceptance()
@@ -471,6 +523,27 @@ class AuthorityVerificationTests(unittest.TestCase):
         errors = self.module.verify(acceptance(), self.snapshot(
             git={"state": "ok", "reason": "", "ancestry": []}))
         self.assertTrue(any("ancestry" in error for error in errors), errors)
+
+    def test_equivalence_evidence_is_verified_against_the_git_merges_row(self):
+        git = {"state": "ok", "reason": "", "ancestry": [],
+               "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                           "diff_empty": True}]}
+        self.assertEqual(self.module.verify(equivalence_record(),
+                                            self.snapshot(git=git)), [])
+        errors = self.module.verify(equivalence_record(), self.snapshot(
+            git={"state": "ok", "reason": "", "ancestry": [], "merges": []}))
+        self.assertTrue(any("equivalence" in error for error in errors), errors)
+        errors = self.module.verify(equivalence_record(), self.snapshot(
+            git={"state": "ok", "reason": "", "ancestry": []}))
+        self.assertTrue(any("unreadable" in error for error in errors), errors)
+
+    def test_equivalence_is_authority_proven_not_record_asserted(self):
+        """A record saying diff_empty is not proof; only the git row is."""
+        git = {"state": "ok", "reason": "", "ancestry": [],
+               "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                           "diff_empty": False}]}
+        errors = self.module.verify(equivalence_record(), self.snapshot(git=git))
+        self.assertTrue(any("equivalence" in error for error in errors), errors)
 
     def test_the_tracker_close_must_be_read_back(self):
         errors = self.module.verify(acceptance(), self.snapshot(
@@ -748,6 +821,40 @@ class CliTests(unittest.TestCase):
         result = self.record(acceptance(), "--authority", str(authority_file), ok=False)
         self.assertFalse(result["recorded"])
         self.assertFalse(result["gate_passed"])
+        self.assertEqual(self.ledger_records(), [])
+
+    def test_an_equivalence_record_is_accepted_through_the_cli_authority_file(self):
+        """The CLI must carry git.merges through, or no squash merge could ever record."""
+        authority_file = self.root / "authority.json"
+        authority_file.write_text(json.dumps(authority_snapshot(
+            pr_host={"state": "ok", "reason": "", "pull_requests": [
+                {"pr": 12, "state": "MERGED", "head_sha": sha("a"),
+                 "merge_sha": sha("b"), "base": "main"}]},
+            tracker={"state": "ok", "reason": "", "tickets": [
+                {"ticket": "39", "state": "closed"}]},
+            git={"state": "ok", "reason": "", "ancestry": [],
+                 "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                             "diff_empty": True}]},
+        )))
+        written = self.record(equivalence_record(), "--authority", str(authority_file))
+        self.assertTrue(written["recorded"])
+        self.assertTrue(written["gate_passed"])
+
+    def test_an_authority_file_without_merges_cannot_prove_equivalence(self):
+        authority_file = self.root / "authority.json"
+        authority_file.write_text(json.dumps(authority_snapshot(
+            pr_host={"state": "ok", "reason": "", "pull_requests": [
+                {"pr": 12, "state": "MERGED", "head_sha": sha("a"),
+                 "merge_sha": sha("b"), "base": "main"}]},
+            tracker={"state": "ok", "reason": "", "tickets": [
+                {"ticket": "39", "state": "closed"}]},
+            git={"state": "ok", "reason": "", "ancestry": []},
+        )))
+        result = self.record(equivalence_record(), "--authority", str(authority_file),
+                             ok=False)
+        self.assertFalse(result["recorded"])
+        self.assertTrue(any("unreadable" in error for error in result["errors"]),
+                        result["errors"])
         self.assertEqual(self.ledger_records(), [])
 
     def test_a_write_failure_is_recorded_and_retried(self):

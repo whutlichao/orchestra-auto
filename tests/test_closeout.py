@@ -117,6 +117,20 @@ def acceptance_record(**overrides):
     return record
 
 
+def equivalence_acceptance_record():
+    """A squash/rebase-shaped acceptance: no ancestry, content equivalence instead."""
+    record = acceptance_record()
+    merged = record["levels"]["merged"]
+    merged.pop("ancestry")
+    merged["equivalence"] = {
+        "accepted_sha": ACCEPTED,
+        "merge_sha": MERGE,
+        "diff_empty": True,
+        "command": "git diff " + ACCEPTED + " " + MERGE,
+    }
+    return record
+
+
 def facts(**overrides):
     """A complete facts object: every row can be proven from it."""
     at = utc_now()
@@ -324,6 +338,49 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual(row(checklist, 3)["status"], "blocked")
         self.assertTrue(row(checklist, 3)["detail"]["escalate"])
         self.assertEqual(checklist["classification"], "ancestry_divergent")
+
+    def equivalence_facts(self):
+        """The same closeout, recorded as a squash merge: equivalence plus git.merges.
+
+        The ancestry rows carry only merge→main: a squash merge has no ancestry from the
+        accepted head to the merge, so row 3 can only be proven by ``git.merges``.
+        """
+        data = facts()
+        data["acceptance"]["records"] = [
+            {"record_id": ACCEPTANCE_RECORD_ID, **equivalence_acceptance_record()}]
+        data["git"]["ancestry"] = [
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True}]
+        data["git"]["merges"] = [
+            {"accepted_sha": ACCEPTED, "merge_sha": MERGE, "diff_empty": True}]
+        return data
+
+    def test_row_three_accepts_equivalence_evidence_for_a_squash_merge(self):
+        checklist = self.module.plan(self.equivalence_facts())
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(checklist["classification"], "ready")
+        self.assertTrue(checklist["ready"])
+
+    def test_row_three_blocks_when_the_git_merges_proof_is_missing(self):
+        data = self.equivalence_facts()
+        data["git"].pop("merges")
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+        problems = " ".join(row(checklist, 3)["detail"]["problems"])
+        self.assertIn("equivalence", problems)
+        self.assertEqual(checklist["classification"], "ancestry_divergent")
+
+    def test_row_three_blocks_when_equivalence_authority_says_not_empty(self):
+        data = self.equivalence_facts()
+        data["git"]["merges"][0]["diff_empty"] = False
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+
+    def test_row_four_is_unaffected_by_equivalence_evidence(self):
+        """main contains the merge is ancestry from merge_sha to main.head either way."""
+        data = self.equivalence_facts()
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+        self.assertTrue(checklist["ready"])
 
     def test_row_four_requires_main_to_contain_the_merge(self):
         git = facts()["git"]
