@@ -530,6 +530,40 @@ class CloseoutAggregationTests(unittest.TestCase):
             ("44444444-4444-4444-8444-444444444444", self.implemented_only()),
             ("55555555-5555-4555-8555-555555555555", acceptance_record(attempt=2)))
 
+    def failed_earlier_attempt(self):
+        """An earlier attempt whose test check failed, at the same PR."""
+        payload = self.record_at(self.OLD_ACCEPTED, attempt=1)
+        payload["checks"] = [{
+            "name": "first attempt tests",
+            "command": "python3 -m unittest",
+            "result": "fail",
+            "evidence_ref": "evidence/attempt-1-tests.log",
+        }]
+        return payload
+
+    def test_a_failed_superseded_attempt_does_not_block_the_current_claim(self):
+        """#47: an old attempt's failed check is history once a later attempt is in force."""
+        data = self.facts_with(
+            ("44444444-4444-4444-8444-444444444444", self.failed_earlier_attempt()),
+            ("55555555-5555-4555-8555-555555555555", acceptance_record(attempt=2)))
+        for entry in data["acceptance"]["records"]:
+            self.assertEqual(self.acceptance.validate(self.payload_of(entry)), [])
+
+        aggregated = self.aggregate_over(data)
+        self.assertTrue(all(aggregated["levels"][name]["value"]
+                            for name in self.acceptance.LEVEL_NAMES), aggregated)
+
+        checklist = self.module.plan(data)
+
+        self.assertTrue(checklist["ready"], row(checklist, 1)["detail"])
+        self.assertEqual(checklist["blocking"], [])
+        self.assertNotIn("did not pass",
+                         " ".join(row(checklist, 1)["detail"]["problems"]))
+        entries = row(checklist, 1)["detail"]["entries"]
+        self.assertEqual([entry["attempt"] for entry in entries], [1, 2])
+        self.assertFalse(entries[0]["gate_passed"])
+        self.assertTrue(entries[1]["gate_passed"])
+
     def divergent_facts(self):
         """Two records at attempt 1 that disagree about the accepted SHA."""
         data = self.facts_with(
@@ -1395,17 +1429,34 @@ class FailedDispatchRecoveryTests(unittest.TestCase):
         self.module = load_module(SKILL_DIRS[0], "closeout.py")
         self.ledger = self.module.LEDGER
 
-    def read_back(self, settled=True, state="ok"):
+    def read_back(self, settled=True, state="ok", dispatch_id=None):
         """A worker-show read-back: settlement proof is the only start of recovery."""
         return {
             "state": state,
             "reason": "" if state == "ok" else "the worker read-back was unreadable",
             "worker": {
-                "dispatch_id": self.DISPATCH["dispatch_id"],
+                "dispatch_id": dispatch_id or self.DISPATCH["dispatch_id"],
                 "worker_state": "failed",
                 "settled": settled,
             },
         }
+
+    def test_another_dispatched_settled_proof_does_not_authorize_this_release(self):
+        """A settled worker proves its own Dispatch settled, not this failed one."""
+        other = self.read_back(dispatch_id="dispatch-other-9")
+        refused = self.module.failure_record(**self.record_args(read_back=other))
+        self.assertFalse(refused["recorded"], refused)
+        self.assertFalse(refused["durable"])
+        self.assertEqual(refused["next_action"], "escalate")
+        self.assertEqual(self.closeouts(), [])
+
+        recorded = self.module.failure_record(**self.record_args())
+        self.assertTrue(recorded["recorded"], recorded)
+        plan = self.module.failure_plan(**self.plan_args(read_back=other))
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "escalate")
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
 
     def record_args(self, **overrides):
         args = {

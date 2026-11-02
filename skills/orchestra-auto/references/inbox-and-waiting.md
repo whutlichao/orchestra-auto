@@ -186,7 +186,7 @@ action (a merge, a `reply --id`, a file mutation) and the attempt. The ordering 
 An action can complete and the process die before any record of it exists, and because the ack is
 deferred until the batch is handled, the batch stays unacknowledged while its effect may already have
 landed. A ledger written afterwards cannot tell that case apart from "never ran", and the consumer
-gives at-least-once delivery with no duplicate wake — it does not give exactly-once effects. So on
+gives at-least-once delivery — a wake can repeat after a crash — but not exactly-once effects. So on
 recovery an entry stuck at `processing` means **establish the fact before replaying**: read the real
 state (is the PR merged, did the reply land, was the file changed) and decide from that evidence, not
 from the ledger. Where the effect is verifiable and the action is idempotent, a replay under the same

@@ -31,7 +31,8 @@ Public interface (deep module):
 * ``load_records(path) -> (records, problems)`` — tolerant JSONL reader with the ledger's rules:
   a trailing partial line is discarded, a corrupt complete line is reported, never dropped.
 * ``load_effective_records(path) -> (records, problems, unknown)`` — the active ledger plus
-  its ``archive/``, so retention never hides a record from resume.
+  its ``archive/``, read through ``ledger.effective_records_for_path`` so retention never
+  hides a record from resume and invalid history degrades to ``unknown``.
 
 CLI: ``steps``, ``resume``, ``exit-check``. JSON out; exit ``0`` is success, ``1`` is a failed
 check or invalid input, ``2`` is a usage error.
@@ -40,6 +41,7 @@ Only the Python standard library is used.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -47,6 +49,20 @@ import re
 import sys
 
 SCHEMA_VERSION = 1
+
+
+def _load_ledger():
+    """Import the sibling ``ledger.py`` by path: effective history is reused, not copied."""
+    path = Path(__file__).with_name("ledger.py")
+    spec = importlib.util.spec_from_file_location("orca_chain_ledger", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LEDGER = _load_ledger()
 
 #: Per-step metadata. ``exit`` names the check ``exit-check`` can apply; ``external`` means the
 #: exit signal is a test run, a review or a PR state that this module deliberately does not read.
@@ -278,60 +294,16 @@ def load_effective_records(path):
     """Read the active ledger and its archive; return ``(records, problems, unknown)``.
 
     ``resume`` reads history, not the active view: retention moves complete records to
-    ``archive/`` and forgetting them would restart the chain at an earlier position. Archive
-    files sort by creation time and predate the active file, so concatenating them first
-    preserves append order; records are deduplicated by ``record_id`` when one is present.
-    ``unknown`` is ``None`` when the archive read completely and names the reason when an
-    archive file cannot be read or holds a corrupt line.
+    ``archive/`` and forgetting them would restart the chain at an earlier position.
+    The read is ``ledger.effective_records_for_path`` — the same schema-validating
+    interface ``ledger.effective_records`` exposes — so a JSON object that is not a
+    ledger record degrades to ``unknown`` here exactly as it does there. ``problems``
+    only names a missing active file; it does not make the history unknown.
     """
     path = Path(path)
-    directory = path.parent / "archive"
-    archived, unknown = [], None
-    if directory.is_symlink():
-        unknown = {"state": "unknown",
-                   "reason": "the ledger archive must not be a symlink"}
-    else:
-        try:
-            # ``Path.glob`` swallows a permission error; ``scandir`` reports it, so an
-            # unreadable archive is unknown instead of silently empty.
-            with os.scandir(directory) as entries:
-                names = sorted(entry.name for entry in entries
-                               if entry.name.endswith(".jsonl")
-                               and not entry.name.startswith("corrupt-"))
-        except FileNotFoundError:
-            names = []
-        except NotADirectoryError:
-            names = []
-            unknown = {"state": "unknown",
-                       "reason": "the ledger archive is not a readable directory"}
-        except OSError as error:
-            names = []
-            unknown = {"state": "unknown",
-                       "reason": "the ledger archive cannot be listed: " + str(error)}
-        for name in names:
-            archive = directory / name
-            try:
-                found, found_problems = load_records(archive)
-            except OSError as error:
-                unknown = {"state": "unknown",
-                           "reason": "archive file " + name
-                                     + " is unreadable: " + str(error)}
-                break
-            if found_problems:
-                unknown = {"state": "unknown",
-                           "reason": "archive file " + name
-                                     + " is corrupt and was not skipped"}
-            archived.extend(found)
-    records, problems = load_records(path)
-    merged, seen = [], set()
-    for record in archived + records:
-        record_id = record.get("record_id") if isinstance(record, dict) else None
-        if isinstance(record_id, str) and record_id:
-            if record_id in seen:
-                continue
-            seen.add(record_id)
-        merged.append(record)
-    return merged, problems, unknown
+    records, unknown = LEDGER.effective_records_for_path(path)
+    problems = [] if path.exists() else ["no ledger at " + str(path)]
+    return records, problems, unknown
 
 
 def ledger_path(run_id, home=None):

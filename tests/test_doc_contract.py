@@ -15,6 +15,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAMES = ("orchestra-auto", "orchestra-auto-zh")
 REFERENCE = Path("references") / "failed-dispatch-recovery.md"
+INBOX_REFERENCE = Path("references") / "inbox-and-waiting.md"
+
+#: The delivery guarantee and the old promise it replaced. A document may state the
+#: at-least-once wake contract or the no-duplicate claim, never both: a duplicate wake
+#: after a crash is the accepted cost of never losing one.
+AT_LEAST_ONCE = re.compile(r"at-least-once|至少一次", re.IGNORECASE)
+NO_DUPLICATE_WAKE = re.compile(r"no\s+duplicate\s+wake|不重复\s*唤醒", re.IGNORECASE)
 
 #: A closeout command, whether spelled through the bundle path or a ``$CLOSEOUT`` variable.
 RECORD_COMMAND = re.compile(
@@ -64,6 +71,21 @@ class DocContractTests(unittest.TestCase):
                 # The old direct-release sentence must not survive as a bypass path.
                 self.assertNotIn("Then release the failed Dispatch", text)
                 self.assertNotIn("然后 release 掉那个失败 Dispatch", text)
+
+
+class InboxWakeContractTests(unittest.TestCase):
+    """The inbox reference cannot promise at-least-once and no-duplicate at once."""
+
+    def test_a_document_that_claims_at_least_once_never_promises_no_duplicate_wake(self):
+        for name in SKILL_NAMES:
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / "skills" / name / INBOX_REFERENCE).read_text()
+                if not AT_LEAST_ONCE.search(text):
+                    continue
+                contradiction = NO_DUPLICATE_WAKE.search(text)
+                self.assertIsNone(
+                    contradiction,
+                    f"{name}: at-least-once wake cannot also promise no duplicate wake")
 
 
 if __name__ == "__main__":

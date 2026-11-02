@@ -533,7 +533,8 @@ def _divergence_detail(claim):
     }
 
 
-def _row_one(run_id, state, reason, accepted, divergent, merge_divergence=()):
+def _row_one(run_id, state, reason, accepted, divergent, merge_divergence=(),
+             current_record_ids=()):
     if state != "ok":
         return _row(1, "unknown", {"reason": reason})
     problems, entries, evidence = [], [], []
@@ -555,7 +556,9 @@ def _row_one(run_id, state, reason, accepted, divergent, merge_divergence=()):
             "ok" if not item["errors"] else "invalid"))
         problems.extend(
             str(item["record_id"]) + ": " + error for error in item["errors"])
-        if not gate_passed:
+        # A superseded attempt stays in ``entries`` as audit evidence; only the claim in
+        # force (aggregate's ``current_record_ids``) can block the declaration.
+        if not gate_passed and item["record_id"] in current_record_ids:
             problems.append(
                 str(item["record_id"]) + ": a recorded check did not pass; the gate "
                 "did not pass and blocks the declaration")
@@ -1093,9 +1096,12 @@ def plan(facts):
 
     state, reason, accepted = _accepted_records(normalized)
     claims, divergent = _current_claims(accepted)
+    current_record_ids = {record_id for claim in claims + divergent
+                          for record_id in claim["current_record_ids"]}
     merges = _merge_facts(normalized, claims)
     merge_divergent = [entry for entry in merges if entry["divergent"]]
-    rows = [_row_one(run_id, state, reason, accepted, divergent, merge_divergent)]
+    rows = [_row_one(run_id, state, reason, accepted, divergent, merge_divergent,
+                     current_record_ids)]
     rows.append(_row_two(normalized, merges))
     rows.append(_row_three(normalized, merges))
     rows.append(_row_four(normalized, merges))
@@ -1253,12 +1259,23 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
     return decision
 
 
-def _settled_from(read_back):
+def _settled_from(read_back, dispatch_id=None):
+    """The settled flag of a ``worker-show`` read-back, bound to one Dispatch when asked.
+
+    A settled worker proves only its own Dispatch settled. When ``dispatch_id`` is given,
+    a read-back that names another Dispatch (or names none) proves nothing about this
+    one, so the recovery cannot borrow a healthy worker's settlement for a failed
+    Dispatch's release.
+    """
     if not isinstance(read_back, dict) or read_back.get("state") != "ok":
         return None
     worker = read_back.get("worker")
     if not isinstance(worker, dict):
         return None
+    if dispatch_id is not None:
+        recorded = worker.get("dispatch_id")
+        if not ACCEPTANCE.is_nonempty(recorded) or recorded != dispatch_id:
+            return None
     settled = worker.get("settled")
     return settled if isinstance(settled, bool) else None
 
@@ -1439,7 +1456,7 @@ def failure_record(run_id, read_back, dispatch, classification, evidence_refs,
     mapping = _failure_mapping(dispatch)
     evidence = _failure_evidence(evidence_refs)
     verification = _failure_verification(release_verification)
-    settled = _settled_from(read_back)
+    settled = _settled_from(read_back, mapping["dispatch_id"])
     readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -1582,7 +1599,7 @@ def failure_plan(run_id, dispatch_id, read_back, home=None, dispatch=None,
     if not ACCEPTANCE.is_nonempty(dispatch_id):
         _invalid("failure_plan needs the failed dispatch id")
     readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
-    settled = _settled_from(read_back)
+    settled = _settled_from(read_back, dispatch_id)
     worker = (read_back.get("worker")
               if readable and isinstance(read_back.get("worker"), dict) else {})
     result = {
