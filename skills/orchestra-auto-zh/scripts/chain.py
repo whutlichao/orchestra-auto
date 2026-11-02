@@ -30,6 +30,8 @@ Public interface (deep module):
 * ``check_artifact(step_id, text) -> list`` — pure: exit-check errors for one step.
 * ``load_records(path) -> (records, problems)`` — tolerant JSONL reader with the ledger's rules:
   a trailing partial line is discarded, a corrupt complete line is reported, never dropped.
+* ``load_effective_records(path) -> (records, problems, unknown)`` — the active ledger plus
+  its ``archive/``, so retention never hides a record from resume.
 
 CLI: ``steps``, ``resume``, ``exit-check``. JSON out; exit ``0`` is success, ``1`` is a failed
 check or invalid input, ``2`` is a usage error.
@@ -272,6 +274,66 @@ def load_records(path):
     return records, problems
 
 
+def load_effective_records(path):
+    """Read the active ledger and its archive; return ``(records, problems, unknown)``.
+
+    ``resume`` reads history, not the active view: retention moves complete records to
+    ``archive/`` and forgetting them would restart the chain at an earlier position. Archive
+    files sort by creation time and predate the active file, so concatenating them first
+    preserves append order; records are deduplicated by ``record_id`` when one is present.
+    ``unknown`` is ``None`` when the archive read completely and names the reason when an
+    archive file cannot be read or holds a corrupt line.
+    """
+    path = Path(path)
+    directory = path.parent / "archive"
+    archived, unknown = [], None
+    if directory.is_symlink():
+        unknown = {"state": "unknown",
+                   "reason": "the ledger archive must not be a symlink"}
+    else:
+        try:
+            # ``Path.glob`` swallows a permission error; ``scandir`` reports it, so an
+            # unreadable archive is unknown instead of silently empty.
+            with os.scandir(directory) as entries:
+                names = sorted(entry.name for entry in entries
+                               if entry.name.endswith(".jsonl")
+                               and not entry.name.startswith("corrupt-"))
+        except FileNotFoundError:
+            names = []
+        except NotADirectoryError:
+            names = []
+            unknown = {"state": "unknown",
+                       "reason": "the ledger archive is not a readable directory"}
+        except OSError as error:
+            names = []
+            unknown = {"state": "unknown",
+                       "reason": "the ledger archive cannot be listed: " + str(error)}
+        for name in names:
+            archive = directory / name
+            try:
+                found, found_problems = load_records(archive)
+            except OSError as error:
+                unknown = {"state": "unknown",
+                           "reason": "archive file " + name
+                                     + " is unreadable: " + str(error)}
+                break
+            if found_problems:
+                unknown = {"state": "unknown",
+                           "reason": "archive file " + name
+                                     + " is corrupt and was not skipped"}
+            archived.extend(found)
+    records, problems = load_records(path)
+    merged, seen = [], set()
+    for record in archived + records:
+        record_id = record.get("record_id") if isinstance(record, dict) else None
+        if isinstance(record_id, str) and record_id:
+            if record_id in seen:
+                continue
+            seen.add(record_id)
+        merged.append(record)
+    return merged, problems, unknown
+
+
 def ledger_path(run_id, home=None):
     """Resolve ``$ORCA_LEDGER_HOME/runs/<run_id>/ledger.jsonl`` exactly as the ledger does."""
     root = Path(home or os.environ.get("ORCA_LEDGER_HOME") or Path.home() / ".orca" / "ledger")
@@ -306,10 +368,16 @@ def main(argv=None):
 
     if args.command == "resume":
         path = Path(args.ledger) if args.ledger else ledger_path(args.run_id, args.ledger_home)
-        records, problems = load_records(path)
+        records, problems, unknown = load_effective_records(path)
+        if unknown is not None:
+            _emit({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
+                   "state": "unknown", "landed": [], "next": None,
+                   "reason": unknown["reason"], "history": unknown,
+                   "problems": problems})
+            return 0
         answer = next_step(records)
         answer.update({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
-                       "problems": problems})
+                       "history": {"state": "ok", "reason": ""}, "problems": problems})
         _emit(answer)
         return 0
 

@@ -654,6 +654,236 @@ class RetentionTests(LedgerTestCase):
                                                       separators=(",", ":")) + "\n")
 
 
+class RetentionRecoveryTests(LedgerTestCase):
+    """A recovery path reads the whole history, not only what retention left active.
+
+    Setup appends use a window so wide that the 2000-dated records stay active, so the
+    "before" reading is taken over the active file. One later append under a 30-day window
+    makes retention move that history into ``archive/``. Nothing sleeps and no assertion
+    depends on the wall clock: the record timestamps are fixed literals.
+    """
+
+    OLD = "2000-01-01T00:00:00Z"
+    FRESH = "2999-01-01T00:00:00Z"
+    LEVELS = ("implemented", "integrated", "merged", "tracker_closed")
+    PASSED_CHECKS = [{"name": "tests", "command": "python3 -m unittest",
+                      "result": "pass", "evidence_ref": "evidence/tests.log"}]
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = load_ledger(SKILL_DIRS[0])
+        spec = importlib.util.spec_from_file_location(
+            "closeout_under_test", SKILL_DIRS[0] / "scripts" / "closeout.py")
+        assert spec is not None and spec.loader is not None
+        self.closeout = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.closeout)
+        self.keep_env = {
+            **self.env,
+            "ORCA_LEDGER_RETENTION_DAYS": "300000",
+            "ORCA_LEDGER_RETENTION_BYTES": str(1024 * 1024 * 1024),
+        }
+        self.retain_env = {
+            **self.env,
+            "ORCA_LEDGER_RETENTION_DAYS": "30",
+            "ORCA_LEDGER_RETENTION_BYTES": str(1024 * 1024),
+        }
+
+    def acceptance_record(self, gate, observed_at=None):
+        levels = {
+            name: {"value": True, "evidence_ref": "evidence/" + name + ".json",
+                   "at": self.OLD}
+            for name in self.LEVELS
+        }
+        return make_record(
+            kind="acceptance", action="acceptance", state="completed",
+            idempotency="none", request_id="",
+            subject={"ticket": "39", "pr": 12, "attempt": 1},
+            observed_at=observed_at or self.OLD,
+            detail={
+                "ticket": "39", "gate": [gate], "attempt": 1,
+                "pr": {"number": 12, "head_at_acceptance": "a" * 40, "base": "main"},
+                "accepted_sha": "a" * 40,
+                "checks": self.PASSED_CHECKS,
+                "review": {"axis": ["standards", "spec"], "result": "pass",
+                           "evidence_ref": "evidence/review.md"},
+                "levels": levels,
+                "decided_by": "coordinator",
+                "decided_at": self.OLD,
+                "answer_location": "tickets/task-39-answer.md",
+            })
+
+    def append_with(self, record, env):
+        result = self.run_cli("append", "--run-id", RUN_ID,
+                              "--record", json.dumps(record), env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def archive_the_history(self):
+        """Append one fresh record under the 30-day window, moving OLD records out."""
+        trigger = make_record(
+            kind="health", action="health", state="observed", idempotency="none",
+            request_id="", observed_at=self.FRESH, detail={})
+        self.append_with(trigger, self.retain_env)
+        return trigger
+
+    def archived_records(self):
+        records = []
+        directory = self.ledger_file().parent / "archive"
+        for path in sorted(directory.glob("*.jsonl")):
+            records.extend(json.loads(line) for line in path.read_text().splitlines()
+                           if line.strip())
+        return records
+
+    def acceptance_show(self, env=None):
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "acceptance.py"),
+             "show", "--run-id", RUN_ID, "--ticket", "39"],
+            env=env or self.env, cwd=str(self.root), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def chain_resume(self, env=None):
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "chain.py"),
+             "resume", "--run-id", RUN_ID, "--ledger-home", str(self.home)],
+            env=env or self.env, cwd=str(self.root), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_chain_resume_is_identical_across_archival(self):
+        for gate in ("G-docs", "G-spec", "G-tickets", "G-impl"):
+            self.append_with(self.acceptance_record(gate), self.keep_env)
+
+        before = self.chain_resume()
+        self.assertEqual(before["landed"], ["grill", "spec", "tickets", "build"])
+        self.assertEqual(before["next"]["position"], "review")
+
+        self.archive_the_history()
+
+        after = self.chain_resume()
+        self.assertEqual(after["landed"], before["landed"])
+        self.assertEqual(after["next"], before["next"])
+        self.assertEqual(after["problems"], [])
+
+    def test_effective_records_merge_archive_and_active_in_write_order(self):
+        first = make_record(observed_at=self.OLD, detail={"n": 1})
+        second = make_record(observed_at=self.OLD, detail={"n": 2})
+        self.append_with(first, self.keep_env)
+        self.append_with(second, self.keep_env)
+        trigger = self.archive_the_history()
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertIsNone(unknown)
+        self.assertEqual([record["record_id"] for record in records],
+                         [first["record_id"], second["record_id"],
+                          trigger["record_id"]])
+
+        # A crash between the archive write and the active rewrite can leave one record in
+        # two archive files; the effective history must still hold it once.
+        archive = sorted((self.ledger_file().parent / "archive").glob("ledger-*.jsonl"))[0]
+        archive.with_name("duplicate.jsonl").write_bytes(archive.read_bytes())
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertIsNone(unknown)
+        self.assertEqual([record["record_id"] for record in records],
+                         [first["record_id"], second["record_id"],
+                          trigger["record_id"]])
+
+    def test_an_unreadable_archive_path_degrades_to_unknown(self):
+        self.append_with(self.acceptance_record("G-merge"), self.keep_env)
+        # A regular file where ``archive/`` belongs cannot be listed; it must not read as
+        # "no archived history".
+        archive = self.ledger_file().parent / "archive"
+        archive.write_text("", encoding="utf-8")
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertTrue(records)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertIn("archive", unknown["reason"])
+
+    def test_a_corrupt_archive_degrades_to_unknown(self):
+        self.append_with(self.acceptance_record("G-merge"), self.keep_env)
+        self.archive_the_history()
+        archive = sorted((self.ledger_file().parent / "archive").glob("ledger-*.jsonl"))[0]
+        with archive.open("a", encoding="utf-8") as stream:
+            stream.write("{not json}\n")
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertTrue(records)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertIn(archive.name, unknown["reason"])
+
+        shown = self.acceptance_show()
+        self.assertEqual(shown["tickets"]["39"]["history"]["state"], "unknown")
+        for level in self.LEVELS:
+            self.assertIsNone(shown["tickets"]["39"]["levels"][level]["value"], level)
+
+        resumed = self.chain_resume()
+        self.assertEqual(resumed["state"], "unknown")
+        self.assertIsNone(resumed["next"])
+        self.assertIn(archive.name, resumed["reason"])
+
+    def test_closeout_reads_an_archived_acceptance_record(self):
+        record = self.acceptance_record("G-merge")
+        self.append_with(record, self.keep_env)
+        self.archive_the_history()
+
+        result = self.closeout.reconcile(
+            RUN_ID, {}, home=str(self.home),
+            answer_location="tickets/task-39-answer.md")
+        self.assertTrue(result["recorded"], result)
+        entries = result["checklist"]["rows"][0]["detail"]["entries"]
+        self.assertEqual([entry["record_id"] for entry in entries],
+                         [record["record_id"]])
+
+    def test_ledger_reconcile_reads_archived_intents_and_results(self):
+        intent = make_record(
+            kind="intent", action="worker-start", state="intent",
+            subject={"task_id": "task-1", "attempt": 1}, idempotency="joinable",
+            request_id=str(uuid.uuid4()), observed_at=self.OLD,
+            detail={"expected_effect": "dispatch"})
+        result = make_record(
+            kind="result", action="worker-start", state="completed",
+            subject=dict(intent["subject"]), idempotency="joinable",
+            request_id=intent["request_id"], observed_at=self.OLD, detail={})
+        self.append_with(intent, self.keep_env)
+        self.append_with(result, self.keep_env)
+        self.archive_the_history()
+
+        orca = orca_section(workers={
+            "state": "ok", "reason": "",
+            "rows": [{"task_id": "task-1", "dispatch_id": "d1", "attempt": 1,
+                      "worktree": "/tmp/worktree"}],
+        })
+        report = self.ledger.reconcile(RUN_ID, authority(orca=orca),
+                                       home=str(self.home), replay=False)
+        self.assertGreaterEqual(report["counts"]["matched"], 1)
+        self.assertEqual(report["counts"]["orphan_intent"], 0)
+
+    def test_acceptance_levels_are_identical_across_archival(self):
+        record = self.acceptance_record("G-merge")
+        self.append_with(record, self.keep_env)
+
+        before = self.acceptance_show()
+        before_ticket = before["tickets"]["39"]
+        for level in self.LEVELS:
+            self.assertTrue(before_ticket["levels"][level]["value"], level)
+
+        self.archive_the_history()
+        self.assertIn(record["record_id"],
+                      [item["record_id"] for item in self.archived_records()])
+        self.assertNotIn(record["record_id"],
+                         [item["record_id"] for item in self.records_on_disk()])
+        # ``ledger show`` keeps its documented active view; only the recovery paths
+        # read the whole history.
+        self.assertNotIn(record["record_id"],
+                         [item["record_id"] for item in self.read()])
+
+        after = self.acceptance_show()
+        self.assertEqual(after["tickets"], before["tickets"])
+        for level in self.LEVELS:
+            self.assertTrue(after["tickets"]["39"]["levels"][level]["value"], level)
+
+
 class PathSafetyTests(LedgerTestCase):
     """The ledger lives outside every repository, never through a symlink."""
 

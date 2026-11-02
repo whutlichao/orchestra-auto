@@ -1290,6 +1290,23 @@ def _summary(record, appended, durable, retry_path=""):
     }
 
 
+def _unknown_history_result(run_id, unknown):
+    """A closeout over an unreadable history is unknown, not a declaration."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "record_id": "",
+        "recorded": False,
+        "appended": False,
+        "retry_path": "",
+        "declared": False,
+        "checklist": None,
+        "pending_resolved": [],
+        "history": unknown,
+        "error": "the ledger history is incomplete: " + unknown["reason"],
+    }
+
+
 def reconcile(run_id, authority, home=None, answer_location=""):
     """Read authority through adapters, reconcile and persist one closeout record.
 
@@ -1302,7 +1319,9 @@ def reconcile(run_id, authority, home=None, answer_location=""):
     if not ACCEPTANCE.is_nonempty(answer_location):
         _invalid("reconcile needs the Answer location for the closeout record")
     observed_at = _now()
-    records = LEDGER.read(run_id, home=home)
+    records, unknown = LEDGER.effective_records(run_id, home=home)
+    if unknown is not None:
+        return _unknown_history_result(run_id, unknown)
     sections = _authority_sections(authority, run_id, records)
     facts = _facts_for(run_id, records, sections, answer_location, observed_at)
     checklist = plan(facts)
@@ -1315,7 +1334,11 @@ def reconcile(run_id, authority, home=None, answer_location=""):
         LEDGER.append(record, home=home)
         resolved_ids.append(item["record_id"])
     if resolved_ids:
-        records = LEDGER.read(run_id, home=home)
+        records, unknown = LEDGER.effective_records(run_id, home=home)
+        if unknown is not None:
+            result = _unknown_history_result(run_id, unknown)
+            result["pending_resolved"] = resolved_ids
+            return result
         facts = _facts_for(run_id, records, sections, answer_location, observed_at)
         checklist = plan(facts)
 
@@ -1411,10 +1434,11 @@ def command_reconcile(args, home):
 
 
 def command_show(args, home):
-    records = [record for record in LEDGER.read(args.run_id, home=home)
-               if record.get("kind") == "closeout"]
+    records, unknown = LEDGER.effective_records(args.run_id, home=home)
+    history = unknown if unknown is not None else {"state": "ok", "reason": ""}
+    records = [record for record in records if record.get("kind") == "closeout"]
     if not records:
-        _emit({"found": False, "run_id": args.run_id})
+        _emit({"found": False, "run_id": args.run_id, "history": history})
         return 1
     record = records[-1]
     detail = record.get("detail") if isinstance(record.get("detail"), dict) else {}
@@ -1425,6 +1449,7 @@ def command_show(args, home):
         "observed_at": record["observed_at"],
         "checklist": detail.get("checklist"),
         "closeout": detail,
+        "history": history,
     })
     return 0
 

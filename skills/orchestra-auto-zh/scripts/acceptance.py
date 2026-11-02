@@ -1080,8 +1080,18 @@ def command_observe(args, home):
 
 
 def command_show(args, home):
-    records = LEDGER.read(args.run_id, home=home)
+    records, unknown = LEDGER.effective_records(args.run_id, home=home)
     ticket = aggregate(args.ticket, records)
+    if unknown is None:
+        ticket["history"] = {"state": "ok", "reason": ""}
+    else:
+        # An unreadable archive means the levels cannot be claimed either way. Withhold
+        # them explicitly instead of reporting a level false because its record was moved.
+        ticket["history"] = unknown
+        ticket["state"] = "unknown"
+        for name in LEVEL_NAMES:
+            ticket["levels"][name] = {"value": None, "evidence_refs": [],
+                                      "state": "unknown"}
     shown = [record for record in records
              if record.get("kind") in ("acceptance", "observation")
              and _ticket_of(record) == args.ticket]
