@@ -984,6 +984,19 @@ class ClassifierTests(LedgerTestCase):
         self.assertEqual(found[0]["repairs"], [], "W1 never replays by itself")
         self.assertEqual(found[0]["decision"]["class"], "orphan_intent")
 
+    def test_a_real_task_row_never_matches_an_unrelated_intent(self):
+        """The id alias must not turn a true orphan into a false effect."""
+        task = self.ledger._normalized_task_row(
+            {"id": "task_other", "status": "ready", "title": "another ticket"})
+        intent = intent_record(subject={"task_id": "task_missing", "attempt": 1})
+        report = self.classify([intent], authority(orca=orca_section(
+            request_show={intent["request_id"]: {"state": "absent"}},
+            tasks={"state": "ok", "reason": "", "rows": [task]})))
+
+        found = self.outcomes(report, "orphan_intent")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["decision"]["class"], "orphan_intent")
+
     def test_absent_without_an_intent_is_not_a_judgment(self):
         report = self.classify([], authority(orca=orca_section(
             request_show={"unused-request": {"state": "absent"}})))
@@ -1813,6 +1826,125 @@ class LiveAuthorityTests(LedgerTestCase):
             [call[call.index("--dispatch") + 1] for call in calls
              if call[1] == "worker-show"],
             ["dispatch-2", "dispatch-1"])
+
+    def test_flat_next_cursor_pagination_reads_every_worker_page(self):
+        """The live CLI publishes the cursor flat on the result, not under ``page``."""
+        fake = self.fake(
+            worker_pages=[
+                {"workers": [worker_row(task_id="task-1", dispatch_id="dispatch-1")]},
+                {"workers": [worker_row(task_id="task-2", dispatch_id="dispatch-2")]},
+            ],
+            worker_show={
+                "dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"},
+                "dispatch-2": {"dispatchId": "dispatch-2", "state": "ready"},
+            },
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "ok")
+        self.assertEqual([row["dispatch_id"] for row in workers["rows"]],
+                         ["dispatch-1", "dispatch-2"])
+        calls = [call for call in fake.call_argv() if call[1] == "worker-list"]
+        self.assertEqual(len(calls), 2, "the second page was never requested")
+        self.assertEqual(calls[1][calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_the_legacy_page_object_pagination_shape_is_still_followed(self):
+        """Older CLIs nest ``hasMore`` and ``nextCursor`` under ``result.page``."""
+        fake = self.fake(
+            worker_pages=[
+                {"workers": [worker_row(task_id="task-1", dispatch_id="dispatch-1")],
+                 "page": {"hasMore": True, "nextCursor": "cursor-1"}},
+                {"workers": [worker_row(task_id="task-2", dispatch_id="dispatch-2")],
+                 "page": {"hasMore": False, "nextCursor": None}},
+            ],
+            worker_show={
+                "dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"},
+                "dispatch-2": {"dispatchId": "dispatch-2", "state": "ready"},
+            },
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "ok")
+        self.assertEqual([row["dispatch_id"] for row in workers["rows"]],
+                         ["dispatch-1", "dispatch-2"])
+        calls = [call for call in fake.call_argv() if call[1] == "worker-list"]
+        self.assertEqual(len(calls), 2, "the legacy cursor was not followed")
+        self.assertEqual(calls[1][calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_a_malformed_page_object_without_a_flat_cursor_is_unknown_not_ok(self):
+        """Neither shape is readable: a non-object ``page`` is not the final page."""
+        fake = self.fake(
+            worker_pages=[{"workers": [worker_row()], "page": None}],
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "unknown")
+        self.assertEqual(workers["rows"], [])
+        self.assertIn("neither result.page nor result.nextCursor", workers["reason"])
+        self.assertIn("saw: page, workers", workers["reason"])
+
+    def test_a_real_task_row_joins_by_its_id_when_normalized(self):
+        """The live task row carries ``id``; it is the Orca join key."""
+        task_id = "task_live1"
+        fake = self.fake(
+            worker_pages=[{"workers": [worker_row(task_id=task_id,
+                                                  dispatch_id="dispatch-1")]}],
+            worker_show={"dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"}},
+            task_pages=[{"tasks": [{"id": task_id, "status": "ready",
+                                    "title": "issue-59"}]}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        snapshot = self.ledger.validated_authority(adapter.snapshot(RUN_ID, []))
+        task = snapshot["orca"]["tasks"]["rows"][0]
+
+        self.assertEqual(task["orca_task_id"], task_id)
+        self.assertEqual(self.ledger._task_join_key(task), task_id)
+        self.assertTrue(self.ledger._row_matches_task(task, {"task_id": task_id}),
+                        "the task must join to the worker row's task id")
+
+        tasks_only = json.loads(json.dumps(snapshot))
+        tasks_only["orca"]["workers"]["rows"] = []
+        probe = self.ledger._probe(
+            tasks_only, intent_record(subject={"task_id": task_id, "attempt": 1}))
+        self.assertTrue(probe["observable"])
+        self.assertTrue(probe["effect"], "the real task row is the only proof here")
+
+    def test_an_explicit_orca_task_id_is_never_overwritten_by_the_id_alias(self):
+        row = self.ledger._normalized_task_row(
+            {"id": "task_live", "orcaTaskId": "task_explicit", "status": "ready"})
+        self.assertEqual(row["task_id"], "task_live")
+        self.assertEqual(row["orca_task_id"], "task_explicit")
+
+    def test_the_live_reads_request_json_and_task_list_carries_no_limit(self):
+        intent = intent_record()
+        fake = self.fake(
+            request_show={intent["request_id"]: {"state": "completed"}},
+            worker_pages=[{"workers": [worker_row()]}],
+            worker_show={"dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"}},
+            task_pages=[{"tasks": [task_row()]}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        adapter.snapshot(RUN_ID, [intent])
+
+        by_kind = {}
+        for call in fake.call_argv():
+            by_kind.setdefault(call[1], []).append(call)
+        for kind in ("request-show", "worker-list", "task-list", "worker-show"):
+            with self.subTest(kind=kind):
+                self.assertTrue(by_kind.get(kind), kind + " was never issued")
+                for call in by_kind[kind]:
+                    self.assertIn("--json", call)
+        for call in by_kind["task-list"]:
+            self.assertNotIn("--limit", call)
 
     def test_a_failed_request_show_is_unknown_not_absent(self):
         intent = intent_record()
