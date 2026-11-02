@@ -12,11 +12,15 @@ and the check name.
 """
 
 from pathlib import Path
+import re
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 CONTRIBUTING = REPO_ROOT / "CONTRIBUTING.md"
+
+#: The one module macOS deliberately skips: its readiness budget is tuned for a laptop.
+MACOS_EXCLUDED = "test_progress_dashboard"
 
 
 class WorkflowTests(unittest.TestCase):
@@ -42,6 +46,17 @@ class WorkflowTests(unittest.TestCase):
         """A run that hangs must fail rather than occupy a runner for an hour."""
         self.assertIn("timeout-minutes:", self.text)
         self.assertIn("name: test", self.text)
+
+    def test_the_macos_list_covers_every_module_except_the_socket_bound_one(self):
+        """A new test module must not silently never run on macOS."""
+        modules = {path.stem for path in (REPO_ROOT / "tests").glob("test_*.py")}
+        self.assertIn(MACOS_EXCLUDED, modules)
+        expected = modules - {MACOS_EXCLUDED}
+        blocks = self.text.split("matrix.os == 'macos-latest'", 1)
+        self.assertEqual(len(blocks), 2, "the workflow lost its macOS step")
+        listed = set(re.findall(r"\btests\.([a-z0-9_]+)\b", blocks[1]))
+        self.assertEqual(listed, expected,
+                         "the macOS list drifted from tests/test_*.py")
 
 
 class ContributingTests(unittest.TestCase):

@@ -638,6 +638,28 @@ def _archive_history(run_dir):
     return records, None
 
 
+def effective_records_for_path(active):
+    """Return ``(records, unknown)`` for one ledger file and its sibling ``archive/``.
+
+    This is the path seam behind :func:`effective_records`: every caller that reads
+    effective history goes through the ledger's own schema validator, so a JSON object
+    that is not a schema-v1 record is never mistaken for history. ``active`` need not
+    exist; a missing file is an empty active view. The archive rules — no symlink, no
+    unreadable or corrupt record-bearing file — are the ones :func:`effective_records`
+    documents, and ``unknown`` is passed through unchanged.
+    """
+    active = Path(active)
+    archived, unknown = _archive_history(active.parent)
+    current, _corrupt, _partial = _scan(active)
+    records, seen = [], set()
+    for record in archived + current:
+        if record["record_id"] in seen:
+            continue
+        seen.add(record["record_id"])
+        records.append(record)
+    return records, unknown
+
+
 def effective_records(run_id, home=None):
     """Return ``(records, unknown)``: active plus archived history in write order.
 
@@ -657,15 +679,7 @@ def effective_records(run_id, home=None):
     run_dir = root / RUNS_DIR / run_id
     if run_dir.is_symlink():
         _invalid("run directory must not be a symlink")
-    archived, unknown = _archive_history(run_dir)
-    active, _corrupt, _partial = _scan(run_dir / LEDGER_NAME)
-    records, seen = [], set()
-    for record in archived + active:
-        if record["record_id"] in seen:
-            continue
-        seen.add(record["record_id"])
-        records.append(record)
-    return records, unknown
+    return effective_records_for_path(run_dir / LEDGER_NAME)
 
 
 def _summarize(run_id, records, corrupt):
