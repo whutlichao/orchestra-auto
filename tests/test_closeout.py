@@ -131,6 +131,19 @@ def equivalence_acceptance_record():
     return record
 
 
+def premerge_acceptance_record():
+    """The acceptance persisted before the merge: no merge SHA, merged false (SP-05).
+
+    This is the crash window the closeout must repair: the accepted head is durable,
+    while the merge state, base and SHA are read back from the PR host afterwards.
+    """
+    record = acceptance_record()
+    at = utc_now()
+    record["levels"]["merged"] = {"value": False, "at": at}
+    record["levels"]["tracker_closed"] = {"value": False, "at": at}
+    return record
+
+
 def facts(**overrides):
     """A complete facts object: every row can be proven from it."""
     at = utc_now()
@@ -305,7 +318,9 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual(row(checklist, 1)["status"], "blocked")
         problems = " ".join(row(checklist, 1)["detail"]["problems"])
         self.assertIn("merge_sha", problems)
-        self.assertIn("merge_sha", " ".join(row(checklist, 2)["detail"]["problems"]))
+        self.assertEqual(row(checklist, 2)["status"], "ok")
+        self.assertEqual(row(checklist, 2)["detail"]["merges"][0]["merge_sha"], MERGE)
+        self.assertFalse(checklist["ready"])
 
     def test_closeout_blocks_a_failed_check(self):
         record = acceptance_record()
@@ -986,8 +1001,17 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(
             [item["detail"].get("observation") for item in after].count("revert"), 1)
 
-    def test_a_crash_between_merge_and_tracker_is_repaired_from_rows_two_three_four_seven(self):
-        self.record_acceptance()
+    def test_a_crash_between_merge_and_tracker_is_repaired_from_rows_two_three_four_seven(
+            self):
+        """The crashed window: only the premerge acceptance exists, tracker still open.
+
+        The fixture is the true crash shape (review SP-05): one ``merged=false`` record
+        with no merge SHA. The PR host reports ``MERGED`` with the merge SHA, git proves
+        ``A -> M`` and ``M -> H``, and only the tracker lags; the next turn repairs the
+        merge from the host row instead of demanding the record predicted the SHA.
+        """
+        record = self.record_acceptance(
+            levels=premerge_acceptance_record()["levels"])
         first = self.reconcile(authority=self.authority(tracker={
             "state": "ok", "reason": "",
             "tickets": [{"ticket": "39", "state": "open"}]}))
@@ -995,9 +1019,12 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(first["closeout"]["outcome"], "failure")
         self.assertTrue(first["closeout"]["evidence_refs"])
         self.assertEqual(first["closeout"]["classification"], "tracker_unclosed")
+        self.assertEqual(first["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
 
         second = self.reconcile()
-        self.assertTrue(second["checklist"]["ready"])
+        self.assertTrue(second["checklist"]["ready"],
+                        [row(second["checklist"], i)["detail"] for i in (2, 3, 4, 7)])
         self.assertEqual(second["closeout"]["outcome"], "success")
         self.assertNotEqual(first["record_id"], second["record_id"])
         closeouts = self.records("closeout")
@@ -1127,6 +1154,218 @@ class ReconciliationTests(unittest.TestCase):
         authority.sections["pr_host"] = section
         result = self.reconcile(authority=authority)
         self.assertEqual(result["checklist"]["classification"], "ready")
+
+
+class CloseoutRecoveryTests(unittest.TestCase):
+    """SP-05: the merge is an authority fact, so a post-merge crash is recoverable.
+
+    Only the accepted head is non-repeatable. When the acceptance is persisted before
+    the merge (``merged=false``, no merge SHA) and the process crashes before a
+    post-merge record is written, rows 2-4 read the state, merge SHA and base back from
+    the PR host row, prove ``accepted_head -> merge_sha -> main head`` with git, and
+    reconcile the tracker read-back — without the record having predicted the SHA.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.module = load_module(SKILL_DIRS[0], "closeout.py")
+        self.acceptance = load_module(SKILL_DIRS[0], "acceptance.py")
+        self.ledger = self.module.LEDGER
+
+    def record_acceptance(self, payload):
+        self.assertEqual(self.acceptance.validate(payload), [])
+        record = self.acceptance._ledger_record(payload, RUN_ID)
+        self.ledger.append(record, home=self.home)
+        return record
+
+    def authority(self, **sections):
+        defaults = {
+            "pr_host": facts()["pr_host"],
+            "git": facts()["git"],
+            "tickets": facts()["tickets"],
+            "tracker": facts()["tracker"],
+            "workers": facts()["workers"],
+            "dashboard": facts()["dashboard"],
+            "release": facts()["release"],
+        }
+        defaults.update(sections)
+        return FactsAuthority(**defaults)
+
+    def premerge_facts(self):
+        return facts(acceptance={"state": "ok", "reason": "", "records": [
+            {"record_id": ACCEPTANCE_RECORD_ID, **premerge_acceptance_record()}]})
+
+    def test_premerge_acceptance_recovers_from_host_merge_facts(self):
+        checklist = self.module.plan(self.premerge_facts())
+        self.assertTrue(checklist["ready"],
+                        [row(checklist, i)["detail"] for i in (2, 3, 4, 7)])
+        self.assertEqual(checklist["classification"], "ready")
+        self.assertFalse(checklist["divergent"])
+        merges = row(checklist, 2)["detail"]["merges"]
+        self.assertEqual(merges[0]["merge_sha"], MERGE)
+        self.assertEqual(merges[0]["merge_source"], "pr_host")
+        self.assertEqual(merges[0]["accepted_sha"], ACCEPTED)
+        self.assertEqual(merges[0]["base"], "main")
+        self.assertIsNone(merges[0]["recorded_merge_sha"])
+        self.assertEqual(row(checklist, 2)["detail"]["problems"], [])
+        self.assertEqual(row(checklist, 3)["evidence"][0]["ref"],
+                         "git:ancestry:" + ACCEPTED + ".." + MERGE)
+        self.assertEqual(row(checklist, 4)["evidence"][0]["ref"],
+                         "git:ancestry:" + MERGE + ".." + MAIN_HEAD)
+
+    def test_the_repaired_closeout_is_persisted_with_the_recorded_acceptance(self):
+        record = self.record_acceptance(premerge_acceptance_record())
+        result = self.module.reconcile(
+            RUN_ID, self.authority(), home=self.home,
+            answer_location="tickets/task-40-answer.md")
+        self.assertTrue(result["recorded"], result)
+        self.assertEqual(result["closeout"]["outcome"], "success")
+        self.assertEqual(result["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
+        self.assertEqual(result["closeout"]["classification"], "ready")
+        stored = self.ledger.read(RUN_ID, {"kind": "closeout"}, home=self.home)[0]
+        self.assertEqual(
+            stored["detail"]["checklist"]["rows"][1]["detail"]["merges"][0]
+            ["merge_source"], "pr_host")
+        self.ledger.validate_record(stored)
+
+    def test_without_host_authority_the_merge_is_not_proven(self):
+        """No host row and no recorded merge claim: rows 2-4 stay unproven."""
+        premerge = premerge_acceptance_record()
+        premerge["accepted_sha"] = "a" * 40
+        checklist = self.module.plan(facts(
+            acceptance={"state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **premerge}]},
+            pr_host={"state": "ok", "reason": "", "pull_requests": []}))
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertEqual(checklist["classification"], "pr_not_merged")
+        self.assertFalse(checklist["ready"])
+
+    def test_host_merged_row_without_git_ancestry_is_not_merged(self):
+        """The host says MERGED, but git does not prove the accepted head is covered."""
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": False},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(
+            acceptance={"state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **premerge_acceptance_record()}]},
+            git=git))
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+        self.assertFalse(checklist["ready"])
+        self.assertNotEqual(checklist["classification"], "acceptance_divergent")
+
+    def test_merge_facts_that_contradict_the_record_are_divergent(self):
+        """The recorded claim disagrees with the host: the record is divergent."""
+        other = "f" * 40
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "main",
+            "head_sha": ACCEPTED, "merge_sha": other,
+        }]}
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": ACCEPTED, "descendant": other, "result": True},
+            {"ancestor": other, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(pr_host=host, git=git))
+        self.assertTrue(checklist["divergent"], row(checklist, 1)["detail"])
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertEqual(
+            row(checklist, 1)["detail"]["merge_divergent"][0]["divergence"][0]["field"],
+            "merge_sha")
+        self.assertTrue(row(checklist, 3)["detail"]["merge_divergent"])
+        self.assertTrue(row(checklist, 4)["detail"]["merge_divergent"])
+
+    def test_a_contradicting_host_state_is_divergent_before_git(self):
+        """A host base that contradicts the record is a conflict, not a missing fact."""
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "release",
+            "head_sha": ACCEPTED, "merge_sha": MERGE,
+        }]}
+        checklist = self.module.plan(facts(pr_host=host))
+        self.assertTrue(checklist["divergent"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        self.assertEqual(
+            row(checklist, 2)["detail"]["merges"][0]["divergence"][0]["field"], "base")
+        self.assertFalse(checklist["ready"])
+
+    def test_a_divergent_merge_git_proof_is_not_a_merge(self):
+        """The host and the record disagree; git proving the recorded SHA is not enough."""
+        other = "f" * 40
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "main",
+            "head_sha": ACCEPTED, "merge_sha": other,
+        }]}
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(pr_host=host, git=git))
+        self.assertTrue(checklist["divergent"])
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertFalse(checklist["ready"])
+
+    def test_a_recorded_claim_backs_the_merge_when_the_host_row_is_absent(self):
+        """A missing host row is unproven; the recorded claim plus git is what is left."""
+        checklist = self.module.plan(facts(pr_host={
+            "state": "ok", "reason": "", "pull_requests": []}))
+        self.assertEqual(row(checklist, 2)["status"], "blocked")
+        self.assertIn("no record for PR 12",
+                      " ".join(row(checklist, 2)["detail"]["problems"]))
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+        self.assertFalse(checklist["ready"])
+
+    def test_an_unreadable_host_does_not_lend_the_record_authority_to_rows_three_and_four(
+            self):
+        checklist = self.module.plan(facts(pr_host={
+            "state": "unknown", "reason": "PR host unreachable"}))
+        self.assertEqual(row(checklist, 2)["status"], "unknown")
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+
+    def test_a_crash_between_merge_and_tracker_is_repaired_from_host_facts(self):
+        """The corrected fixture in its own recovery class: the same crash window.
+
+        The ledger holds one ``merged=false`` record with no merge SHA; the host reports
+        ``MERGED`` with the merge SHA, git proves ``A -> M`` and ``M -> H``. This is the
+        review fixture (V04) that used to plan ``ready=false`` with rows 2-4 blocked.
+        """
+        record = self.record_acceptance(premerge_acceptance_record())
+        first = self.module.reconcile(
+            RUN_ID, self.authority(tracker={
+                "state": "ok", "reason": "",
+                "tickets": [{"ticket": "39", "state": "open"}]}),
+            home=self.home, answer_location="tickets/task-40-answer.md")
+        self.assertEqual(first["checklist"]["classification"], "tracker_unclosed")
+        self.assertEqual(first["closeout"]["outcome"], "failure")
+        self.assertTrue(first["closeout"]["evidence_refs"])
+        self.assertEqual(first["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
+
+        second = self.module.reconcile(
+            RUN_ID, self.authority(), home=self.home,
+            answer_location="tickets/task-40-answer.md")
+        self.assertTrue(second["checklist"]["ready"],
+                        [row(second["checklist"], i)["detail"] for i in (2, 3, 4, 7)])
+        self.assertEqual(second["closeout"]["outcome"], "success")
+        self.assertNotEqual(first["record_id"], second["record_id"])
+        outcomes = sorted(item["detail"]["outcome"]
+                          for item in self.ledger.read(
+                              RUN_ID, {"kind": "closeout"}, home=self.home))
+        self.assertEqual(outcomes, ["failure", "success"])
 
 
 class ReferenceParityTests(unittest.TestCase):
