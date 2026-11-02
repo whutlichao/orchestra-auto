@@ -58,8 +58,10 @@ LEVEL_KEYS = (
     "value", "evidence_ref", "at", "merge_sha", "pr_state", "ancestry", "equivalence",
     "read_back", "start", "terminal", "decided_by", "reason",
 )
+LEVEL_REQUIRED = ("value", "at")
 CHECK_KEYS = ("name", "command", "result", "evidence_ref")
 REVIEW_KEYS = ("axis", "result", "evidence_ref", "waiver")
+REVIEW_REQUIRED = ("axis", "result")
 WAIVER_KEYS = ("reason", "spec_evidence_ref", "answer_evidence_ref")
 PR_KEYS = ("number", "head_at_acceptance", "base")
 RECORD_KEYS = (
@@ -69,10 +71,19 @@ RECORD_KEYS = (
 OBSERVATION_KEYS = (
     "ticket", "pr", "level", "observation", "reason", "evidence_ref", "observed_at",
 )
-
-#: The two documented shapes of ``levels.merged`` evidence, exactly one per record.
+#: The nested objects inside a level. Error messages and ``--print-schema`` name these keys;
+#: the validator checks the keys it reads and ignores extras, exactly as before.
 ANCESTRY_KEYS = ("ancestor", "descendant", "result")
+#: The two documented shapes of ``levels.merged`` evidence, exactly one per record.
 EQUIVALENCE_KEYS = ("accepted_sha", "merge_sha", "diff_empty", "command")
+READ_BACK_KEYS = ("state", "at")
+START_KEYS = ("turn_start", "source", "evidence_ref")
+LEVEL_SHAPES = {
+    "ancestry": ANCESTRY_KEYS,
+    "equivalence": EQUIVALENCE_KEYS,
+    "read_back": READ_BACK_KEYS,
+    "start": START_KEYS,
+}
 
 #: A bare ``grep`` proves a string exists in a file; it never proves a command ran.
 _GREP_COMMANDS = ("grep", "egrep", "fgrep", "rg", "ag", "ack")
@@ -155,6 +166,11 @@ def is_sha(value):
     return isinstance(value, str) and bool(_SHA_TEXT.fullmatch(value))
 
 
+def _shape(keys):
+    """One object shape as the error messages spell it: ``{a, b, c}``."""
+    return "{" + ", ".join(keys) + "}"
+
+
 def _unknown_keys(value, allowed, path, errors):
     unexpected = sorted(set(value) - set(allowed))
     if unexpected:
@@ -168,7 +184,7 @@ def _unknown_keys(value, allowed, path, errors):
 
 def _validate_pr(pr, errors):
     if not isinstance(pr, dict):
-        errors.append("pr must be an object")
+        errors.append("pr must be an object " + _shape(PR_KEYS))
         return
     _unknown_keys(pr, PR_KEYS, "pr", errors)
     number = pr.get("number")
@@ -184,7 +200,7 @@ def _validate_pr(pr, errors):
 def _validate_check(index, check, errors):
     path = f"checks[{index}]"
     if not isinstance(check, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(CHECK_KEYS))
         return
     _unknown_keys(check, CHECK_KEYS, path, errors)
     if not is_nonempty(check.get("name")):
@@ -209,7 +225,7 @@ def _validate_check(index, check, errors):
 def _validate_review(review, errors):
     path = "review"
     if not isinstance(review, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(REVIEW_KEYS))
         return
     _unknown_keys(review, REVIEW_KEYS, path, errors)
     axis = review.get("axis")
@@ -224,7 +240,8 @@ def _validate_review(review, errors):
     if result == "waiver":
         waiver = review.get("waiver")
         if not isinstance(waiver, dict):
-            errors.append(path + ".waiver must record why both axes were waived")
+            errors.append(path + ".waiver must record why both axes were waived as "
+                          + _shape(WAIVER_KEYS))
             return
         _unknown_keys(waiver, WAIVER_KEYS, path + ".waiver", errors)
         if not is_nonempty(waiver.get("reason")):
@@ -240,7 +257,8 @@ def _validate_start(level, errors):
     path = "levels.implemented.start"
     start = level.get("start")
     if not isinstance(start, dict):
-        errors.append(path + " is required: an observed turn start or the attempt evidence")
+        errors.append(path + " is required: an observed turn start or the attempt "
+                              "evidence, as " + _shape(START_KEYS))
         return
     if start.get("turn_start") == "observed":
         return
@@ -252,8 +270,8 @@ def _validate_start(level, errors):
     if source in START_SOURCES[1:] and is_nonempty(start.get("evidence_ref")):
         return
     errors.append(
-        path + " must be turnStart: observed or the attempt's artifact / "
-        "status-projection evidence")
+        path + " must be {turn_start: observed} or {source: "
+        + " / ".join(START_SOURCES[1:]) + ", evidence_ref: <a reference>}")
 
 
 def _is_diff_command(command):
@@ -275,7 +293,10 @@ def _is_diff_command(command):
 def _validate_ancestry(ancestry, record, level, errors):
     path = "levels.merged.ancestry"
     if not isinstance(ancestry, dict):
-        errors.append(path + " must record the git ancestry check")
+        errors.append(path + " must record the git ancestry check as "
+                      + _shape(ANCESTRY_KEYS)
+                      + ", e.g. {ancestor: <accepted_sha>, descendant: <merge_sha>, "
+                        "result: true}")
         return
     _unknown_keys(ancestry, ANCESTRY_KEYS, path, errors)
     if ancestry.get("ancestor") != record.get("accepted_sha"):
@@ -296,7 +317,11 @@ def _validate_equivalence(equivalence, record, level, errors):
     """
     path = "levels.merged.equivalence"
     if not isinstance(equivalence, dict):
-        errors.append(path + " must record the content-equivalence check")
+        errors.append(path + " must record the content-equivalence check as "
+                      + _shape(EQUIVALENCE_KEYS)
+                      + ", e.g. {accepted_sha: <accepted_sha>, "
+                        "merge_sha: <merge_sha>, diff_empty: true, "
+                        "command: git diff <accepted_sha> <merge_sha>}")
         return
     _unknown_keys(equivalence, EQUIVALENCE_KEYS, path, errors)
     if equivalence.get("accepted_sha") != record.get("accepted_sha"):
@@ -320,7 +345,7 @@ def _validate_equivalence(equivalence, record, level, errors):
 def _validate_level(name, level, record, errors):
     path = "levels." + name
     if not isinstance(level, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(LEVEL_KEYS))
         return
     _unknown_keys(level, LEVEL_KEYS, path, errors)
     value = level.get("value")
@@ -363,8 +388,9 @@ def _validate_level(name, level, record, errors):
         equivalence = level.get("equivalence")
         if ancestry is None and equivalence is None:
             errors.append(
-                "levels.merged needs either ancestry {ancestor, descendant, result} "
-                "or equivalence {accepted_sha, merge_sha, diff_empty, command}")
+                "levels.merged needs either ancestry "
+                + _shape(ANCESTRY_KEYS) + " or equivalence "
+                + _shape(EQUIVALENCE_KEYS))
         elif ancestry is not None and equivalence is not None:
             errors.append(
                 "levels.merged records both ancestry and equivalence; a merge is proven "
@@ -377,7 +403,9 @@ def _validate_level(name, level, record, errors):
         read_back = level.get("read_back")
         if not isinstance(read_back, dict):
             errors.append(
-                "levels.tracker_closed.read_back must be a tracker read-back")
+                "levels.tracker_closed.read_back must be a tracker read-back as "
+                + _shape(READ_BACK_KEYS)
+                + ", e.g. {state: closed, at: <RFC3339 UTC instant>}")
         else:
             if read_back.get("state") != "closed":
                 errors.append(
@@ -474,6 +502,81 @@ def validate_observation(observation):
     if not is_utc_instant(observation.get("observed_at")):
         errors.append("observation.observed_at must be an RFC3339 UTC instant")
     return errors
+
+
+def schema():
+    """The ``--print-schema`` document, derived from the module's own constants.
+
+    Pure: it reads module constants only, so it performs no I/O and never touches the
+    ledger, a PR host, a tracker or git.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record": {
+            "fields": list(RECORD_KEYS),
+            "required": list(RECORD_KEYS),
+            "schema_version_value": SCHEMA_VERSION,
+            "pr_fields": list(PR_KEYS),
+            "pr_required": list(PR_KEYS),
+            "check_fields": list(CHECK_KEYS),
+            "check_required": list(CHECK_KEYS),
+            "review_fields": list(REVIEW_KEYS),
+            "review_required": list(REVIEW_REQUIRED),
+            "review_conditional_required": [
+                {"fields": ["evidence_ref"], "when": "result is 'pass'"},
+                {"fields": list(WAIVER_KEYS), "when": "result is 'waiver' "
+                                                       "(inside review.waiver)"},
+            ],
+            "waiver_fields": list(WAIVER_KEYS),
+            "waiver_required": list(WAIVER_KEYS),
+            "level_names": list(LEVEL_NAMES),
+            "level_fields": list(LEVEL_KEYS),
+            "level_required": list(LEVEL_REQUIRED),
+            "level_conditional_required": {
+                "value is true or terminal is set": ["evidence_ref"],
+                "implemented.value is true": ["start"],
+                "merged.value is true": ["merge_sha", "pr_state"],
+                "merged.ancestry / merged.equivalence": [
+                    "exactly one of the two shapes"],
+                "tracker_closed.value is true": ["read_back"],
+                "merged.terminal is set": ["decided_by", "reason"],
+            },
+            "level_notes": ["a terminal level is merged-only, sets value false, and "
+                            "requires decided_by == 'human'",
+                            "a merge is proven by exactly one of "
+                            + _shape(ANCESTRY_KEYS) + " or "
+                            + _shape(EQUIVALENCE_KEYS)],
+            "level_shapes": {key: list(value) for key, value in LEVEL_SHAPES.items()},
+            "note": "levels carries all four level names; each level is an object "
+                    "with level_fields",
+        },
+        "observation": {
+            "fields": list(OBSERVATION_KEYS),
+            "required": list(OBSERVATION_KEYS),
+            "command": "observe",
+        },
+        "enums": {
+            "level_names": list(LEVEL_NAMES),
+            "gates": list(GATES),
+            "deciders": list(DECIDERS),
+            "review_axes": list(REVIEW_AXES),
+            "check_results": list(CHECK_RESULTS),
+            "review_results": list(REVIEW_RESULTS),
+            "start_sources": list(START_SOURCES),
+            "terminals": list(TERMINALS),
+            "observations": list(OBSERVATIONS),
+        },
+        "formats": {
+            "accepted_sha": "a commit SHA (7-64 hex characters)",
+            "head_at_acceptance": "a commit SHA (7-64 hex characters)",
+            "timestamp": "RFC3339 UTC instant with Z or +00:00, e.g. 2026-11-02T09:00:00Z",
+        },
+    }
+
+
+SCHEMA_HELP = ("Run with the top-level --print-schema flag to print the complete "
+               "record/observation schema: every field, the nested object shapes, and "
+               "the known enum values.")
 
 
 # ---------------------------------------------------------------------------
@@ -1118,8 +1221,13 @@ def _now():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="acceptance.py", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="acceptance.py", description=__doc__, epilog=SCHEMA_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--print-schema", action="store_true",
+        help="print the record/observation JSON schema and exit")
+    sub = parser.add_subparsers(dest="command", required=False)
 
     record_parser = sub.add_parser(
         "record", help="validate, verify and append one acceptance record")
@@ -1157,6 +1265,11 @@ def main(argv=None):
     retry_parser.add_argument("--run-id", required=True)
 
     args = parser.parse_args(argv)
+    if args.print_schema:
+        _emit(schema())
+        return 0
+    if args.command is None:
+        parser.error("a command is required (or --print-schema)")
     try:
         ledger_home = home()
         if args.command == "record":

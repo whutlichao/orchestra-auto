@@ -108,6 +108,32 @@ SECTION_STATES = ("ok", "unknown")
 RELEASE_VERIFICATION_KEYS = ("source", "at", "version_scope")
 MAPPING_KEYS = ("dispatch_id", "task_id", "attempt", "worktree")
 
+#: The row shape each authority section's row list holds, as read by the planner
+#: (``_row_two`` through ``_row_ten``). ``--print-schema`` prints these so a reader is told
+#: the same shape the planner reads.
+SECTION_ROWS = {
+    "pr_host": ("pull_requests", ("pr", "state", "merge_sha", "base")),
+    "git": ("ancestry", ("ancestor", "descendant", "result")),
+    "tickets": ("tickets", ("ticket", "integrated", "evidence_ref")),
+    "tracker": ("tickets", ("ticket", "state", "closed_at")),
+    "workers": ("rows", ("dispatch_id", "task_id", "attempt", "worktree", "worker_state")),
+}
+#: ``git`` also carries the local-main object ``_row_five`` checks.
+MAIN_KEYS = ("branch", "head", "local_branch", "local_head", "upstream", "clean", "synced")
+#: ``dashboard`` carries a gap and never evidence; ``release`` carries one verification.
+DASHBOARD_KEYS = ("gap",)
+PENDING_ITEM_KEYS = (
+    "record_id", "pending_type", "pr", "ticket", "accepted_sha", "owner", "condition",
+    "check_after", "resolved", "status", "checks",
+)
+PENDING_CHECKS = ("pr_merged", "merge_sha", "main_synced", "tracker_closed")
+#: Every top-level key ``validated_facts`` accepts, and the required ones among them.
+FACTS_TOP_KEYS = ("schema_version", "run_id", "observed_at", "answer_location",
+                  *FACTS_SECTIONS)
+FACTS_REQUIRED = ("schema_version", "run_id", "observed_at", "answer_location")
+#: A section always carries these two; the row list is additionally required when state is ok.
+SECTION_KEYS = ("state", "reason")
+
 
 def _load(name, module_name):
     """Import a sibling script by path: the shared modules are reused, not copied."""
@@ -138,16 +164,107 @@ def _unknown_section(reason):
     return {"state": "unknown", "reason": reason}
 
 
+def schema():
+    """The ``--print-schema`` document, derived from the module's own constants.
+
+    Pure: it reads module constants only, so it performs no I/O and never touches the
+    ledger, a PR host, a tracker or git.
+    """
+    acceptance_schema = ACCEPTANCE.schema()["record"]
+    sections = {}
+    for name in FACTS_SECTIONS:
+        section = {
+            "fields": list(SECTION_KEYS),
+            "required": ["state"],
+            "optional": ["reason"],
+            "state_enum": list(SECTION_STATES),
+            "reason": "string; the reason an unknown section gives",
+        }
+        rows = SECTION_ROWS.get(name)
+        if rows is not None:
+            section["rows_key"] = rows[0]
+            section["row_fields"] = list(rows[1])
+            section["rows_note"] = "read when state is ok"
+        if name == "git":
+            section["main_fields"] = list(MAIN_KEYS)
+        elif name == "dashboard":
+            section["gap_fields"] = list(DASHBOARD_KEYS)
+        elif name == "release":
+            section["verification_fields"] = list(RELEASE_VERIFICATION_KEYS)
+        elif name == "pending":
+            section["rows_key"] = "items"
+            section["row_fields"] = list(PENDING_ITEM_KEYS)
+            section["checks_fields"] = list(PENDING_CHECKS)
+            section["one_way_door_types"] = list(ONE_WAY_DOOR_TYPES)
+        elif name == "acceptance":
+            section["rows_key"] = "records"
+            section["row_fields"] = ["record_id", *acceptance_schema["fields"]]
+            section["row_note"] = "each record is validated by acceptance.py"
+            section["levels_fields"] = list(acceptance_schema["level_names"])
+            section["level_object_fields"] = list(acceptance_schema["level_fields"])
+            section["level_shapes"] = {
+                key: list(value)
+                for key, value in acceptance_schema["level_shapes"].items()}
+        elif name == "observations":
+            section["rows_key"] = "records"
+            section["row_fields"] = ["record_id", *ACCEPTANCE.OBSERVATION_KEYS]
+            section["observation_enum"] = list(OBSERVATIONS)
+        sections[name] = section
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "facts": {
+            "top_level_fields": list(FACTS_TOP_KEYS),
+            "required": list(FACTS_REQUIRED),
+            "schema_version_value": SCHEMA_VERSION,
+            "timestamp_fields": ["observed_at"],
+            "timestamp_format": "RFC3339 UTC instant, e.g. 2026-11-02T09:00:00Z",
+            "sections": sections,
+        },
+        "authority_file": {
+            "commands": ["reconcile"],
+            "fields": list(AUTHORITY_SECTIONS),
+            "note": "reconcile --authority takes a JSON object with only these keys",
+        },
+        "mapping": {
+            "fields": list(MAPPING_KEYS),
+            "required_for": "a success closeout before release",
+        },
+        "enums": {
+            "section_states": list(SECTION_STATES),
+            "blocking_statuses": list(BLOCKING_STATUSES),
+            "row_statuses": ["ok", *BLOCKING_STATUSES, "gap"],
+            "closeout_outcomes": list(CLOSEOUT_OUTCOMES),
+            "observations": list(OBSERVATIONS),
+            "one_way_door_types": list(ONE_WAY_DOOR_TYPES),
+            "reclaimable_states": list(RECLAIMABLE_STATES),
+            "retained_states": list(RETAINED_STATES),
+            "level_rows": {key: list(value) for key, value in LEVEL_ROWS.items()},
+        },
+        "rows": [dict(item) for item in ROWS],
+    }
+
+
+SCHEMA_HELP = ("Run with the top-level --print-schema flag to print the complete "
+               "facts/authority schema: every top-level field, every section and row "
+               "shape, which are required, and the known enum values.")
+
+
+def _state_choices():
+    return "{" + ", ".join(SECTION_STATES) + "}"
+
+
 def _section(facts, name):
     """Return one facts section; a missing or malformed section is unknown, not empty."""
     value = facts.get(name)
     if not isinstance(value, dict):
         return _unknown_section(name + " not provided")
-    state = value.get("state")
+    state_key, reason_key = SECTION_KEYS
+    state = value.get(state_key)
     if state not in SECTION_STATES:
-        _invalid("facts." + name + ".state must be 'ok' or 'unknown'")
-    if not isinstance(value.get("reason", ""), str):
-        _invalid("facts." + name + ".reason must be a string")
+        _invalid("facts." + name + "." + state_key + " must be one of "
+                 + _state_choices())
+    if not isinstance(value.get(reason_key, ""), str):
+        _invalid("facts." + name + "." + reason_key + " must be a string")
     return value
 
 
@@ -504,7 +621,7 @@ def _row_eight(facts):
 
 def _row_nine(facts):
     section = _section(facts, "dashboard")
-    gap = section.get("gap")
+    gap = section.get(DASHBOARD_KEYS[0])
     detail = {
         "authoritative": False,
         "gap": gap if isinstance(gap, dict) else None,
@@ -544,12 +661,13 @@ def _pending_checks(facts, item):
         tracker_row = next((row for row in _rows(tracker_section, "tickets")
                             if row.get("ticket") == ticket), None)
         closed = bool(tracker_row and tracker_row.get("state") == "closed")
-    return {
+    checks = {
         "pr_merged": merged,
         "merge_sha": merge_sha,
         "main_synced": synced,
         "tracker_closed": closed,
     }
+    return {name: checks[name] for name in PENDING_CHECKS}
 
 
 def _row_ten(facts, accepted, observed_at):
@@ -660,16 +778,23 @@ def _release_verification(facts):
         return None
     verification = section.get("verification")
     if not isinstance(verification, dict):
-        _invalid("facts.release.verification is required when the release section is ok")
+        _invalid("facts.release.verification is required when the release section is ok; "
+                 "it must be {" + ", ".join(RELEASE_VERIFICATION_KEYS) + "}, e.g. "
+                 "{source: <where it was verified>, at: <RFC3339 UTC instant>, "
+                 "version_scope: <what version range it covers>}")
     unknown = sorted(set(verification) - set(RELEASE_VERIFICATION_KEYS))
     if unknown:
-        _invalid("facts.release.verification has unknown fields: " + ", ".join(unknown))
+        _invalid("facts.release.verification has unknown fields: " + ", ".join(unknown)
+                 + "; it must be {" + ", ".join(RELEASE_VERIFICATION_KEYS) + "}")
     if not ACCEPTANCE.is_nonempty(verification.get("source")):
-        _invalid("facts.release.verification.source must name the verification source")
+        _invalid("facts.release.verification.source must name the verification source, "
+                 "e.g. worker-release --help")
     if not ACCEPTANCE.is_utc_instant(verification.get("at")):
-        _invalid("facts.release.verification.at must be an RFC3339 UTC instant")
+        _invalid("facts.release.verification.at must be an RFC3339 UTC instant, "
+                 "e.g. 2026-11-02T09:00:00Z")
     if not isinstance(verification.get("version_scope"), str):
-        _invalid("facts.release.verification.version_scope must be a string")
+        _invalid("facts.release.verification.version_scope must be a string, e.g. "
+                 "\"orchestra-auto <version>\"")
     return {
         "source": verification["source"],
         "at": verification["at"],
@@ -686,10 +811,10 @@ def validated_facts(facts):
     """
     if not isinstance(facts, dict):
         _invalid("facts must be a JSON object")
-    unknown = sorted(set(facts) - {"schema_version", "run_id", "observed_at",
-                                   "answer_location", *FACTS_SECTIONS})
+    unknown = sorted(set(facts) - set(FACTS_TOP_KEYS))
     if unknown:
-        _invalid("unknown facts fields: " + ", ".join(unknown))
+        _invalid("unknown facts fields: " + ", ".join(unknown) + "; facts take {"
+                 + ", ".join(FACTS_TOP_KEYS) + "}; run --print-schema for the field table")
     if facts.get("schema_version") != SCHEMA_VERSION:
         _invalid("facts.schema_version must be 1")
     if not ACCEPTANCE.is_nonempty(facts.get("run_id")):
@@ -1271,7 +1396,8 @@ def command_reconcile(args, home):
     unknown = sorted(set(recorded) - set(AUTHORITY_SECTIONS))
     if unknown:
         _invalid("the authority file may only supply " + ", ".join(AUTHORITY_SECTIONS)
-                 + "; unknown: " + ", ".join(unknown))
+                 + "; unknown: " + ", ".join(unknown)
+                 + "; run --print-schema for each section's row shape")
     result = reconcile(args.run_id, RecordedFacts(recorded), home=home,
                        answer_location=args.answer_location)
     _emit(result)
@@ -1298,8 +1424,12 @@ def command_show(args, home):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="closeout.py", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="closeout.py", description=__doc__, epilog=SCHEMA_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--print-schema", action="store_true",
+                        help="print the facts/authority JSON schema and exit")
+    sub = parser.add_subparsers(dest="command", required=False)
 
     plan_parser = sub.add_parser(
         "plan", help="print the ten-row closeout checklist from a facts file")
@@ -1321,6 +1451,11 @@ def main(argv=None):
     show_parser.add_argument("--run-id", required=True)
 
     args = parser.parse_args(argv)
+    if args.print_schema:
+        _emit(schema())
+        return 0
+    if args.command is None:
+        parser.error("a command is required (or --print-schema)")
     try:
         if args.command == "plan":
             return command_plan(args)
