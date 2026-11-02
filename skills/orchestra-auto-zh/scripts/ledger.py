@@ -2494,7 +2494,7 @@ class LiveAuthority:
     def _worker_list(self, run_id):
         return self._page(
             ["orchestration", "worker-list", "--run", run_id,
-             "--include-remote", "--limit", str(PAGE_LIMIT)],
+             "--include-remote", "--limit", str(PAGE_LIMIT), "--json"],
             "workers", _normalized_worker_row)
 
     def _task_list(self, run_id):
