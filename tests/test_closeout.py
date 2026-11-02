@@ -1193,5 +1193,125 @@ class CliTests(unittest.TestCase):
                          "worker-release --help (fixture)")
 
 
+class SchemaDiscoveryTests(unittest.TestCase):
+    """``--print-schema`` prints the facts shape from the constants ``plan`` reads.
+
+    Each assertion compares the printed document with the module's own constants, so the
+    published shape and the planner's shapes cannot drift apart.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+        cls.chinese = load_module(SKILL_DIRS[1], "closeout.py")
+        cls.schema = cls.module.schema()
+
+    def cli(self, *args):
+        root = Path(tempfile.mkdtemp()).resolve()
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env={**os.environ, "HOME": str(root), "ORCA_LEDGER_HOME": str(root / "ledger")},
+            cwd=str(root), text=True, capture_output=True)
+
+    def test_print_schema_is_parseable_json_and_exits_zero(self):
+        for bundle, module in ((SKILL_DIRS[0], self.module),
+                               (SKILL_DIRS[1], self.chinese)):
+            with self.subTest(bundle=bundle.name):
+                result = subprocess.run(
+                    [sys.executable, str(bundle / SCRIPT_RELATIVE), "--print-schema"],
+                    text=True, capture_output=True, env=os.environ)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = json.loads(result.stdout)
+                self.assertEqual(parsed["schema_version"], module.SCHEMA_VERSION)
+                self.assertEqual(tuple(parsed["facts"]["top_level_fields"]),
+                                 module.FACTS_TOP_KEYS)
+
+    def test_the_printed_facts_fields_equal_the_source_constants(self):
+        facts = self.schema["facts"]
+        self.assertEqual(tuple(facts["required"]), self.module.FACTS_REQUIRED)
+        self.assertEqual(tuple(facts["sections"]), self.module.FACTS_SECTIONS)
+        for name, section in facts["sections"].items():
+            self.assertEqual(tuple(section["fields"]), self.module.SECTION_KEYS, name)
+            self.assertEqual(section["required"], ["state"], name)
+            self.assertEqual(section["optional"], ["reason"], name)
+
+    def test_every_printed_required_field_is_really_required(self):
+        for field in self.schema["facts"]["required"]:
+            candidate = facts()
+            candidate.pop(field)
+            with self.assertRaises(ValueError, msg=field):
+                self.module.plan(candidate)
+        for section in self.schema["facts"]["sections"].values():
+            for field in section["required"]:
+                broken = facts()
+                broken["pr_host"].pop(field)
+                with self.assertRaises(ValueError):
+                    self.module.plan(broken)
+
+    def test_the_printed_row_shapes_equal_the_source_constants(self):
+        sections = self.schema["facts"]["sections"]
+        for name, (rows_key, row_fields) in self.module.SECTION_ROWS.items():
+            with self.subTest(section=name):
+                self.assertEqual(sections[name]["rows_key"], rows_key)
+                self.assertEqual(tuple(sections[name]["row_fields"]), row_fields)
+        self.assertEqual(tuple(sections["git"]["main_fields"]),
+                         self.module.MAIN_KEYS)
+        self.assertEqual(tuple(sections["release"]["verification_fields"]),
+                         self.module.RELEASE_VERIFICATION_KEYS)
+        self.assertEqual(tuple(sections["pending"]["checks_fields"]),
+                         self.module.PENDING_CHECKS)
+        self.assertEqual(tuple(sections["pending"]["row_fields"]),
+                         self.module.PENDING_ITEM_KEYS)
+        self.assertEqual(tuple(self.schema["authority_file"]["fields"]),
+                         self.module.AUTHORITY_SECTIONS)
+        self.assertEqual(tuple(self.schema["mapping"]["fields"]),
+                         self.module.MAPPING_KEYS)
+
+    def test_the_acceptance_section_mirrors_the_acceptance_module(self):
+        section = self.schema["facts"]["sections"]["acceptance"]
+        self.assertEqual(tuple(section["row_fields"]),
+                         ("record_id", *self.module.ACCEPTANCE.RECORD_KEYS))
+        self.assertEqual(tuple(section["level_object_fields"]),
+                         self.module.ACCEPTANCE.LEVEL_KEYS)
+        self.assertEqual({key: tuple(value)
+                          for key, value in section["level_shapes"].items()},
+                         {key: tuple(value) for key, value
+                          in self.module.ACCEPTANCE.LEVEL_SHAPES.items()})
+
+    def test_the_printed_enums_equal_the_source_constants(self):
+        enums = self.schema["enums"]
+        self.assertEqual(tuple(enums["section_states"]), self.module.SECTION_STATES)
+        self.assertEqual(tuple(enums["blocking_statuses"]),
+                         self.module.BLOCKING_STATUSES)
+        self.assertEqual(tuple(enums["closeout_outcomes"]),
+                         self.module.CLOSEOUT_OUTCOMES)
+        self.assertEqual(tuple(enums["observations"]), self.module.OBSERVATIONS)
+        self.assertEqual(tuple(enums["one_way_door_types"]),
+                         self.module.ONE_WAY_DOOR_TYPES)
+        self.assertEqual(tuple(enums["reclaimable_states"]),
+                         self.module.RECLAIMABLE_STATES)
+        self.assertEqual(tuple(enums["retained_states"]), self.module.RETAINED_STATES)
+        self.assertEqual(len(self.schema["rows"]), len(self.module.ROWS))
+
+    def test_help_points_at_print_schema(self):
+        result = self.cli("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--print-schema", result.stdout)
+
+    def test_the_release_verification_error_prints_its_shape(self):
+        broken = facts()
+        broken["release"] = {"state": "ok", "reason": ""}
+        result = self.cli(
+            "plan", "--run-id", RUN_ID, "--facts",
+            self.write_json("facts-broken.json", broken))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("{source, at, version_scope}", result.stderr)
+
+    def write_json(self, name, payload):
+        path = Path(tempfile.mkdtemp()).resolve() / name
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+
 if __name__ == "__main__":
     unittest.main()

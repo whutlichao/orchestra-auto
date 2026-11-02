@@ -953,5 +953,190 @@ class CliTests(unittest.TestCase):
         self.assertEqual(kinds.count("observation"), 1)
 
 
+class SchemaDiscoveryTests(unittest.TestCase):
+    """``--print-schema`` prints the record shape from the constants ``validate`` uses.
+
+    Each assertion compares the printed document with the module's own constants: a field
+    added to one and not the other fails here instead of drifting in silence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "acceptance.py")
+        cls.chinese = load_module(SKILL_DIRS[1], "acceptance.py")
+        cls.schema = cls.module.schema()
+
+    def cli(self, *args):
+        root = Path(tempfile.mkdtemp()).resolve()
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env={**os.environ, "HOME": str(root), "ORCA_LEDGER_HOME": str(root / "ledger")},
+            cwd=str(root), text=True, capture_output=True)
+
+    def test_print_schema_is_parseable_json_and_exits_zero(self):
+        for bundle, module in ((SKILL_DIRS[0], self.module),
+                               (SKILL_DIRS[1], self.chinese)):
+            with self.subTest(bundle=bundle.name):
+                result = subprocess.run(
+                    [sys.executable, str(bundle / SCRIPT_RELATIVE), "--print-schema"],
+                    text=True, capture_output=True, env=os.environ)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = json.loads(result.stdout)
+                self.assertEqual(parsed["schema_version"], module.SCHEMA_VERSION)
+                self.assertEqual(tuple(parsed["record"]["fields"]), module.RECORD_KEYS)
+
+    def test_the_printed_field_sets_equal_the_source_constants(self):
+        record = self.schema["record"]
+        self.assertEqual(tuple(record["fields"]), self.module.RECORD_KEYS)
+        self.assertEqual(tuple(record["required"]), self.module.RECORD_KEYS)
+        self.assertEqual(tuple(record["pr_fields"]), self.module.PR_KEYS)
+        self.assertEqual(tuple(record["pr_required"]), self.module.PR_KEYS)
+        self.assertEqual(tuple(record["check_fields"]), self.module.CHECK_KEYS)
+        self.assertEqual(tuple(record["check_required"]), self.module.CHECK_KEYS)
+        self.assertEqual(tuple(record["review_fields"]), self.module.REVIEW_KEYS)
+        self.assertEqual(tuple(record["review_required"]), self.module.REVIEW_REQUIRED)
+        self.assertEqual(tuple(record["waiver_fields"]), self.module.WAIVER_KEYS)
+        self.assertEqual(tuple(record["waiver_required"]), self.module.WAIVER_KEYS)
+        self.assertEqual(tuple(record["level_fields"]), self.module.LEVEL_KEYS)
+        self.assertEqual(tuple(record["level_names"]), self.module.LEVEL_NAMES)
+        self.assertEqual(tuple(record["level_required"]), self.module.LEVEL_REQUIRED)
+        self.assertEqual(tuple(self.schema["observation"]["fields"]),
+                         self.module.OBSERVATION_KEYS)
+        self.assertEqual(tuple(self.schema["observation"]["required"]),
+                         self.module.OBSERVATION_KEYS)
+        self.assertEqual({key: tuple(value)
+                          for key, value in record["level_shapes"].items()},
+                         {key: tuple(value)
+                          for key, value in self.module.LEVEL_SHAPES.items()})
+
+    def test_every_printed_required_field_is_really_required(self):
+        """A printed ``required`` list is only useful if validation enforces it."""
+        record = self.schema["record"]
+        for field in record["required"]:
+            candidate = acceptance()
+            candidate.pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["pr_required"]:
+            candidate = acceptance()
+            candidate["pr"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["check_required"]:
+            candidate = acceptance()
+            candidate["checks"][0].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["review_required"]:
+            candidate = acceptance()
+            candidate["review"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["waiver_required"]:
+            candidate = acceptance()
+            candidate["review"] = {"axis": ["standards", "spec"], "result": "waiver",
+                                   "waiver": {"reason": "copy-only",
+                                              "spec_evidence_ref": "spec:1",
+                                              "answer_evidence_ref": "answer.md"}}
+            candidate["review"]["waiver"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["level_required"]:
+            candidate = acceptance()
+            candidate["levels"]["integrated"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in self.schema["observation"]["required"]:
+            candidate = {
+                "ticket": "39", "pr": 12, "level": "merged", "observation": "revert",
+                "reason": "reverted", "evidence_ref": "pr.json",
+                "observed_at": utc_now(),
+            }
+            candidate.pop(field)
+            self.assertNotEqual(self.module.validate_observation(candidate), [], field)
+
+    def test_every_printed_conditional_requirement_is_enforced(self):
+        """The prose in ``*_conditional_required`` must match what validation rejects."""
+        record = self.schema["record"]
+        candidate = acceptance()
+        candidate["review"].pop("evidence_ref")
+        self.assertNotEqual(self.module.validate(candidate), [])
+        for field in ("merge_sha", "pr_state", "ancestry"):
+            candidate = acceptance()
+            candidate["levels"]["merged"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in ("start",):
+            candidate = acceptance()
+            candidate["levels"]["implemented"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        candidate = acceptance()
+        candidate["levels"]["tracker_closed"].pop("read_back")
+        self.assertNotEqual(self.module.validate(candidate), [])
+        for field in ("decided_by", "reason", "evidence_ref"):
+            candidate = acceptance()
+            candidate["levels"]["merged"].update({
+                "value": False, "terminal": "never_merge", "decided_by": "human",
+                "reason": "the merge was reverted"})
+            candidate["levels"]["merged"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        candidate = acceptance()
+        candidate["levels"]["merged"].update({
+            "value": False, "terminal": "never_merge", "decided_by": "coordinator",
+            "reason": "the merge was reverted"})
+        self.assertNotEqual(self.module.validate(candidate), [])
+        self.assertEqual(
+            tuple(record["review_conditional_required"][0]["fields"]),
+            ("evidence_ref",))
+        self.assertEqual(
+            tuple(record["review_conditional_required"][1]["fields"]),
+            self.module.WAIVER_KEYS)
+
+    def test_the_printed_enums_equal_the_source_constants(self):
+        enums = self.schema["enums"]
+        self.assertEqual(tuple(enums["gates"]), self.module.GATES)
+        self.assertEqual(tuple(enums["deciders"]), self.module.DECIDERS)
+        self.assertEqual(tuple(enums["review_axes"]), self.module.REVIEW_AXES)
+        self.assertEqual(tuple(enums["check_results"]), self.module.CHECK_RESULTS)
+        self.assertEqual(tuple(enums["review_results"]), self.module.REVIEW_RESULTS)
+        self.assertEqual(tuple(enums["start_sources"]), self.module.START_SOURCES)
+        self.assertEqual(tuple(enums["terminals"]), self.module.TERMINALS)
+        self.assertEqual(tuple(enums["observations"]), self.module.OBSERVATIONS)
+
+    def test_help_points_at_print_schema(self):
+        result = self.cli("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--print-schema", result.stdout)
+
+    def test_the_ancestry_read_back_and_waiver_errors_print_their_shape(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        record["levels"]["tracker_closed"].pop("read_back")
+        record["levels"]["implemented"]["start"] = {"turn_start": "unobserved"}
+        record["review"] = {"axis": ["standards", "spec"], "result": "waiver"}
+        errors = self.module.validate(record)
+        ancestry = next(error for error in errors if "ancestry" in error)
+        read_back = next(error for error in errors if "read_back" in error)
+        start = next(error for error in errors if ".start" in error)
+        waiver = next(error for error in errors if "waiver" in error)
+        for key in self.module.ANCESTRY_KEYS:
+            self.assertIn(key, ancestry)
+        for key in self.module.READ_BACK_KEYS:
+            self.assertIn(key, read_back)
+        for source in self.module.START_SOURCES[1:]:
+            self.assertIn(source, start)
+        for key in self.module.WAIVER_KEYS:
+            self.assertIn(key, waiver)
+
+    def test_the_merged_evidence_error_prints_both_accepted_shapes(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        errors = self.module.validate(record)
+        message = next(error for error in errors if "merged" in error)
+        for key in (*self.module.ANCESTRY_KEYS, *self.module.EQUIVALENCE_KEYS):
+            self.assertIn(key, message)
+
+    def test_the_cli_prints_the_shape_in_the_record_errors(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        result = self.cli(
+            "record", "--run-id", RUN_ID, "--record", json.dumps(record))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("{ancestor, descendant, result}", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

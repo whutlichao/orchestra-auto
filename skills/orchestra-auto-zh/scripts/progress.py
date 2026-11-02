@@ -97,7 +97,54 @@ RUN_HEALTH = {'healthy', 'degraded', 'blocked', 'lost', 'unknown'}
 LIFECYCLES = {'unknown', 'dispatched', 'running', 'waiting_user', 'reported_done', 'failed',
               'lost', 'reclaimable', 'closed'}
 DELIVERY = ('implemented', 'integrated', 'merged', 'tracker_closed')
-PORTABLE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}\Z')
+PORTABLE_ID_PATTERN = r'[A-Za-z0-9_.:-]{1,128}'
+PORTABLE_ID = re.compile(PORTABLE_ID_PATTERN + r'\Z')
+
+#: Every enum ``validate_data`` checks, declared once. ``--print-schema`` prints these and the
+#: validation messages quote them, so neither can drift from the other.
+MODES = ('REAL', 'DEMO')
+ENUM_FIELDS = {
+    'health': RUN_HEALTH,
+    'lifecycle': LIFECYCLES,
+    'reported_lifecycle': LIFECYCLES,
+    'start_confirmation': ('unknown', 'observed', 'unobserved', 'unsupported'),
+    'kind': ('report', 'test', 'commit', 'pr', 'other'),
+    'mode': MODES,
+}
+#: ``end`` narrows ``run.status`` to the four terminal values in ``mutate``; every other
+#: command accepts ``RUN_STATES``. ``validate_data`` keeps its original two-way choice, so only
+#: the printed schema names the narrowed ``end`` set as well.
+END_STATES = ('completed', 'failed', 'paused', 'cancelled')
+SCHEMA_STATUS_ENUMS = {'task': TASK_STATES, 'end': END_STATES}
+#: ``validate_data``'s own two-way choice, unchanged: every non-task command accepts
+#: ``RUN_STATES`` there, and ``end`` narrows it later in ``mutate``.
+VALIDATION_STATUS_ENUMS = {'task': TASK_STATES}
+#: The field groups ``validate_data`` type-checks as one. Both the checks and ``--print-schema``
+#: read these tuples.
+BOOLEAN_FIELDS = frozenset(DELIVERY) | {'provisional'}
+LIST_FIELDS = ('dependencies', 'evidence')
+WORKER_REPORT_FIELDS = frozenset(
+    {'id', 'task_id', 'dispatch_id', 'attempt', 'reported_lifecycle', 'reported_summary'})
+#: The identity every worker record and worker report carries; ``required`` on a new attempt.
+WORKER_IDENTITY = ('task_id', 'dispatch_id', 'attempt')
+#: The fields a command always needs. ``mutate`` calls ``required`` with exactly these.
+REQUIRED_FIELDS = {
+    'init': ('id', 'target_repo', 'mode'),
+    'task': ('id',),
+    'worker': ('id',),
+    'event': ('type', 'summary'),
+    'delivery': ('task_id',),
+    'artifact': ('id', 'kind', 'label', 'reference'),
+    'end': ('status',),
+    'run': (),
+}
+#: ``required`` calls that apply only in one case; printed as ``conditionally_required``.
+EVENT_REPORT_FIELDS = ('worker_id', *WORKER_IDENTITY)
+CONDITIONAL_REQUIRED = {
+    'worker': ({'fields': list(WORKER_IDENTITY),
+                'when': 'the worker id is new, or --source worker'},),
+    'event': ({'fields': list(EVENT_REPORT_FIELDS), 'when': '--source worker'},),
+}
 
 
 class Degraded(Exception):
@@ -116,25 +163,39 @@ def timestamp(value):
     return datetime.fromisoformat(value).timestamp()
 
 
+def _choices(values):
+    """One enum as a stable message fragment: ``a/b/c`` in sorted order."""
+    return '/'.join(sorted(values))
+
+
 def validate_data(command, data, source):
     if not isinstance(data, dict) or set(data) - FIELDS[command]:
-        raise ValueError('input must be an object containing only documented summary fields')
+        unknown = sorted(set(data) - FIELDS[command]) if isinstance(data, dict) else []
+        message = ('input must be an object containing only documented summary fields; '
+                   + command + ' takes {' + ', '.join(sorted(FIELDS[command]))
+                   + '}; run --print-schema for the field table')
+        if unknown:
+            message += '; unknown: ' + ', '.join(unknown)
+        raise ValueError(message)
     if source == 'worker':
-        allowed = {'id', 'task_id', 'dispatch_id', 'attempt', 'reported_lifecycle', 'reported_summary'}
-        if command not in {'worker', 'event'} or (command == 'worker' and set(data) - allowed):
-            raise ValueError('worker reports cannot verify coordinator facts or delivery')
+        if command not in {'worker', 'event'} or (command == 'worker' and set(data) - WORKER_REPORT_FIELDS):
+            raise ValueError('a worker report takes only {'
+                             + ', '.join(sorted(WORKER_REPORT_FIELDS))
+                             + '} on worker/event, and cannot verify coordinator facts '
+                               'or delivery')
     for key, value in data.items():
-        if key in DELIVERY or key == 'provisional':
+        if key in BOOLEAN_FIELDS:
             if type(value) is not bool:
-                raise ValueError(key + ' must be boolean')
+                raise ValueError(key + ' must be boolean (true or false)')
         elif key == 'attempt':
             if type(value) is not int or value < 1:
                 raise ValueError('attempt must be a positive integer')
-        elif key in {'dependencies', 'evidence'}:
+        elif key in LIST_FIELDS:
             if not isinstance(value, list) or len(value) > 100:
-                raise ValueError(key + ' must be a list of at most 100 references')
+                raise ValueError(key + ' must be a list of at most 100 short strings, '
+                                 'e.g. ["tickets/answer.md#tests"]')
             if any(not isinstance(item, str) or len(item) > 2048 for item in value):
-                raise ValueError('references must be short strings')
+                raise ValueError(key + ' references must be short strings')
         elif key == 'orca_task_id' and value is None:
             pass
         elif not isinstance(value, str) or len(value) > 4096:
@@ -143,23 +204,25 @@ def validate_data(command, data, source):
             continue
         if key == 'id' or key.endswith('_id'):
             if not PORTABLE_ID.fullmatch(value):
-                raise ValueError(key + ' must be a portable identifier')
+                raise ValueError(key + ' must be a portable identifier ('
+                                        + PORTABLE_ID_PATTERN + ')')
     if 'status' in data:
-        choices = TASK_STATES if command == 'task' else RUN_STATES
+        choices = VALIDATION_STATUS_ENUMS.get(command, RUN_STATES)
         if data['status'] not in choices:
-            raise ValueError('unknown status')
-    if 'health' in data and data['health'] not in RUN_HEALTH:
-        raise ValueError('unknown run health')
+            raise ValueError('status must be one of ' + _choices(sorted(choices)))
+    if 'health' in data and data['health'] not in ENUM_FIELDS['health']:
+        raise ValueError('health must be one of ' + _choices(sorted(ENUM_FIELDS['health'])))
     if data.get('provisional') is True and data.get('orca_task_id') is not None:
         raise ValueError('a provisional task must not carry an Orca Task ID')
     for field in ('lifecycle', 'reported_lifecycle'):
-        if field in data and data[field] not in LIFECYCLES:
-            raise ValueError('unknown lifecycle')
-    if 'start_confirmation' in data and data['start_confirmation'] not in {
-            'unknown', 'observed', 'unobserved', 'unsupported'}:
-        raise ValueError('unknown start confirmation')
-    if command == 'artifact' and data.get('kind') not in {'report', 'test', 'commit', 'pr', 'other'}:
-        raise ValueError('artifact kind required: report/test/commit/pr/other')
+        if field in data and data[field] not in ENUM_FIELDS[field]:
+            raise ValueError(field + ' must be one of '
+                             + _choices(sorted(ENUM_FIELDS[field])))
+    if 'start_confirmation' in data and data['start_confirmation'] not in ENUM_FIELDS['start_confirmation']:
+        raise ValueError('start_confirmation must be one of '
+                         + _choices(ENUM_FIELDS['start_confirmation']))
+    if command == 'artifact' and data.get('kind') not in ENUM_FIELDS['kind']:
+        raise ValueError('artifact kind must be one of ' + _choices(ENUM_FIELDS['kind']))
 
 
 def repository_ancestor(path):
@@ -258,7 +321,88 @@ def save(directory, state):
 
 def required(data, *fields):
     if any(field not in data or data[field] == '' for field in fields):
-        raise ValueError('required fields: ' + ', '.join(fields))
+        raise ValueError('required fields: ' + ', '.join(fields)
+                         + '; each must be present and non-empty in the --data object; '
+                           'run --print-schema for the field table')
+
+
+#: The type words ``field_type`` uses. They are not a second field table: which field is
+#: boolean, numeric, a list or an enum is read from ``BOOLEAN_FIELDS``, ``LIST_FIELDS``,
+#: ``ENUM_FIELDS`` and ``PORTABLE_ID_PATTERN`` above, exactly as ``validate_data`` reads them.
+def field_type(command, key):
+    """The type ``validate_data`` enforces for one field, derived from its constants."""
+    if key in BOOLEAN_FIELDS:
+        return 'boolean'
+    if key in LIST_FIELDS:
+        return 'list of at most 100 short strings'
+    if key == 'attempt':
+        return 'positive integer'
+    if key in ENUM_FIELDS:
+        return 'string, one of ' + _choices(ENUM_FIELDS[key])
+    if key == 'status':
+        choices = SCHEMA_STATUS_ENUMS.get(command, RUN_STATES)
+        return 'string, one of ' + _choices(sorted(choices))
+    if key == 'orca_task_id':
+        return 'portable identifier string or null'
+    if key == 'id' or key.endswith('_id'):
+        return 'portable identifier string ' + PORTABLE_ID_PATTERN
+    return 'string'
+
+
+def schema():
+    """The ``--print-schema`` document, derived from the module's own constants.
+
+    Pure: it reads module constants only, so it never starts the service, reads a state
+    directory or touches the registry.
+    """
+    commands = {}
+    for command in FIELDS:
+        required = set(REQUIRED_FIELDS[command])
+        commands[command] = {
+            'fields': sorted(FIELDS[command]),
+            'field_types': {key: field_type(command, key)
+                            for key in sorted(FIELDS[command])},
+            'required': sorted(required),
+            'optional': sorted(FIELDS[command] - required),
+            'conditionally_required': [dict(item)
+                                       for item in CONDITIONAL_REQUIRED.get(command, ())],
+            'boolean_fields': sorted(BOOLEAN_FIELDS & FIELDS[command]),
+            'list_fields': [key for key in LIST_FIELDS if key in FIELDS[command]],
+            'status_enum': (sorted(SCHEMA_STATUS_ENUMS[command])
+                            if command in SCHEMA_STATUS_ENUMS
+                            else ([] if 'status' not in FIELDS[command]
+                                  else sorted(RUN_STATES))),
+        }
+    return {
+        'schema_version': VERSION,
+        'commands': commands,
+        'worker_report': {
+            'commands': ['worker'],
+            'fields': sorted(WORKER_REPORT_FIELDS),
+            'note': 'a worker-sourced report is restricted to this set on worker; '
+                    'event takes its own fields and requires the identity fields',
+        },
+        'enums': {
+            'task_states': sorted(TASK_STATES),
+            'run_states': sorted(RUN_STATES),
+            'run_health': sorted(RUN_HEALTH),
+            'lifecycles': sorted(LIFECYCLES),
+            'start_confirmation': list(ENUM_FIELDS['start_confirmation']),
+            'modes': list(ENUM_FIELDS['mode']),
+            'artifact_kinds': list(ENUM_FIELDS['kind']),
+            'delivery': list(DELIVERY),
+        },
+        'evidence': {'type': 'list of at most 100 short strings, e.g. '
+                             '["tickets/task-39-answer.md#tests"]',
+                     'note': 'a delivery records implemented/integrated/merged/'
+                             'tracker_closed as booleans, each backed by evidence'},
+        'portable_identifier': {'pattern': PORTABLE_ID_PATTERN,
+                                'applies_to': 'id and every field ending in _id'},
+    }
+
+
+SCHEMA_HELP = ('Run with the top-level --print-schema flag to print every field this '
+               'script accepts, which are required, and the known enum values.')
 
 
 # --- singleton registry -----------------------------------------------------------
@@ -1013,9 +1157,9 @@ def mutate(directory, command, data, event_id, source, effective=False,
     if command == 'worker' and data.get('start_confirmation') == 'unsupported':
         data['start_confirmation'] = 'unknown'
     if command == 'init':
-        required(data, 'id', 'target_repo', 'mode')
-        if data['mode'] not in {'REAL', 'DEMO'}:
-            raise ValueError('mode must be REAL or DEMO')
+        required(data, *REQUIRED_FIELDS['init'])
+        if data['mode'] not in ENUM_FIELDS['mode']:
+            raise ValueError('mode must be one of ' + _choices(ENUM_FIELDS['mode']))
         guard_target(directory, data['target_repo'])
     with locked(directory, timeout):
         exists = (directory / 'progress.json').exists()
@@ -1041,7 +1185,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
         elif state is None:
             raise ValueError('initialize this run first')
         elif command == 'task':
-            required(data, 'id')
+            required(data, *REQUIRED_FIELDS['task'])
             task = state['tasks'].setdefault(data['id'], {
                 'id': data['id'], 'title': data['id'], 'dependencies': [], 'status': 'unknown',
                 'blocked_reason': '', 'pending_decision': '', 'provisional': False,
@@ -1053,9 +1197,9 @@ def mutate(directory, command, data, event_id, source, effective=False,
             state['deliveries'].setdefault(data['id'], {
                 'task_id': data['id'], **{key: None for key in DELIVERY}})
         elif command == 'worker':
-            required(data, 'id')
+            required(data, *REQUIRED_FIELDS['worker'])
             if data['id'] not in state['workers']:
-                required(data, 'task_id', 'dispatch_id', 'attempt')
+                required(data, *WORKER_IDENTITY)
                 if source != 'coordinator' or data['task_id'] not in state['tasks']:
                     raise ValueError('coordinator must register worker against an existing task')
                 state['workers'][data['id']] = {
@@ -1064,7 +1208,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
                     'parent_worker_id': data.get('parent_worker_id')}
             worker = state['workers'][data['id']]
             if source == 'worker':
-                required(data, 'task_id', 'dispatch_id', 'attempt')
+                required(data, *WORKER_IDENTITY)
             for field in ('task_id', 'dispatch_id', 'attempt', 'parent_worker_id'):
                 if field in worker and field in data and worker[field] != data[field]:
                     raise ValueError('worker identity is immutable; register a new id for each attempt')
@@ -1079,7 +1223,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
             if effective:
                 worker['last_effective_progress'] = time
         elif command == 'delivery':
-            required(data, 'task_id')
+            required(data, *REQUIRED_FIELDS['delivery'])
             if data['task_id'] not in state['tasks']:
                 raise ValueError('delivery task must exist')
             item = state['deliveries'].setdefault(data['task_id'], {
@@ -1087,14 +1231,14 @@ def mutate(directory, command, data, event_id, source, effective=False,
             item.update(data)
             item['verified_at'] = time
         elif command == 'artifact':
-            required(data, 'id', 'kind', 'label', 'reference')
+            required(data, *REQUIRED_FIELDS['artifact'])
             if 'task_id' in data and data['task_id'] not in state['tasks']:
                 raise ValueError('artifact task must exist')
             state['artifacts'][data['id']] = {**data, 'recorded_at': time}
         elif command == 'event':
-            required(data, 'type', 'summary')
+            required(data, *REQUIRED_FIELDS['event'])
             if source == 'worker':
-                required(data, 'worker_id', 'task_id', 'dispatch_id', 'attempt')
+                required(data, *EVENT_REPORT_FIELDS)
                 reported_worker = state['workers'].get(data['worker_id'], {})
                 if any(data[key] != reported_worker.get(key) for key in ('task_id', 'dispatch_id', 'attempt')):
                     raise ValueError('report identity does not match registered worker attempt')
@@ -1109,9 +1253,10 @@ def mutate(directory, command, data, event_id, source, effective=False,
                     state['workers'][data['worker_id']]['last_effective_progress'] = time
         elif command in {'run', 'end'}:
             if command == 'end':
-                required(data, 'status')
-                if data['status'] not in {'completed', 'failed', 'paused', 'cancelled'}:
-                    raise ValueError('end status must be completed/failed/paused/cancelled')
+                required(data, *REQUIRED_FIELDS['end'])
+                if data['status'] not in SCHEMA_STATUS_ENUMS['end']:
+                    raise ValueError('end status must be one of '
+                                     + _choices(SCHEMA_STATUS_ENUMS['end']))
                 state['run']['ended_at'] = time
             state['run'].update(data)
         state['run']['updated_at'] = time
@@ -1333,7 +1478,9 @@ def _state_required(value):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, epilog=SCHEMA_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--state', help='external audit directory, separate per run')
     parser.add_argument('--registry', help='the singleton progress home (overrides $ORCA_PROGRESS_HOME)')
     parser.add_argument('--label', default='', help='optional human label for this Run descriptor')
@@ -1345,7 +1492,11 @@ def main():
                         help='seconds to wait for the snapshot lock (default 2)')
     parser.add_argument('--bookkeeping', action='store_true',
                         help='reconciliation/backfill write; do not refresh freshness')
-    sub = parser.add_subparsers(dest='command', required=True)
+    # A mutation needs a command; printing the schema does not, so this flag is parsed before
+    # the required subcommand and is pure static output.
+    parser.add_argument('--print-schema', action='store_true',
+                        help='print this script\'s JSON field schema and exit')
+    sub = parser.add_subparsers(dest='command', required=False)
     for command in FIELDS:
         item = sub.add_parser(command)
         item.add_argument('--data', required=True, help='JSON object, or - to read JSON from stdin')
@@ -1374,6 +1525,11 @@ def main():
     viewer.add_argument('--port', type=int, default=8765)
     viewer.add_argument('--stale-seconds', type=int, default=300)
     args = parser.parse_args()
+    if args.print_schema:
+        print(json.dumps(schema(), ensure_ascii=False, indent=2))
+        return 0
+    if args.command is None:
+        parser.error('a command is required (or --print-schema)')
     # ``serve --registry DIR`` is the documented spelling; the global flag is equivalent.
     if getattr(args, 'serve_registry', None):
         if args.registry and args.registry != args.serve_registry:

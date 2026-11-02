@@ -2222,5 +2222,127 @@ class ProgressTests(unittest.TestCase):
             self.assertIn(token, chinese, f'Chinese reference misses {token!r}')
 
 
+class SchemaDiscoveryTests(unittest.TestCase):
+    """``--print-schema`` names the fields the recorder enforces, from the same constants.
+
+    The guard against a hand-written second copy: every assertion compares the printed
+    document with the module's own constants, so a field added to one and not the other
+    fails here instead of drifting in silence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('progress_schema_under_test', SCRIPT)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+        cls.schema = cls.module.schema()
+
+    def cli(self, *args):
+        root = Path(tempfile.mkdtemp()).resolve()
+        environment = {**os.environ, 'ORCA_PROGRESS_HOME': str(root / 'progress-home'),
+                       'ORCA_LEDGER_HOME': str(root / 'ledger-home')}
+        return subprocess.run([sys.executable, str(SCRIPT), *args],
+                              text=True, capture_output=True, env=environment)
+
+    def test_print_schema_is_parseable_json_and_exits_zero(self):
+        for bundle in ('orchestra-auto', 'orchestra-auto-zh'):
+            with self.subTest(bundle=bundle):
+                script = ROOT / 'skills' / bundle / 'scripts' / 'progress.py'
+                result = subprocess.run([sys.executable, str(script), '--print-schema'],
+                                        text=True, capture_output=True, env=os.environ)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = json.loads(result.stdout)
+                self.assertEqual(parsed['schema_version'], self.module.VERSION)
+                self.assertEqual(sorted(parsed['commands']), sorted(self.module.FIELDS))
+
+    def test_every_command_field_set_equals_the_source_constant(self):
+        for command, fields in self.module.FIELDS.items():
+            with self.subTest(command=command):
+                printed = self.schema['commands'][command]
+                self.assertEqual(set(printed['fields']), fields)
+                self.assertEqual(set(printed['field_types']), fields)
+                self.assertEqual(set(printed['required']),
+                                 set(self.module.REQUIRED_FIELDS[command]))
+                self.assertLessEqual(set(printed['required']), fields)
+                self.assertEqual(set(printed['optional']),
+                                 fields - set(self.module.REQUIRED_FIELDS[command]))
+
+    def test_the_boolean_and_list_groups_equal_the_source_constants(self):
+        for command, fields in self.module.FIELDS.items():
+            with self.subTest(command=command):
+                printed = self.schema['commands'][command]
+                self.assertEqual(set(printed['boolean_fields']),
+                                 self.module.BOOLEAN_FIELDS & fields)
+                self.assertEqual(set(printed['list_fields']),
+                                 {key for key in self.module.LIST_FIELDS
+                                  if key in fields})
+
+    def test_the_printed_enums_equal_the_source_constants(self):
+        enums = self.schema['enums']
+        self.assertEqual(set(enums['task_states']), self.module.TASK_STATES)
+        self.assertEqual(set(enums['run_states']), self.module.RUN_STATES)
+        self.assertEqual(set(enums['run_health']), self.module.RUN_HEALTH)
+        self.assertEqual(set(enums['lifecycles']), self.module.LIFECYCLES)
+        self.assertEqual(tuple(enums['modes']), self.module.MODES)
+        self.assertEqual(tuple(enums['artifact_kinds']), self.module.ENUM_FIELDS['kind'])
+        self.assertEqual(tuple(enums['delivery']), self.module.DELIVERY)
+        self.assertEqual(set(self.schema['worker_report']['fields']),
+                         self.module.WORKER_REPORT_FIELDS)
+        self.assertEqual(tuple(self.schema['worker_report']['commands']), ('worker',))
+        self.assertEqual(set(self.schema['commands']['event']['fields']),
+                         self.module.FIELDS['event'])
+
+    def test_the_printed_command_status_enum_is_the_one_the_command_accepts(self):
+        self.assertEqual(set(self.schema['commands']['task']['status_enum']),
+                         self.module.TASK_STATES)
+        self.assertEqual(set(self.schema['commands']['end']['status_enum']),
+                         set(self.module.SCHEMA_STATUS_ENUMS['end']))
+        for command, fields in self.module.FIELDS.items():
+            if 'status' not in fields:
+                self.assertEqual(self.schema['commands'][command]['status_enum'], [])
+
+    def test_print_schema_reads_no_state_and_never_starts_the_service(self):
+        """Static output only: an unwritable home and an absent state still succeed."""
+        missing = Path(tempfile.mkdtemp()) / 'absent' / 'state'
+        result = self.cli('--print-schema', '--state', str(missing))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['commands'])
+        self.assertFalse(missing.exists())
+
+    def test_help_points_at_print_schema(self):
+        result = self.cli('--help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--print-schema', result.stdout)
+
+    def test_the_unknown_field_error_names_the_accepted_set(self):
+        state = Path(tempfile.mkdtemp()).resolve() / 's'
+        result = self.cli('--state', str(state), 'artifact',
+                          '--event-id', 'e1', '--data',
+                          json.dumps({'kind': 'pr', 'ref': 'x'}))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('id, kind, label, reference, task_id', result.stderr)
+        self.assertIn('--print-schema', result.stderr)
+
+    def test_the_required_and_enum_errors_print_their_shape(self):
+        state = Path(tempfile.mkdtemp()).resolve() / 'state'
+        repo = state.parent / 'repo'
+        repo.mkdir()
+        (repo / '.git').mkdir()
+        init = self.cli('--state', str(state), 'init', '--event-id', 'i1', '--data',
+                        json.dumps({'id': 'run1', 'target_repo': str(repo),
+                                    'mode': 'REAL'}))
+        self.assertEqual(init.returncode, 0, init.stderr)
+        delivered = self.cli('--state', str(state), 'delivery', '--event-id', 'd1',
+                             '--data', json.dumps({'evidence': ['answer.md']}))
+        self.assertEqual(delivered.returncode, 1)
+        self.assertIn('required fields: task_id', delivered.stderr)
+        for value in ('implemented', 'integrity_score'):
+            run = self.cli('--state', str(state), 'run', '--event-id', 'r1',
+                           '--data', json.dumps({'health': value}))
+            self.assertEqual(run.returncode, 1)
+            for choice in self.module.RUN_HEALTH:
+                self.assertIn(choice, run.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
