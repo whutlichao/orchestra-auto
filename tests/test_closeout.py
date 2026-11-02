@@ -459,6 +459,115 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertIn(5, checklist["blocking"])
 
 
+class CloseoutAggregationTests(unittest.TestCase):
+    """Closeout consumes ``acceptance.aggregate``: the claim in force per PR.
+
+    A superseded attempt must not keep blocking (#47) and a same-attempt disagreement
+    must not be a false green (review V05). Both are the aggregate's latest-attempt and
+    divergence results, not a second judgement made inside the checklist.
+    """
+
+    OLD_ACCEPTED = "c" * 40
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+        cls.acceptance = load_module(SKILL_DIRS[0], "acceptance.py")
+
+    def record_at(self, accepted_sha, **overrides):
+        """A complete record whose merge ancestry starts at ``accepted_sha``."""
+        payload = acceptance_record(
+            accepted_sha=accepted_sha,
+            pr={"number": 12, "head_at_acceptance": accepted_sha, "base": "main"},
+            **overrides)
+        payload["levels"]["merged"]["ancestry"] = {
+            "ancestor": accepted_sha, "descendant": MERGE, "result": True}
+        return payload
+
+    def implemented_only(self):
+        """An earlier attempt that only implemented the ticket: no merge claim yet."""
+        payload = self.record_at(self.OLD_ACCEPTED, attempt=1)
+        at = utc_now()
+        payload["levels"] = {
+            "implemented": payload["levels"]["implemented"],
+            "integrated": {"value": False, "at": at},
+            "merged": {"value": False, "at": at},
+            "tracker_closed": {"value": False, "at": at},
+        }
+        return payload
+
+    def facts_with(self, *records):
+        return facts(acceptance={"state": "ok", "reason": "", "records": [
+            {"record_id": record_id, **payload}
+            for record_id, payload in records]})
+
+    def payload_of(self, entry):
+        return {key: value for key, value in entry.items() if key != "record_id"}
+
+    def aggregate_over(self, data):
+        """The same payloads through ``acceptance.aggregate``, the shared judgement."""
+        return self.acceptance.aggregate("39", [
+            self.acceptance._ledger_record(self.payload_of(entry), RUN_ID)
+            for entry in data["acceptance"]["records"]])
+
+    def latest_attempt_facts(self):
+        return self.facts_with(
+            ("44444444-4444-4444-8444-444444444444", self.implemented_only()),
+            ("55555555-5555-4555-8555-555555555555", acceptance_record(attempt=2)))
+
+    def divergent_facts(self):
+        """Two records at attempt 1 that disagree about the accepted SHA."""
+        data = self.facts_with(
+            ("66666666-6666-4666-8666-666666666666",
+             self.record_at(self.OLD_ACCEPTED, attempt=1)),
+            ("77777777-7777-4777-8777-777777777777",
+             self.record_at(ACCEPTED, attempt=1)))
+        data["git"]["ancestry"] = [
+            {"ancestor": self.OLD_ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        return data
+
+    def test_closeout_uses_only_the_latest_attempt(self):
+        """Old implemented-only + new complete attempt: the new attempt is in force."""
+        data = self.latest_attempt_facts()
+        for entry in data["acceptance"]["records"]:
+            self.assertEqual(self.acceptance.validate(self.payload_of(entry)), [])
+
+        checklist = self.module.plan(data)
+
+        self.assertTrue(checklist["ready"], row(checklist, 1)["detail"])
+        self.assertFalse(checklist["divergent"])
+        entries = row(checklist, 1)["detail"]["entries"]
+        self.assertEqual([entry["attempt"] for entry in entries], [1, 2])
+
+    def test_closeout_and_aggregate_agree_on_divergence(self):
+        divergent = self.divergent_facts()
+        checklist = self.module.plan(divergent)
+        aggregated = self.aggregate_over(divergent)
+        self.assertTrue(aggregated["divergent"])
+        self.assertTrue(checklist.get("divergent"), row(checklist, 1)["detail"])
+        self.assertEqual(checklist.get("divergent"), aggregated["divergent"])
+
+        control = self.latest_attempt_facts()
+        control_checklist = self.module.plan(control)
+        control_aggregate = self.aggregate_over(control)
+        self.assertFalse(control_aggregate["divergent"])
+        self.assertEqual(control_checklist.get("divergent"),
+                         control_aggregate["divergent"])
+
+    def test_a_divergent_attempt_is_blocking(self):
+        """Two records at the same attempt disagree: never a ready closeout."""
+        checklist = self.module.plan(self.divergent_facts())
+
+        self.assertTrue(checklist.get("divergent"), row(checklist, 1)["detail"])
+        self.assertFalse(checklist["ready"])
+        self.assertIn(1, checklist["blocking"])
+        self.assertIn("divergent",
+                      " ".join(row(checklist, 1)["detail"]["problems"]).lower())
+
+
 class RowSixToEightTests(unittest.TestCase):
     """Rows 6-8: every ticket integrated, tracker read back, worker lifecycle."""
 

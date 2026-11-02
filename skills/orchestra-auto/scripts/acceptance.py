@@ -742,6 +742,20 @@ def _pr_number(value):
     return as_int(value)
 
 
+def _level_value(detail, name):
+    """One raw level value, or ``None`` when the record is malformed."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level.get("value") if isinstance(level, dict) else None
+
+
+def _level_object(detail, name):
+    """One raw level object; a malformed level is a false claim, never a crash."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level if isinstance(level, dict) else {"value": False}
+
+
 def aggregate(ticket, records):
     """Return the ticket-level four levels over its ledger records.
 
@@ -753,7 +767,9 @@ def aggregate(ticket, records):
     in force and leaves the earlier ones in ``records`` as history; records at the *same*
     attempt that disagree about the same PR are ``divergent``, and that PR's levels are
     neither averaged nor claimed. The claim in force also has to carry a passed gate:
-    when any of its checks is a ``fail``, it supports no true level.
+    when any of its checks is a ``fail``, it supports no true level. Each PR entry
+    names the selected attempt (``record_id`` and ``current_record_ids``) so a consumer
+    reads the claim in force instead of re-deriving the selection.
     """
     accepted, observations = [], []
     for record in records or []:
@@ -790,8 +806,7 @@ def aggregate(ticket, records):
         signatures = {LEDGER.canonical_json({
             "accepted_sha": _detail(record).get("accepted_sha"),
             "levels": [
-                (_level_name, _detail(record).get("levels", {}).get(_level_name, {}).get(
-                    "value"))
+                (_level_name, _level_value(_detail(record), _level_name))
                 for _level_name in LEVEL_NAMES
             ],
         }) for record in current}
@@ -801,8 +816,7 @@ def aggregate(ticket, records):
         gate_passed = all_checks_passed(detail.get("checks"))
         levels = {}
         for name in LEVEL_NAMES:
-            value = detail.get("levels", {}).get(name)
-            levels[name] = dict(value) if isinstance(value, dict) else {"value": False}
+            levels[name] = dict(_level_object(detail, name))
             if divergent or not gate_passed:
                 levels[name]["value"] = False
         for record in observations:
@@ -834,6 +848,8 @@ def aggregate(ticket, records):
             "divergent": divergent,
             "accepted_sha": detail.get("accepted_sha"),
             "levels": levels,
+            "record_id": latest.get("record_id"),
+            "current_record_ids": [record.get("record_id") for record in current],
             "records": [record.get("record_id") for record in group],
         })
 

@@ -307,6 +307,65 @@ def _accepted_records(facts):
     return "ok", "", found
 
 
+def _ledger_record(item):
+    """One facts acceptance entry in the ledger-record shape ``aggregate`` reads."""
+    payload = item["payload"]
+    return {
+        "record_id": item["record_id"],
+        "kind": "acceptance",
+        "subject": {
+            "ticket": payload.get("ticket"),
+            "pr": _pr_number(payload),
+            "attempt": payload.get("attempt"),
+        },
+        "detail": payload,
+    }
+
+
+def _current_claims(accepted):
+    """The per-PR claims in force, exactly as ``acceptance.aggregate`` selects them.
+
+    ``accepted`` is row 1's full audit list. A record without a ticket or a positive
+    integer attempt is not a claim: row 1 already blocks on it, and promoting it here
+    would invent an attempt. A same-attempt disagreement is returned separately so
+    rows 2-7 never use it and row 1 can block on it; the superseded attempts stay in
+    the row-1 audit and are never rewritten.
+    """
+    groups, order = {}, []
+    for item in accepted:
+        payload = item["payload"]
+        ticket = payload.get("ticket")
+        if not ACCEPTANCE.is_nonempty(ticket):
+            continue
+        if type(payload.get("attempt")) is not int or payload["attempt"] < 1:
+            continue
+        if ticket not in groups:
+            groups[ticket] = []
+            order.append(ticket)
+        groups[ticket].append(item)
+
+    claims, divergent = [], []
+    for ticket in order:
+        group = groups[ticket]
+        aggregated = ACCEPTANCE.aggregate(
+            ticket, [_ledger_record(item) for item in group])
+        by_id = {item["record_id"]: item for item in group}
+        for pr in aggregated["prs"]:
+            current = by_id.get(pr.get("record_id"))
+            claim = {
+                "record_id": pr.get("record_id", ""),
+                "current_record_ids": list(pr.get("current_record_ids", [])),
+                "ticket": ticket,
+                "pr": pr.get("number"),
+                "attempt": pr.get("attempt"),
+                "divergent": pr.get("divergent") is True,
+                "payload": current["payload"] if current else {},
+                "errors": current["errors"] if current else [],
+            }
+            (divergent if claim["divergent"] else claims).append(claim)
+    return claims, divergent
+
+
 def _level(payload, name):
     levels = payload.get("levels") if isinstance(payload, dict) else None
     level = levels.get(name) if isinstance(levels, dict) else None
@@ -336,10 +395,18 @@ def _row(index, status, detail=None, evidence=None):
     }
 
 
-def _row_one(run_id, facts):
-    state, reason, accepted = _accepted_records(facts)
+def _divergence_detail(claim):
+    return {
+        "ticket": claim["ticket"],
+        "pr": claim["pr"],
+        "attempt": claim["attempt"],
+        "record_ids": claim["current_record_ids"],
+    }
+
+
+def _row_one(run_id, state, reason, accepted, divergent):
     if state != "ok":
-        return _row(1, "unknown", {"reason": reason}), accepted
+        return _row(1, "unknown", {"reason": reason})
     problems, entries, evidence = [], [], []
     for item in accepted:
         payload = item["payload"]
@@ -363,12 +430,22 @@ def _row_one(run_id, facts):
             problems.append(
                 str(item["record_id"]) + ": a recorded check did not pass; the gate "
                 "did not pass and blocks the declaration")
+    for claim in divergent:
+        problems.append(
+            "PR " + str(claim["pr"]) + ": the acceptance records at attempt "
+            + str(claim["attempt"]) + " disagree about the accepted SHA or the level "
+            "values; the divergent claim is not a single claim in force")
     if not accepted:
         problems.append(
             "no acceptance record is persisted; the accepted SHA must be captured at "
             "acceptance and cannot be reconstructed later")
     status = "blocked" if problems else "ok"
-    return _row(1, status, {"entries": entries, "problems": problems}, evidence), accepted
+    detail = {
+        "entries": entries,
+        "problems": problems,
+        "divergent": [_divergence_detail(claim) for claim in divergent],
+    }
+    return _row(1, status, detail, evidence)
 
 
 def _row_two(facts, accepted):
@@ -750,11 +827,13 @@ def _apply_observations(rows, accepted, observations):
     return applied
 
 
-def _classification(rows, pending_open, applied):
+def _classification(rows, pending_open, applied, divergent=False):
     blocking = [item for item in rows if item["status"] in BLOCKING_STATUSES
                 and item["id"] != 9]
     if not blocking:
         return "ready"
+    if divergent:
+        return "acceptance_divergent"
     if applied.get("revert"):
         return "merge_reverted"
     if applied.get("reopen"):
@@ -847,15 +926,15 @@ def plan(facts):
     run_id = normalized["run_id"]
     observed_at = normalized["observed_at"]
 
-    rows = []
-    row_one, accepted = _row_one(run_id, normalized)
-    rows.append(row_one)
-    rows.append(_row_two(normalized, accepted))
-    rows.append(_row_three(normalized, accepted))
-    rows.append(_row_four(normalized, accepted))
+    state, reason, accepted = _accepted_records(normalized)
+    claims, divergent = _current_claims(accepted)
+    rows = [_row_one(run_id, state, reason, accepted, divergent)]
+    rows.append(_row_two(normalized, claims))
+    rows.append(_row_three(normalized, claims))
+    rows.append(_row_four(normalized, claims))
     rows.append(_row_five(normalized))
-    rows.append(_row_six(normalized, accepted))
-    rows.append(_row_seven(normalized, accepted))
+    rows.append(_row_six(normalized, claims))
+    rows.append(_row_seven(normalized, claims))
     rows.append(_row_eight(normalized))
     rows.append(_row_nine(normalized))
 
@@ -880,7 +959,9 @@ def plan(facts):
         "rows": rows,
         "ready": not blocking,
         "blocking": blocking,
-        "classification": _classification(rows, pending_open, applied),
+        "divergent": bool(divergent),
+        "classification": _classification(rows, pending_open, applied,
+                                          bool(divergent)),
         # Row 5 pauses later merges on a failed *or* unreadable local-main proof:
         # §6.5.1 preserves the scene when a sync condition cannot be shown to hold.
         "merge_blocked": rows[4]["status"] in ("blocked", "unknown"),
@@ -1217,7 +1298,8 @@ def _bounded_detail(detail):
     trimmed["checklist"] = {
         key: value for key, value in detail["checklist"].items()
         if key in ("schema_version", "run_id", "observed_at", "ready", "blocking",
-                   "classification", "merge_blocked", "non_repeatable", "answer_location")
+                   "divergent", "classification", "merge_blocked", "non_repeatable",
+                   "answer_location")
     }
     trimmed["truncated"] = True
     if len(LEDGER.canonical_json(trimmed)) <= LEDGER.MAX_RECORD_BYTES - 4096:
