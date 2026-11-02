@@ -97,6 +97,24 @@ OBSERVATIONS = ("revert", "reopen")
 CLOSEOUT_OUTCOMES = ("success", "failure", "pending")
 PENDING_DIRNAME = "closeout-pending"
 
+#: The failure classes of ``references/failed-dispatch-recovery.md``. A failure closeout
+#: names exactly one; a classification outside this set is not a recovery classification.
+FAILURE_CLASSES = (
+    "transient_infrastructure",
+    "setup_fault",
+    "isolation_fault",
+    "artifact_present",
+    "authority_fault",
+)
+#: The script-reported next actions of the recovery sequence. ``authorize-release`` is the
+#: step ``failure-record`` hands to ``failure-plan``; only ``failure-plan`` emits ``release``.
+FAILURE_NEXT_ACTIONS = (
+    "read-settled", "record-closeout", "authorize-release", "escalate", "release",
+)
+FAILURE_VERIFICATION_SOURCE = "worker-release --help"
+FAILURE_VERSION_SCOPE = (
+    "worker-release CLI help; replay beyond the help stays an assumption")
+
 FACTS_SECTIONS = (
     "acceptance", "observations", "pending",
     "pr_host", "git", "tickets", "tracker", "workers", "dashboard", "release",
@@ -228,6 +246,16 @@ def schema():
         "mapping": {
             "fields": list(MAPPING_KEYS),
             "required_for": "a success closeout before release",
+        },
+        "failure_recovery": {
+            "commands": ["failure-record", "failure-plan"],
+            "sequence": ["read-settled", "record-closeout", "authorize-release", "release"],
+            "classifications": list(FAILURE_CLASSES),
+            "next_actions": list(FAILURE_NEXT_ACTIONS),
+            "mapping_fields": list(MAPPING_KEYS),
+            "note": "failure-record refuses without a settled read-back; only failure-plan "
+                    "emits the worker-release command, and only when authorize_release "
+                    "allows it",
         },
         "enums": {
             "section_states": list(SECTION_STATES),
@@ -1253,6 +1281,381 @@ def _valid_mapping(mapping):
 
 
 # ---------------------------------------------------------------------------
+# Failed-dispatch recovery: settled proof -> durable closeout -> authorize -> release
+# ---------------------------------------------------------------------------
+
+
+def _failure_mapping(dispatch):
+    """Validate the dispatch -> task -> attempt -> worktree mapping of one failure."""
+    if not isinstance(dispatch, dict):
+        _invalid("failure recovery needs a dispatch mapping object with "
+                 + ", ".join(MAPPING_KEYS))
+    unknown = sorted(set(dispatch) - set(MAPPING_KEYS))
+    if unknown:
+        _invalid("unknown dispatch mapping fields: " + ", ".join(unknown)
+                 + "; the mapping takes {" + ", ".join(MAPPING_KEYS) + "}")
+    mapping = {key: dispatch.get(key) for key in MAPPING_KEYS}
+    if not _valid_mapping([mapping]):
+        _invalid("the dispatch mapping needs a non-empty dispatch_id, task_id and "
+                 "worktree, and an attempt >= 1")
+    return mapping
+
+
+def _failure_evidence(evidence_refs):
+    """One or more evidence references, deduplicated and ordered, or ``ValueError``."""
+    if not isinstance(evidence_refs, (list, tuple)) or not evidence_refs:
+        _invalid("a failure closeout needs at least one evidence reference")
+    refs = []
+    for ref in evidence_refs:
+        if not ACCEPTANCE.is_nonempty(ref):
+            _invalid("every failure evidence reference must be a non-empty string")
+        refs.append(ref)
+    return sorted(set(refs))
+
+
+def _failure_verification(verification):
+    if verification is None:
+        verification = {}
+    if not isinstance(verification, dict):
+        _invalid("release_verification must be an object")
+    unknown = sorted(set(verification) - set(RELEASE_VERIFICATION_KEYS))
+    if unknown:
+        _invalid("release_verification has unknown fields: " + ", ".join(unknown))
+    source = verification.get("source") or FAILURE_VERIFICATION_SOURCE
+    at = verification.get("at") or _now()
+    version_scope = verification.get("version_scope") or FAILURE_VERSION_SCOPE
+    if not ACCEPTANCE.is_nonempty(source):
+        _invalid("release_verification.source must name the verification source")
+    if not ACCEPTANCE.is_utc_instant(at):
+        _invalid("release_verification.at must be an RFC3339 UTC instant")
+    if not isinstance(version_scope, str):
+        _invalid("release_verification.version_scope must be a string")
+    return {"source": source, "at": at, "version_scope": version_scope}
+
+
+def _quoted(value):
+    return '"' + str(value).replace('"', '\\"') + '"'
+
+
+def _settled_commands(dispatch_id):
+    return [
+        "<ORCA> orchestration worker-show --dispatch " + _quoted(dispatch_id) + " --json",
+        "<ORCA> orchestration worker-list --json",
+    ]
+
+
+def _failure_plan_command(run_id, dispatch_id):
+    return ("python3 scripts/closeout.py failure-plan --run-id " + _quoted(run_id)
+            + " --dispatch-id " + _quoted(dispatch_id)
+            + " --read-back <worker-show.json>")
+
+
+def _failure_record_command(run_id, mapping, classification, evidence_refs,
+                            answer_location, read_back_path):
+    parts = [
+        "python3", "scripts/closeout.py", "failure-record",
+        "--run-id", _quoted(run_id),
+        "--dispatch-id", _quoted(mapping["dispatch_id"]),
+        "--task-id", _quoted(mapping["task_id"]),
+        "--attempt", str(mapping["attempt"]),
+        "--worktree", _quoted(mapping["worktree"]),
+        "--classification", classification,
+        "--answer-location", _quoted(answer_location),
+        "--read-back", _quoted(read_back_path or "<worker-show.json>"),
+    ]
+    for ref in evidence_refs:
+        parts.extend(["--evidence-ref", _quoted(ref)])
+    return " ".join(parts)
+
+
+def _failure_record_template(run_id, dispatch_id):
+    return ("python3 scripts/closeout.py failure-record --run-id " + _quoted(run_id)
+            + " --dispatch-id " + _quoted(dispatch_id)
+            + " --task-id <task_id> --attempt <attempt> --worktree <worktree>"
+            + " --classification <classification> --evidence-ref <evidence_ref>"
+            + " --answer-location <answer_location> --read-back <worker-show.json>")
+
+
+def _planned_record_command(run_id, dispatch_id, dispatch, classification,
+                            evidence_refs, answer_location, read_back_path):
+    """The next ``failure-record`` command: exact when the inputs are known, else a template."""
+    try:
+        mapping = _failure_mapping(dispatch)
+        evidence = _failure_evidence(evidence_refs)
+    except ValueError:
+        return _failure_record_template(run_id, dispatch_id)
+    if classification not in FAILURE_CLASSES or not ACCEPTANCE.is_nonempty(answer_location):
+        return _failure_record_template(run_id, dispatch_id)
+    return _failure_record_command(
+        run_id, mapping, classification, evidence, answer_location, read_back_path)
+
+
+def _failure_closeout(records, dispatch_id):
+    """The latest durable failure closeout that names this Dispatch, or ``None``.
+
+    Matching on ``failure_recovery.dispatch_id``, not merely on the worker mapping, keeps
+    a checklist closeout for the same Run from authorizing a release the recovery never
+    classified.
+    """
+    for record in reversed(records):
+        if record.get("kind") != "closeout":
+            continue
+        detail = record.get("detail")
+        if not isinstance(detail, dict) or detail.get("outcome") != "failure":
+            continue
+        recovery = detail.get("failure_recovery")
+        if not isinstance(recovery, dict):
+            continue
+        if recovery.get("dispatch_id") != dispatch_id:
+            continue
+        if recovery.get("settled") is not True:
+            continue
+        mapping = detail.get("mapping")
+        if not isinstance(mapping, list) or not any(
+                isinstance(entry, dict) and entry.get("dispatch_id") == dispatch_id
+                for entry in mapping):
+            continue
+        return record
+    return None
+
+
+def failure_record(run_id, read_back, dispatch, classification, evidence_refs,
+                   home=None, answer_location="", release_verification=None):
+    """Persist one durable failure closeout, but only after settlement is proven.
+
+    The order is enforced here, not in prose: ``read_back`` (the ``worker-show`` output)
+    must prove ``settled: true`` before anything is written, and the record carries the
+    failure classification, its evidence references and the dispatch -> task -> attempt ->
+    worktree mapping. The returned ``next_action`` is ``authorize-release``; only
+    ``failure-plan`` may emit the release command. An undurable write is reported as
+    ``recorded: false, durable: false`` and never as a closeout.
+    """
+    if not ACCEPTANCE.is_nonempty(run_id):
+        _invalid("failure_record needs a non-empty run_id")
+    if not ACCEPTANCE.is_nonempty(answer_location):
+        _invalid("failure_record needs the Answer location for the closeout record")
+    if classification not in FAILURE_CLASSES:
+        _invalid("failure classification must be one of " + ", ".join(FAILURE_CLASSES))
+    mapping = _failure_mapping(dispatch)
+    evidence = _failure_evidence(evidence_refs)
+    verification = _failure_verification(release_verification)
+    settled = _settled_from(read_back)
+    readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "dispatch_id": mapping["dispatch_id"],
+        "record_id": "",
+        "settled": settled,
+        "recorded": False,
+        "appended": False,
+        "durable": False,
+        "next_action": "",
+        "reason": "",
+        "closeout": None,
+        "retry_path": "",
+        "commands": [],
+    }
+    if settled is not True:
+        if readable:
+            result["next_action"] = "escalate"
+            result["reason"] = (
+                "the read-back does not prove the Dispatch settled; release never turns "
+                "an unsettled Dispatch into a settled one")
+        else:
+            result["next_action"] = "read-settled"
+            result["reason"] = (
+                "read the Dispatch back with worker-show and worker-list first; the "
+                "settlement proof is the first recovery step")
+            result["commands"] = _settled_commands(mapping["dispatch_id"])
+        return result
+
+    observed_at = _now()
+    identity = {
+        "run_id": run_id,
+        "dispatch": mapping,
+        "classification": classification,
+        "evidence_refs": evidence,
+        "answer_location": answer_location,
+        "release_verification": {
+            "source": verification["source"],
+            "version_scope": verification["version_scope"],
+        },
+    }
+    record_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        "orca-closeout-failure:" + LEDGER.canonical_json(identity)))
+    result["record_id"] = record_id
+    records, unknown = LEDGER.effective_records(run_id, home=home)
+    if unknown is not None:
+        result["next_action"] = "escalate"
+        result["reason"] = "the ledger history is incomplete: " + unknown["reason"]
+        return result
+    existing = next(
+        (item for item in records if item.get("record_id") == record_id), None)
+    if existing is not None:
+        result["recorded"] = True
+        result["durable"] = True
+        result["next_action"] = "authorize-release"
+        result["reason"] = "the same failure closeout is already durable"
+        result["closeout"] = _summary(existing, False, True)
+        result["commands"] = [_failure_plan_command(run_id, mapping["dispatch_id"])]
+        return result
+
+    worker = read_back.get("worker") if isinstance(read_back.get("worker"), dict) else {}
+    detail = {
+        "outcome": "failure",
+        "classification": classification,
+        "answer_location": answer_location,
+        "acceptance_record_ids": [],
+        "mapping": [mapping],
+        "evidence_refs": evidence,
+        "release_verification": verification,
+        "failure_recovery": {
+            "dispatch_id": mapping["dispatch_id"],
+            "settled": True,
+            "read_back": {
+                "source": "worker-show",
+                "state": read_back.get("state"),
+                "worker_state": worker.get("worker_state", ""),
+                "settled": True,
+            },
+        },
+        "observed_at": observed_at,
+    }
+    record = {
+        "schema_version": LEDGER.SCHEMA_VERSION,
+        "record_id": record_id,
+        "kind": "closeout",
+        "run_id": run_id,
+        "subject": {
+            "dispatch_id": mapping["dispatch_id"],
+            "task_id": mapping["task_id"],
+            "attempt": mapping["attempt"],
+        },
+        "action": "closeout",
+        "request_id": "",
+        "idempotency": "none",
+        "state": "failed",
+        "evidence_ref": answer_location[:2048],
+        "observed_at": observed_at,
+        "actor": "coordinator",
+        "detail": detail,
+    }
+    try:
+        LEDGER.append(record, home=home)
+    except (OSError, TypeError, ValueError) as error:
+        path = ACCEPTANCE.pending_path(
+            LEDGER.home_path(home), run_id, record_id, PENDING_DIRNAME)
+        ACCEPTANCE.write_pending(path, record)
+        result["next_action"] = "record-closeout"
+        result["reason"] = (
+            "the failure closeout could not be persisted; release stays refused until "
+            "the durable write is repaired")
+        result["retry_path"] = str(path)
+        result["record_error"] = str(error)
+        result["closeout"] = _summary(record, False, False, str(path))
+        return result
+    result["recorded"] = True
+    result["appended"] = True
+    result["durable"] = True
+    result["next_action"] = "authorize-release"
+    result["reason"] = (
+        "the failure closeout is durable; ask failure-plan to authorize the release")
+    result["closeout"] = _summary(record, True, True)
+    result["commands"] = [_failure_plan_command(run_id, mapping["dispatch_id"])]
+    return result
+
+
+def failure_plan(run_id, dispatch_id, read_back, home=None, dispatch=None,
+                 classification="", evidence_refs=None, answer_location="",
+                 read_back_path=""):
+    """Return the next command of the failure recovery sequence as JSON.
+
+    The order is fixed: settlement proof, a durable failure closeout, then
+    ``authorize_release``. Only an allowed decision emits the ``worker-release`` command.
+    An unsettled or unknown settlement escalates; it is never released into a settled
+    state, and a closeout for another Dispatch never authorizes this one.
+    """
+    if not ACCEPTANCE.is_nonempty(run_id):
+        _invalid("failure_plan needs a non-empty run_id")
+    if not ACCEPTANCE.is_nonempty(dispatch_id):
+        _invalid("failure_plan needs the failed dispatch id")
+    readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
+    settled = _settled_from(read_back)
+    worker = (read_back.get("worker")
+              if readable and isinstance(read_back.get("worker"), dict) else {})
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "dispatch_id": dispatch_id,
+        "settled": settled,
+        "settled_proof": {
+            "source": "worker-show",
+            "state": read_back.get("state") if isinstance(read_back, dict) else "absent",
+            "worker_state": worker.get("worker_state", ""),
+            "settled": settled,
+        },
+        "closeout_record_id": "",
+        "next_action": "",
+        "allowed": False,
+        "reason": "",
+        "authorize_release": None,
+        "commands": [],
+    }
+    if not readable:
+        result["next_action"] = "read-settled"
+        result["reason"] = (
+            "read the Dispatch back with worker-show and worker-list before any release "
+            "decision")
+        result["commands"] = _settled_commands(dispatch_id)
+        return result
+    if settled is not True:
+        result["next_action"] = "escalate"
+        result["reason"] = (
+            "the read-back does not prove the Dispatch settled; release never turns an "
+            "unsettled Dispatch into a settled one")
+        return result
+    records, unknown = LEDGER.effective_records(run_id, home=home)
+    if unknown is not None:
+        result["next_action"] = "escalate"
+        result["reason"] = "the ledger history is incomplete: " + unknown["reason"]
+        return result
+    record = _failure_closeout(records, dispatch_id)
+    if record is None:
+        result["next_action"] = "record-closeout"
+        result["reason"] = (
+            "release needs a durable failure closeout with this Dispatch's "
+            "classification, evidence references and mapping")
+        command = _planned_record_command(
+            run_id, dispatch_id, dispatch, classification, evidence_refs,
+            answer_location, read_back_path)
+        result["commands"] = [command]
+        return result
+    decision = release_decision(
+        _summary(record, False, True), health_state="unknown", settled=True,
+        decided_by="coordinator")
+    result["closeout_record_id"] = record["record_id"]
+    result["authorize_release"] = decision
+    if decision["allowed"]:
+        result["allowed"] = True
+        result["next_action"] = "release"
+        result["reason"] = decision["reason"]
+        result["commands"] = [
+            "<ORCA> orchestration worker-release --dispatch "
+            + _quoted(dispatch_id) + " --json"]
+        return result
+    result["next_action"] = "record-closeout"
+    result["reason"] = decision["reason"] + (
+        "; record a failure closeout the release contract accepts")
+    command = _planned_record_command(
+        run_id, dispatch_id, dispatch, classification, evidence_refs,
+        answer_location, read_back_path)
+    result["commands"] = [command]
+    return result
+
+
+# ---------------------------------------------------------------------------
 # reconcile: read authority, consume observations, resolve pending, persist
 # ---------------------------------------------------------------------------
 
@@ -1676,6 +2079,39 @@ def command_show(args, home):
     return 0
 
 
+def command_failure_record(args, home):
+    read_back = _read_json(args.read_back)
+    result = failure_record(
+        args.run_id, read_back,
+        {"dispatch_id": args.dispatch_id, "task_id": args.task_id,
+         "attempt": args.attempt, "worktree": args.worktree},
+        args.classification, args.evidence_refs, home=home,
+        answer_location=args.answer_location,
+        release_verification={
+            "source": args.release_source,
+            "at": args.release_at,
+            "version_scope": args.version_scope,
+        })
+    _emit(result)
+    return 0 if result["recorded"] else 1
+
+
+def command_failure_plan(args, home):
+    read_back = _read_json(args.read_back)
+    dispatch = None
+    if args.task_id is not None and args.attempt is not None and args.worktree is not None:
+        dispatch = {"dispatch_id": args.dispatch_id, "task_id": args.task_id,
+                    "attempt": args.attempt, "worktree": args.worktree}
+    result = failure_plan(
+        args.run_id, args.dispatch_id, read_back, home=home, dispatch=dispatch,
+        classification=args.classification or "",
+        evidence_refs=args.evidence_refs or [],
+        answer_location=args.answer_location or "",
+        read_back_path=args.read_back if args.read_back != "-" else "")
+    _emit(result)
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="closeout.py", description=__doc__, epilog=SCHEMA_HELP,
@@ -1703,6 +2139,46 @@ def main(argv=None):
     show_parser = sub.add_parser("show", help="print the last persisted checklist")
     show_parser.add_argument("--run-id", required=True)
 
+    failure_record_parser = sub.add_parser(
+        "failure-record",
+        help="persist one failure closeout after a settled read-back; refuses to release")
+    failure_record_parser.add_argument("--run-id", required=True)
+    failure_record_parser.add_argument("--dispatch-id", required=True)
+    failure_record_parser.add_argument("--task-id", required=True)
+    failure_record_parser.add_argument("--attempt", type=int, required=True)
+    failure_record_parser.add_argument("--worktree", required=True)
+    failure_record_parser.add_argument("--classification", required=True,
+                                       choices=FAILURE_CLASSES)
+    failure_record_parser.add_argument("--evidence-ref", action="append",
+                                       dest="evidence_refs", required=True,
+                                       metavar="REF",
+                                       help="repeat one per evidence reference")
+    failure_record_parser.add_argument("--answer-location", required=True)
+    failure_record_parser.add_argument(
+        "--read-back", required=True, metavar="FILE",
+        help="worker-show JSON proving settled:true, or - for stdin")
+    failure_record_parser.add_argument("--release-source",
+                                       default=FAILURE_VERIFICATION_SOURCE)
+    failure_record_parser.add_argument("--release-at", default="")
+    failure_record_parser.add_argument("--version-scope",
+                                       default=FAILURE_VERSION_SCOPE)
+
+    failure_plan_parser = sub.add_parser(
+        "failure-plan",
+        help="print the next failure recovery command; emits release only when allowed")
+    failure_plan_parser.add_argument("--run-id", required=True)
+    failure_plan_parser.add_argument("--dispatch-id", required=True)
+    failure_plan_parser.add_argument(
+        "--read-back", required=True, metavar="FILE",
+        help="worker-show JSON proving settled:true, or - for stdin")
+    failure_plan_parser.add_argument("--task-id")
+    failure_plan_parser.add_argument("--attempt", type=int)
+    failure_plan_parser.add_argument("--worktree")
+    failure_plan_parser.add_argument("--classification", choices=FAILURE_CLASSES)
+    failure_plan_parser.add_argument("--evidence-ref", action="append",
+                                     dest="evidence_refs", metavar="REF")
+    failure_plan_parser.add_argument("--answer-location")
+
     args = parser.parse_args(argv)
     if args.print_schema:
         _emit(schema())
@@ -1717,6 +2193,10 @@ def main(argv=None):
         home = ACCEPTANCE.home()
         if args.command == "reconcile":
             return command_reconcile(args, home)
+        if args.command == "failure-record":
+            return command_failure_record(args, home)
+        if args.command == "failure-plan":
+            return command_failure_plan(args, home)
         return command_show(args, home)
     except (OSError, TypeError, ValueError) as error:
         print("Closeout error: " + str(error), file=sys.stderr)

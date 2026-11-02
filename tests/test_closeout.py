@@ -1368,6 +1368,169 @@ class CloseoutRecoveryTests(unittest.TestCase):
         self.assertEqual(outcomes, ["failure", "success"])
 
 
+class FailedDispatchRecoveryTests(unittest.TestCase):
+    """The failure recovery order is script-enforced, not remembered.
+
+    Release needs, in order: a read-back proving the Dispatch settled, a durable
+    ``kind: closeout`` carrying the failure classification, evidence references and the
+    dispatch mapping, and an ``authorize_release`` decision. ``failure-record`` refuses to
+    write without the settlement proof; ``failure-plan`` never emits ``worker-release``
+    before the durable record exists.
+    """
+
+    DISPATCH = {
+        "dispatch_id": "dispatch-failed-1",
+        "task_id": "task-39",
+        "attempt": 1,
+        "worktree": "worktrees/task-39",
+    }
+    EVIDENCE = ["evidence/receipt-dispatch-failed-1.json",
+                "evidence/terminal-setup-tail.txt"]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.module = load_module(SKILL_DIRS[0], "closeout.py")
+        self.ledger = self.module.LEDGER
+
+    def read_back(self, settled=True, state="ok"):
+        """A worker-show read-back: settlement proof is the only start of recovery."""
+        return {
+            "state": state,
+            "reason": "" if state == "ok" else "the worker read-back was unreadable",
+            "worker": {
+                "dispatch_id": self.DISPATCH["dispatch_id"],
+                "worker_state": "failed",
+                "settled": settled,
+            },
+        }
+
+    def record_args(self, **overrides):
+        args = {
+            "run_id": RUN_ID,
+            "read_back": self.read_back(),
+            "dispatch": copy.deepcopy(self.DISPATCH),
+            "classification": "transient_infrastructure",
+            "evidence_refs": list(self.EVIDENCE),
+            "home": self.home,
+            "answer_location": "tickets/task-39-answer.md",
+        }
+        args.update(overrides)
+        return args
+
+    def plan_args(self, **overrides):
+        args = {
+            "run_id": RUN_ID,
+            "dispatch_id": self.DISPATCH["dispatch_id"],
+            "read_back": self.read_back(),
+            "home": self.home,
+        }
+        args.update(overrides)
+        return args
+
+    def closeouts(self):
+        return self.ledger.read(RUN_ID, {"kind": "closeout"}, home=self.home)
+
+    def test_failure_recovery_refuses_release_before_a_durable_closeout(self):
+        # A readable, settled read-back alone authorizes nothing: the durable closeout is
+        # the second step and the script must report it as the next action.
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "record-closeout")
+        self.assertIsNone(plan["authorize_release"])
+        self.assertTrue(any("failure-record" in command
+                            for command in plan["commands"]))
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
+
+        # The writer refuses an unsettled or unreadable read-back and persists nothing:
+        # release cannot turn an unsettled Dispatch into a settled one.
+        for read_back, expected in (
+                (self.read_back(settled=False), "escalate"),
+                (self.read_back(state="unknown"), "read-settled")):
+            with self.subTest(read_back=read_back["state"]):
+                refused = self.module.failure_record(
+                    **self.record_args(read_back=read_back))
+                self.assertFalse(refused["recorded"], refused)
+                self.assertFalse(refused["durable"])
+                self.assertEqual(refused["next_action"], expected)
+                self.assertEqual(self.closeouts(), [])
+
+        # An undurable write is not a closeout: the pending copy is kept, and release
+        # stays refused because there is no durable record to authorize it.
+        run_dir = self.home / "runs" / RUN_ID
+        run_dir.mkdir(parents=True, exist_ok=True)
+        ledger_file = run_dir / "ledger.jsonl"
+        ledger_file.write_text("")
+        os.chmod(ledger_file, 0o400)
+        self.addCleanup(os.chmod, ledger_file, 0o600)
+        undurable = self.module.failure_record(
+            **self.record_args(classification="setup_fault"))
+        self.assertFalse(undurable["recorded"], undurable)
+        self.assertFalse(undurable["durable"])
+        self.assertIn("closeout-pending", undurable["retry_path"])
+
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "record-closeout")
+        self.assertIsNone(plan["authorize_release"])
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
+
+    def test_failure_recovery_records_classification_and_evidence(self):
+        recorded = self.module.failure_record(**self.record_args())
+        self.assertTrue(recorded["recorded"], recorded)
+        self.assertTrue(recorded["durable"])
+        self.assertEqual(recorded["next_action"], "authorize-release")
+        self.assertEqual(recorded["closeout"]["outcome"], "failure")
+        self.assertEqual(recorded["closeout"]["classification"],
+                         "transient_infrastructure")
+        self.assertEqual(recorded["closeout"]["evidence_refs"],
+                         sorted(self.EVIDENCE))
+        self.assertEqual(recorded["closeout"]["mapping"], [self.DISPATCH])
+
+        stored = self.closeouts()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["kind"], "closeout")
+        self.assertEqual(stored[0]["action"], "closeout")
+        self.assertEqual(stored[0]["state"], "failed")
+        detail = stored[0]["detail"]
+        self.assertEqual(detail["outcome"], "failure")
+        self.assertEqual(detail["classification"], "transient_infrastructure")
+        self.assertEqual(detail["evidence_refs"], sorted(self.EVIDENCE))
+        self.assertEqual(detail["mapping"], [self.DISPATCH])
+        self.assertEqual(detail["failure_recovery"]["settled"], True)
+
+        # The same failure is idempotent: one durable record, not one per retry.
+        repeated = self.module.failure_record(**self.record_args())
+        self.assertTrue(repeated["recorded"])
+        self.assertFalse(repeated["appended"])
+        self.assertEqual(repeated["record_id"], recorded["record_id"])
+        self.assertEqual(len(self.closeouts()), 1)
+
+        # Only now does the script run authorize_release and emit the release command.
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertTrue(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "release")
+        self.assertTrue(plan["authorize_release"]["allowed"])
+        self.assertEqual(plan["closeout_record_id"], recorded["record_id"])
+        self.assertTrue(any("worker-release" in command
+                            for command in plan["commands"]))
+
+        # A classification or evidence set that cannot support a failure closeout is
+        # rejected before anything is written.
+        for broken in ({"classification": ""},
+                       {"classification": "made_up"},
+                       {"evidence_refs": []},
+                       {"evidence_refs": [" "]},
+                       {"dispatch": {**self.DISPATCH, "attempt": 0}}):
+            with self.subTest(broken=broken):
+                with self.assertRaises(ValueError):
+                    self.module.failure_record(**self.record_args(**broken))
+
+
 class ReferenceParityTests(unittest.TestCase):
     """Both bundles describe the checklist, pending and release precondition identically.
 

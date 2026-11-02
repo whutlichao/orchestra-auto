@@ -11,6 +11,13 @@ something that rarely happens.
 recovery is a retry". The classification below can legitimately end in retry, in fixing the setup,
 in accepting an artifact that already exists, or in reporting and stopping.
 
+## Contents
+
+- [What the original case taught](#what-the-original-case-taught-each-step-below-comes-from-it)
+- [Procedure (six steps, order matters)](#procedure-six-steps-order-matters)
+- [When to stop](#when-to-stop)
+- [Related](#related)
+
 ---
 
 ## What the original case taught (each step below comes from it)
@@ -49,13 +56,13 @@ residualResources   Leftover resources; this decides whether cleanup comes first
 
 Classify into exactly one class; the class, not the receipt's wording, decides the action:
 
-| Class | Evidence that puts it here | Action |
+| Class (`classification`) | Evidence that puts it here | Action |
 | --- | --- | --- |
-| Transient infrastructure | The failed stage is a readiness/connection stage, the exit information names a transient error (timeout, reset, busy, contended slot), an independent re-read now succeeds, and no half-done work exists | A re-dispatch is legitimate — after step 3 and step 5 |
-| Setup fault | The setup command fails when it is actually run, or its exit information names a real error | Fix the setup cause; do not re-dispatch into a broken hook |
-| Isolation / placement fault | The failed stage is worktree, branch or placement creation | Report it and take the documented fallback (serial implementers, or the per-ticket model); do not retry the same placement |
-| Artifact already present | The worktree holds real uncommitted work, or the deliverable is already persisted | Not a failure: verify per G-impl item 5, then accept or send back |
-| Authority / configuration fault | The error names an unconfigured or disabled agent, a missing permission or credential, or an unreadable setting | Escalate per §5 / §9; never substitute an agent and never borrow another identity |
+| Transient infrastructure (`transient_infrastructure`) | The failed stage is a readiness/connection stage, the exit information names a transient error (timeout, reset, busy, contended slot), an independent re-read now succeeds, and no half-done work exists | A re-dispatch is legitimate — after step 3 and step 5 |
+| Setup fault (`setup_fault`) | The setup command fails when it is actually run, or its exit information names a real error | Fix the setup cause; do not re-dispatch into a broken hook |
+| Isolation / placement fault (`isolation_fault`) | The failed stage is worktree, branch or placement creation | Report it and take the documented fallback (serial implementers, or the per-ticket model); do not retry the same placement |
+| Artifact already present (`artifact_present`) | The worktree holds real uncommitted work, or the deliverable is already persisted | Not a failure: verify per G-impl item 5, then accept or send back |
+| Authority / configuration fault (`authority_fault`) | The error names an unconfigured or disabled agent, a missing permission or credential, or an unreadable setting | Escalate per §5 / §9; never substitute an agent and never borrow another identity |
 
 The `recovery` field usually already contains the command to run for its state. Read it before
 designing any retry scheme; the recovery reference is authoritative over this file when they differ.
@@ -124,23 +131,78 @@ Two constraints to respect:
   `id:<repo-id>::<absolute worktree path>`); do not expect it to carry over from the failed
   Dispatch.
 
-### 5. Preserve, then release — in that order
+### 5. Prove settlement, persist the closeout, then release — the script enforces the order
 
-Capture the receipt, the terminal read output and the worktree status into the ledger first: a
-release settles the Dispatch, and a settled Dispatch is no longer evidence you can re-read.
-Reconcile any uncommitted work (back it up, confirm file by file what is real) before anything else;
-never `checkout`, `reset` or clean a worktree that holds work you have not accounted for.
+Release is an action, not a cleanup reflex, and not a step taken from memory. The order is fixed
+and `closeout.py` enforces it: **settled read-back → durable `kind: closeout` →
+`authorize-release` → `release`**. The commands below are the whole procedure; a classification
+alone never authorizes a release.
 
-Then release the failed Dispatch:
+**5.1 Read the settlement back.** Reconcile any uncommitted work first (back it up, confirm file by
+file what is real) and never `checkout`, `reset` or clean a worktree that holds work you have not
+accounted for. The receipt is not settlement proof; `worker-show` is:
 
 ```bash
+<ORCA> orchestration worker-show --dispatch <failed_dispatch_id> --json > /tmp/worker-show.json
+<ORCA> orchestration worker-list --json > /tmp/worker-list.json
+```
+
+**5.2 Persist the failure closeout.** `failure-record` refuses to write unless the read-back
+proves `settled: true`; it records the classification, the evidence references, the
+dispatch → task → attempt → worktree mapping and the Answer location:
+
+```bash
+CLOSEOUT="$SKILLS_ROOT/orchestra-auto/scripts/closeout.py"
+python3 "$CLOSEOUT" failure-record \
+  --run-id <run_id> --dispatch-id <failed_dispatch_id> \
+  --task-id <task_id> --attempt <attempt> --worktree <worktree> \
+  --classification <classification> \
+  --evidence-ref <receipt_or_terminal_ref> \
+  --answer-location <answer_location> \
+  --read-back /tmp/worker-show.json
+```
+
+```json
+{"recorded": true, "durable": true, "next_action": "authorize-release",
+ "closeout": {"outcome": "failure", "classification": "...",
+              "evidence_refs": ["..."], "mapping": [{"dispatch_id": "..."}]}}
+```
+
+`recorded: false` or `durable: false` stops the sequence: the closeout is not durable, so release
+stays refused. The undurable record is kept at `retry_path` under `closeout-pending/`.
+
+**5.3 Ask the script for the next command.** `failure-plan` performs `authorize-release` and
+emits the release command only when the durable closeout and the settled proof both pass:
+
+```bash
+python3 "$CLOSEOUT" failure-plan --run-id <run_id> \
+  --dispatch-id <failed_dispatch_id> --read-back /tmp/worker-show.json
+```
+
+```json
+{"next_action": "release", "allowed": true,
+ "authorize_release": {"allowed": true},
+ "commands": ["<ORCA> orchestration worker-release --dispatch \"<id>\" --json"]}
+```
+
+`next_action` is the only legal next move:
+
+| `next_action` | What it means |
+| --- | --- |
+| `read-settled` | the read-back is missing or unreadable; run 5.1 |
+| `record-closeout` | no durable failure closeout exists, or the release contract refuses it; run 5.2 |
+| `escalate` | settlement is false or unknown; gather evidence and escalate — release never turns an unsettled Dispatch into a settled one |
+| `release` | only now run the release command printed in `commands` |
+
+```bash
+# only after failure-plan printed "next_action": "release" and "allowed": true
 <ORCA> orchestration worker-release --dispatch <failed_dispatch_id> --json
 ```
 
-It never ran the Task, yet its terminals still occupy quota. **Release before re-dispatching**,
-otherwise the new worker may fail to start on quota or waiter slots. The order cannot be reversed.
-Release is not a cleanup reflex: for the artifact-present and authority-fault classes, releasing
-before the artifact is reconciled or the question is escalated destroys the evidence you need.
+Release still comes before re-dispatching, otherwise the replacement may fail to start on quota or
+waiter slots. Release is not a cleanup reflex: for the artifact-present and authority-fault
+classes, releasing before the artifact is reconciled or the question is escalated destroys the
+evidence you need.
 
 ### 6. After re-dispatching, confirm the turn really started per §4.3.1
 

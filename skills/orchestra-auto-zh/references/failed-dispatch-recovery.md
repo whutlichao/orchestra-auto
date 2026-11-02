@@ -9,6 +9,13 @@
 **唯一要记住的一句话**：「不许 relaunch」指的是**不许无条件重试**，不是「唯一出路是重试」。
 下面的分类合法地可能落到：重派、修 setup、接受已经存在的产物，或报告并停止。
 
+## 目录
+
+- [这套顺序的由来](#这套顺序的由来每一步的理由都出自这里)
+- [处置顺序（6 步，顺序有意义）](#处置顺序6-步顺序有意义)
+- [什么时候该停](#什么时候该停)
+- [相关](#相关)
+
 ---
 
 ## 这套顺序的由来（每一步的理由都出自这里）
@@ -44,13 +51,13 @@ residualResources   残留资源，据此决定要不要先清理
 
 归入且只归入一类；决定动作的是分类，不是回执的措辞：
 
-| 分类 | 落到这一类的证据 | 动作 |
+| 分类（`classification`） | 落到这一类的证据 | 动作 |
 | --- | --- | --- |
-| 瞬态基础设施 | 失败阶段是就绪/连接类，退出信息是瞬态错误（超时、连接重置、占用、槽位争用），独立复查现在成功，且没有半成品工作 | 允许重派——在走完第 3、5 步之后 |
-| setup 故障 | setup 命令真跑一次就失败，或其退出信息写明真实错误 | 修 setup 的病因；不要往坏的 hook 上重派 |
-| 隔离/落点故障 | 失败阶段是 worktree、分支或落点创建 | 报告并按已记录的回退方案处理（串行 implementer 或逐票模型）；不要重试同一落点 |
-| 产物已存在 | worktree 里有真实未提交工作，或交付物已持久化 | 这不是失败：按 G-impl 第 5 条核验，再决定收留还是打回 |
-| 权限/配置故障 | 错误写明 agent 未配置或被禁用、缺权限或凭证、设置不可读 | 按 §5 / §9 升级；绝不替换 agent，绝不冒用他人身份 |
+| 瞬态基础设施（`transient_infrastructure`） | 失败阶段是就绪/连接类，退出信息是瞬态错误（超时、连接重置、占用、槽位争用），独立复查现在成功，且没有半成品工作 | 允许重派——在走完第 3、5 步之后 |
+| setup 故障（`setup_fault`） | setup 命令真跑一次就失败，或其退出信息写明真实错误 | 修 setup 的病因；不要往坏的 hook 上重派 |
+| 隔离/落点故障（`isolation_fault`） | 失败阶段是 worktree、分支或落点创建 | 报告并按已记录的回退方案处理（串行 implementer 或逐票模型）；不要重试同一落点 |
+| 产物已存在（`artifact_present`） | worktree 里有真实未提交工作，或交付物已持久化 | 这不是失败：按 G-impl 第 5 条核验，再决定收留还是打回 |
+| 权限/配置故障（`authority_fault`） | 错误写明 agent 未配置或被禁用、缺权限或凭证、设置不可读 | 按 §5 / §9 升级；绝不替换 agent，绝不冒用他人身份 |
 
 `recovery` 字段通常已经把该状态下的命令写好了。**先读它再设计重试方案**；两者冲突时，
 recovery 参考优先于本文件。
@@ -112,21 +119,74 @@ coordinator 不在 worker 的 worktree 里手跑项目 setup——那个 worktre
 - **placement 不静默继承**。`--worktree` 要显式给（用 `--repo` 或
   `id:<repo-id>::<worktree 绝对路径>`），别指望它从失败的 Dispatch 那里继承过来。
 
-### 5. 先存证，再 release——顺序不能倒
+### 5. 证明已结算、持久化收尾，再 release——顺序由脚本强制
 
-先把回执、终端读取输出与 worktree 状态记进台账：release 会结算该 Dispatch，结算之后它就不再是
-你能回读的证据。任何未提交工作先对账（留底、逐文件确认哪些是真的）再谈别的；对有未对账工作的
-worktree，绝不 `checkout`、`reset` 或清理。
+release 是动作，不是清理条件反射，也不能凭记忆执行。顺序固定，且由 `closeout.py` 强制：
+**读回 settled 证明 → 持久化 `kind: closeout` → `authorize-release` → `release`**。下面的命令
+就是完整流程；一个分类本身永远不授权 release。
 
-然后 release 掉那个失败 Dispatch：
+**5.1 读回结算证明。** 任何未提交工作先对账（留底、逐文件确认哪些是真的）再谈别的；对有未对账
+工作的 worktree，绝不 `checkout`、`reset` 或清理。回执不是结算证明，`worker-show` 才是：
 
 ```bash
+<ORCA> orchestration worker-show --dispatch <failed_dispatch_id> --json > /tmp/worker-show.json
+<ORCA> orchestration worker-list --json > /tmp/worker-list.json
+```
+
+**5.2 持久化失败收尾。** `failure-record` 只有在读回证明 `settled: true` 时才写；它记录失败分类、
+证据引用、dispatch → task → attempt → worktree 映射与 Answer 位置：
+
+```bash
+CLOSEOUT="$SKILLS_ROOT/orchestra-auto/scripts/closeout.py"
+python3 "$CLOSEOUT" failure-record \
+  --run-id <run_id> --dispatch-id <failed_dispatch_id> \
+  --task-id <task_id> --attempt <attempt> --worktree <worktree> \
+  --classification <classification> \
+  --evidence-ref <receipt_or_terminal_ref> \
+  --answer-location <answer_location> \
+  --read-back /tmp/worker-show.json
+```
+
+```json
+{"recorded": true, "durable": true, "next_action": "authorize-release",
+ "closeout": {"outcome": "failure", "classification": "...",
+              "evidence_refs": ["..."], "mapping": [{"dispatch_id": "..."}]}}
+```
+
+`recorded: false` 或 `durable: false` 就停：收尾没有持久化，release 继续被拒绝。未持久的记录留在
+`retry_path` 指向的 `closeout-pending/` 下。
+
+**5.3 向脚本要下一条命令。** `failure-plan` 执行 `authorize-release`，只有持久收尾与结算证明都
+通过时才输出 release 命令：
+
+```bash
+python3 "$CLOSEOUT" failure-plan --run-id <run_id> \
+  --dispatch-id <failed_dispatch_id> --read-back /tmp/worker-show.json
+```
+
+```json
+{"next_action": "release", "allowed": true,
+ "authorize_release": {"allowed": true},
+ "commands": ["<ORCA> orchestration worker-release --dispatch \"<id>\" --json"]}
+```
+
+`next_action` 是唯一合法的下一步：
+
+| `next_action` | 含义 |
+| --- | --- |
+| `read-settled` | 读回缺失或不可读；回到 5.1 |
+| `record-closeout` | 没有持久失败收尾，或 release 契约拒绝它；回到 5.2 |
+| `escalate` | 结算为假或未知；取证并升级——release 绝不把未结算的 Dispatch 变成已结算 |
+| `release` | 只有这时才运行 `commands` 里打印的 release 命令 |
+
+```bash
+# 仅在 failure-plan 输出 "next_action": "release" 与 "allowed": true 之后
 <ORCA> orchestration worker-release --dispatch <failed_dispatch_id> --json
 ```
 
-它从未跑过 Task，属它的终端却仍占着配额。**先 release 再重派**，否则新 worker 可能因为配额或
-waiter 槽位起不来。顺序不能倒。但 release 不是条件反射：对「产物已存在」与「权限/配置故障」两类，
-在产物对账完成或问题升级之前就 release，会毁掉你要用的证据。
+仍然**先 release 再重派**，否则新 worker 可能因为配额或 waiter 槽位起不来。但 release 不是条件
+反射：对「产物已存在」与「权限/配置故障」两类，在产物对账完成或问题升级之前就 release，会毁掉
+你要用的证据。
 
 ### 6. 重派后照 §4.3.1 确认 turn 真的开始
 
