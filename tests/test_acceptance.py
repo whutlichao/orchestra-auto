@@ -1138,5 +1138,83 @@ class SchemaDiscoveryTests(unittest.TestCase):
         self.assertIn("{ancestor, descendant, result}", result.stdout)
 
 
+class FailedCheckGateTests(unittest.TestCase):
+    """A recorded failing check is durable evidence and never a passed gate.
+
+    The seam is the product surface: the real ``record`` command against a temporary
+    ledger home reports the gate verdict, and ``show``/``aggregate`` must not turn the
+    same record's claimed levels back into a true gate result.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.env = {
+            **os.environ,
+            "HOME": str(self.root / "home"),
+            "ORCA_LEDGER_HOME": str(self.home),
+        }
+        self.env.pop("ORCA_LEDGER_RETENTION_DAYS", None)
+        self.env.pop("ORCA_LEDGER_RETENTION_BYTES", None)
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env=self.env, cwd=str(self.root), text=True, capture_output=True,
+        )
+
+    def record(self, payload):
+        result = self.run_cli(
+            "record", "--run-id", RUN_ID, "--record", json.dumps(payload))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return json.loads(result.stdout)
+
+    def show(self, ticket="39"):
+        result = self.run_cli("show", "--run-id", RUN_ID, "--ticket", ticket)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def ledger_records(self):
+        path = self.home / "runs" / RUN_ID / "ledger.jsonl"
+        if not path.exists() or path.is_symlink():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+    @staticmethod
+    def failed_check_record():
+        record = acceptance()
+        record["checks"] = [{
+            "name": "a command that failed",
+            "command": "false",
+            "result": "fail",
+            "evidence_ref": "evidence/failing-command.log",
+        }]
+        return record
+
+    def test_a_failed_check_never_reports_gate_passed(self):
+        written = self.record(self.failed_check_record())
+
+        self.assertTrue(written["recorded"], "the failed evidence must stay durable")
+        self.assertFalse(written["gate_passed"])
+        stored = self.ledger_records()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["detail"]["checks"][0]["result"], "fail")
+
+    def test_a_failed_check_never_produces_a_true_level(self):
+        self.record(self.failed_check_record())
+
+        ticket = self.show()["tickets"]["39"]
+        for level in LEVELS:
+            self.assertFalse(ticket["prs"][0]["levels"][level]["value"], level)
+            self.assertFalse(ticket["levels"][level]["value"], level)
+
+        # The record keeps the claim it was given: only the reported level changes.
+        stored = self.ledger_records()[0]["detail"]
+        self.assertEqual(stored["checks"][0]["result"], "fail")
+        self.assertTrue(stored["levels"]["implemented"]["value"])
+
+
 if __name__ == "__main__":
     unittest.main()

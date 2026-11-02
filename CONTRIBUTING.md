@@ -57,7 +57,7 @@ python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 python3 -m unittest tests.test_chain -v                   # chain resume + exit checks
 ```
 
-GitHub Actions runs that same suite on Python 3.10 and 3.14: `ubuntu-latest` runs all ten modules,
+GitHub Actions runs that same suite on Python 3.10 and 3.14: `ubuntu-latest` runs all modules,
 `macos-latest` runs every module except the socket-bound progress one, whose five-second readiness
 budget does not survive a shared runner (the workflow says so where it excludes it). The `tests`
 check is required to merge into `main`. A red check is not a separate CI-only gate: if it passes
@@ -78,9 +78,10 @@ the tests exist, and a change that weakens one needs a very good argument:
   batches are left for the coordinator;
 - a CLI error exits non-zero and is reported, and is never reinterpreted as an empty queue;
 - a fresh install reconciles saved deliveries with successful receipts: the oldest unacknowledged
-  batch that was never announced produces exactly one wake and a persisted
-  `reconciled_delivery_id`, and the local observation in `state.json` is for the coordinator to
-  transcribe into the ledger;
+  batch produces exactly one replay wake, deduplicated by delivery id, and persists the pending
+  intent with `reconciled_delivery_id`; only the coordinator's `success` receipt makes a delivery
+  announced, so an unacknowledged wake stays replayable until it is acked, and the local
+  observation in `state.json` is for the coordinator to transcribe into the ledger;
 - one consumer per state directory, enforced by a file lock;
 - a CLI child never outlives the call that owns it: an exception, a wake or a signal reaps every
   process the loop started. A survivor keeps its CLI waiter slot, so the next install fails while
@@ -100,11 +101,14 @@ non-heartbeat batch arrives, when this Run's worker signature changes, or when t
 fails (a non-zero exit is the third leg). That line's fields and the exit codes are a published
 contract — `references/inbox-and-waiting.md` §1.1 and §3 define them and the tests assert
 them — so changing either is the same kind of change as weakening the list above. A batch that is already on
-disk **and already announced** is deliberately **not** a wake: it is the coordinator's outstanding
-duty, and waking for it on every install would spin instead of waiting for the next message. The
-one install-time exception is a saved batch that was never announced: reconciliation wakes for the
-oldest such batch exactly once and persists `reconciled_delivery_id` so a second install stays
-quiet.
+disk **and has a successful ack receipt** is deliberately **not** a wake: it is the coordinator's
+outstanding duty, and waking for it on every install would spin instead of waiting for the next
+message. A batch without that receipt is still pending, because a line printed to stdout is not
+proof that the coordinator received it: the durable handoff is a `pending_wakes` send intent
+written before the wake line, and an install-time reconciliation replays the oldest pending batch
+exactly once per install, deduplicated by delivery id, until the coordinator's `--ack` leaves a
+`success` receipt. The wake is at-least-once, never silently dropped; `reconciled_delivery_id`
+records the replay but does not suppress it.
 
 ### If you change a SKILL.md or a reference
 

@@ -596,6 +596,92 @@ def read(run_id, filters=None, home=None):
     return read_report(run_id, filters=filters, home=home)[0]
 
 
+def _archive_history(run_dir):
+    """Return ``(records, unknown)`` for ``archive/`` in write order.
+
+    ``corrupt-*.jsonl`` files hold the lines retention preserved precisely because they
+    never validated. They are tombstones, not history, so they are not read here.
+    """
+    directory = run_dir / ARCHIVE_DIR
+    try:
+        if directory.is_symlink():
+            return [], {"state": "unknown",
+                        "reason": "the ledger archive must not be a symlink"}
+        # ``Path.glob`` swallows a permission error and would return an empty list, which a
+        # recovery path would read as "no archived history". ``scandir`` reports it instead.
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".jsonl")
+                           and not entry.name.startswith("corrupt-"))
+    except FileNotFoundError:
+        return [], None
+    except NotADirectoryError:
+        return [], {"state": "unknown",
+                    "reason": "the ledger archive is not a readable directory"}
+    except OSError as error:
+        return [], {"state": "unknown",
+                    "reason": "the ledger archive cannot be listed: " + str(error)}
+    paths = [directory / name for name in names]
+    records = []
+    for path in paths:
+        try:
+            found, corrupt, partial = _scan(path)
+        except (OSError, ValueError) as error:
+            return records, {"state": "unknown",
+                             "reason": "archive file " + path.name
+                                       + " is unreadable: " + str(error)}
+        if corrupt or partial:
+            return records, {"state": "unknown",
+                             "reason": "archive file " + path.name
+                                       + " is corrupt and was not skipped"}
+        records.extend(found)
+    return records, None
+
+
+def effective_records_for_path(active):
+    """Return ``(records, unknown)`` for one ledger file and its sibling ``archive/``.
+
+    This is the path seam behind :func:`effective_records`: every caller that reads
+    effective history goes through the ledger's own schema validator, so a JSON object
+    that is not a schema-v1 record is never mistaken for history. ``active`` need not
+    exist; a missing file is an empty active view. The archive rules — no symlink, no
+    unreadable or corrupt record-bearing file — are the ones :func:`effective_records`
+    documents, and ``unknown`` is passed through unchanged.
+    """
+    active = Path(active)
+    archived, unknown = _archive_history(active.parent)
+    current, _corrupt, _partial = _scan(active)
+    records, seen = [], set()
+    for record in archived + current:
+        if record["record_id"] in seen:
+            continue
+        seen.add(record["record_id"])
+        records.append(record)
+    return records, unknown
+
+
+def effective_records(run_id, home=None):
+    """Return ``(records, unknown)``: active plus archived history in write order.
+
+    Retention moves complete records to ``archive/``; a recovery path that read only the
+    active file would forget them. Archive files predate the active file and sort by
+    creation time, so their records come first and the merge preserves append order.
+    Records are deduplicated by ``record_id`` with the first copy winning, because a crash
+    between the archive write and the active rewrite can leave one record in both places.
+
+    ``unknown`` is ``None`` when the archive was read completely, and
+    ``{"state": "unknown", "reason": ...}`` when the archive directory or a record-bearing
+    archive file cannot be read or holds a corrupt line. The readable records are still
+    returned, but a caller must not present them as the complete history.
+    """
+    _portable_identifier(run_id, "run_id")
+    root = home_path(home)
+    run_dir = root / RUNS_DIR / run_id
+    if run_dir.is_symlink():
+        _invalid("run directory must not be a symlink")
+    return effective_records_for_path(run_dir / LEDGER_NAME)
+
+
 def _summarize(run_id, records, corrupt):
     kinds = {kind: 0 for kind in KINDS}
     states = {state: 0 for state in STATES}
@@ -2218,7 +2304,7 @@ def reconcile(run_id, authority, home=None, replay=True):
     receipt that says ``pending`` for a joinable action.
     """
     _portable_identifier(run_id, "run_id")
-    records, _corrupt = read_report(run_id, home=home)
+    records, unknown = effective_records(run_id, home=home)
     if hasattr(authority, "snapshot"):
         snapshot = authority.snapshot(run_id, records)
     else:
@@ -2227,6 +2313,14 @@ def reconcile(run_id, authority, home=None, replay=True):
     if snapshot["run_id"] != run_id:
         _invalid("authority snapshot run_id does not match --run-id")
     report = classify(records, snapshot)
+    if unknown is not None:
+        # The archive could not be read, so the report cannot claim a complete ledger.
+        # Name the gap, claim no repair and write nothing: a repeated action or a
+        # closeout over a partial history would be worse than refusing to act.
+        report["unreadable"].append({"source": "ledger", "reason": unknown["reason"]})
+        report["authority_sources"]["ledger"] = "unknown"
+        validate_report(report)
+        return report
     records_by_id = {record["record_id"]: record for record in records}
     root = home_path(home)
     run_dir = root / RUNS_DIR / run_id

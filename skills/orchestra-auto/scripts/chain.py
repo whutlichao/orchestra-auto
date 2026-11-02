@@ -30,6 +30,9 @@ Public interface (deep module):
 * ``check_artifact(step_id, text) -> list`` — pure: exit-check errors for one step.
 * ``load_records(path) -> (records, problems)`` — tolerant JSONL reader with the ledger's rules:
   a trailing partial line is discarded, a corrupt complete line is reported, never dropped.
+* ``load_effective_records(path) -> (records, problems, unknown)`` — the active ledger plus
+  its ``archive/``, read through ``ledger.effective_records_for_path`` so retention never
+  hides a record from resume and invalid history degrades to ``unknown``.
 
 CLI: ``steps``, ``resume``, ``exit-check``. JSON out; exit ``0`` is success, ``1`` is a failed
 check or invalid input, ``2`` is a usage error.
@@ -38,6 +41,7 @@ Only the Python standard library is used.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -45,6 +49,20 @@ import re
 import sys
 
 SCHEMA_VERSION = 1
+
+
+def _load_ledger():
+    """Import the sibling ``ledger.py`` by path: effective history is reused, not copied."""
+    path = Path(__file__).with_name("ledger.py")
+    spec = importlib.util.spec_from_file_location("orca_chain_ledger", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LEDGER = _load_ledger()
 
 #: Per-step metadata. ``exit`` names the check ``exit-check`` can apply; ``external`` means the
 #: exit signal is a test run, a review or a PR state that this module deliberately does not read.
@@ -272,6 +290,22 @@ def load_records(path):
     return records, problems
 
 
+def load_effective_records(path):
+    """Read the active ledger and its archive; return ``(records, problems, unknown)``.
+
+    ``resume`` reads history, not the active view: retention moves complete records to
+    ``archive/`` and forgetting them would restart the chain at an earlier position.
+    The read is ``ledger.effective_records_for_path`` — the same schema-validating
+    interface ``ledger.effective_records`` exposes — so a JSON object that is not a
+    ledger record degrades to ``unknown`` here exactly as it does there. ``problems``
+    only names a missing active file; it does not make the history unknown.
+    """
+    path = Path(path)
+    records, unknown = LEDGER.effective_records_for_path(path)
+    problems = [] if path.exists() else ["no ledger at " + str(path)]
+    return records, problems, unknown
+
+
 def ledger_path(run_id, home=None):
     """Resolve ``$ORCA_LEDGER_HOME/runs/<run_id>/ledger.jsonl`` exactly as the ledger does."""
     root = Path(home or os.environ.get("ORCA_LEDGER_HOME") or Path.home() / ".orca" / "ledger")
@@ -306,10 +340,16 @@ def main(argv=None):
 
     if args.command == "resume":
         path = Path(args.ledger) if args.ledger else ledger_path(args.run_id, args.ledger_home)
-        records, problems = load_records(path)
+        records, problems, unknown = load_effective_records(path)
+        if unknown is not None:
+            _emit({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
+                   "state": "unknown", "landed": [], "next": None,
+                   "reason": unknown["reason"], "history": unknown,
+                   "problems": problems})
+            return 0
         answer = next_step(records)
         answer.update({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
-                       "problems": problems})
+                       "history": {"state": "ok", "reason": ""}, "problems": problems})
         _emit(answer)
         return 0
 

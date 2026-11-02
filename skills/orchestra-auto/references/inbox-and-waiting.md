@@ -148,20 +148,28 @@ heartbeats and ordinary messages cannot pile up at the head of the queue. A comp
 written atomically to `deliveries/*.json`, hashed by deliveryId, and the parent directory is
 fsynced after the rename — the file write alone is not enough, because the rename is a directory
 entry — so a saved batch survives power loss; files are never rotated away. A batch that is
-**already** on disk **and was already announced** is never treated as news: it is your outstanding
-duty, so the loop pauses instead of waking you again for it or busy-looping on it. `NEW-MESSAGE`
-is only a hint about the most recently saved batch, **not a to-do list**; when a new message
-arrives or a session resumes, enumerate every delivery file and reconcile against the ledger.
+**already** on disk **and has a successful ack receipt** is never treated as news: it is your
+outstanding duty, so the loop pauses instead of waking you again for it or busy-looping on it. A
+batch on disk **without** that receipt is still pending news, even if a previous process already
+printed its wake, because stdout is not a receipt. `NEW-MESSAGE` is only a hint about the most
+recently saved batch, **not a to-do list**; when a new message arrives or a session resumes,
+enumerate every delivery file and reconcile against the ledger.
 
-On a fresh install the loop reconciles every delivery file against the successful receipts. If the
-oldest unacknowledged batch was saved but never announced, it emits exactly one `delivery` wake
-whose `detail` names the reconciliation, writes `reconciled_delivery_id` and a local observation
-to `state.json`, then exits. A second install does not wake again for that batch, and a batch that
-was already announced is not news. This is install-time behaviour only: in steady state a saved
-batch remains your outstanding duty. The reconciliation reads `worker-list` and `state.json` once,
-records the worker baseline in the observation, and writes only `state.json`; the coordinator
-transcribes the observation into the ledger, and the consumer never writes the ledger itself. The
-observation names `kind`, `saved`, `unacked`, `blocked`, `reconciled_delivery_id` and
+The wake handoff is a durable **send intent** (`pending_wakes`) written before the wake line,
+never an announcement: a delivery counts as announced only when the coordinator's `--ack` left a
+`success` receipt in `receipts.jsonl`. On a fresh install the loop reconciles every delivery file
+against the successful receipts: the oldest unacknowledged batch produces exactly one `delivery`
+wake whose `detail` names the reconciliation, writes `pending_wakes`, `reconciled_delivery_id` and
+a local observation to `state.json`, then exits. Until the success receipt exists the intent stays
+pending, so a reinstall after a crash — including one that died between the intent and stdout —
+replays the wake, deduplicated by delivery id. The wake is therefore **at-least-once** until you
+ack it; a duplicate wake is the cost of never losing one, and the success receipt is what makes it
+not-news. `reconciled_delivery_id` records what was replayed; it is evidence, not a suppression
+marker. This is install-time behaviour only: in steady state a saved batch remains your
+outstanding duty. The reconciliation reads `worker-list` and `state.json` once, records the
+worker baseline in the observation, and writes only `state.json`; the coordinator transcribes the
+observation into the ledger, and the consumer never writes the ledger itself. The observation
+names `kind`, `saved`, `unacked`, `blocked`, `reconciled_delivery_id` and
 `baseline_worker_signature`, with `write_scope: state.json` and `transcribe_to: ledger`.
 
 Errors are written to disk explicitly and end the process; a CLI failure, a JSON error or a lost
@@ -178,7 +186,7 @@ action (a merge, a `reply --id`, a file mutation) and the attempt. The ordering 
 An action can complete and the process die before any record of it exists, and because the ack is
 deferred until the batch is handled, the batch stays unacknowledged while its effect may already have
 landed. A ledger written afterwards cannot tell that case apart from "never ran", and the consumer
-gives at-least-once delivery with no duplicate wake — it does not give exactly-once effects. So on
+gives at-least-once delivery — a wake can repeat after a crash — but not exactly-once effects. So on
 recovery an entry stuck at `processing` means **establish the fact before replaying**: read the real
 state (is the PR merged, did the reply land, was the file changed) and decide from that evidence, not
 from the ledger. Where the effect is verifiable and the action is idempotent, a replay under the same
@@ -305,10 +313,11 @@ All three legs wake, and each one exists because the others cannot see it:
 
 1. **New messages** — a batch that was not on disk before and contains anything other than
    heartbeats. A heartbeat-only batch is acknowledged and does **not** wake: it carries no
-   decision. A FIFO replay of a batch already saved and already announced does not wake either —
-   it is your outstanding duty, not news, so handle it from the ledger. The one exception is
-   install-time: an unacknowledged batch that was saved but never announced produces exactly one
-   reconciliation wake (§1), and the persisted `reconciled_delivery_id` prevents a second one.
+   decision. A FIFO replay of a batch whose successful receipt exists does not wake either — it is
+   your outstanding duty, not news, so handle it from the ledger. An unacknowledged batch on disk
+   is still pending, so an install-time replay produces exactly one reconciliation wake (§1) and
+   keeps replaying, deduplicated by delivery id, until your `--ack` leaves a success receipt; a
+   duplicate wake is possible after a crash, and never losing one is the stronger guarantee.
 2. **The loop's own death or error** — a non-zero exit is a wake by itself, because the process
    ending is what the harness surfaces; the `reason=error` line says why. A consumer that stops
    silently is the "total silence" case in §5.1, not an empty queue. One real case, from the

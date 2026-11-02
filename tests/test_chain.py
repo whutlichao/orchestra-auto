@@ -49,6 +49,25 @@ PASSED_CHECKS = [{"name": "tests", "command": "python3 -m unittest",
                   "result": "pass", "evidence_ref": "t.log"}]
 
 
+def ledger_record(detail, record_id="11111111-1111-4111-8111-111111111111"):
+    """One schema-valid ledger record: the shape ``ledger.py`` accepts and validates."""
+    return {
+        "schema_version": 1,
+        "record_id": record_id,
+        "kind": "acceptance",
+        "run_id": "r1",
+        "subject": {"ticket": "39", "pr": 12, "attempt": 1},
+        "action": "acceptance",
+        "request_id": "",
+        "idempotency": "none",
+        "state": "completed",
+        "evidence_ref": "tickets/task-39-answer.md",
+        "observed_at": "2026-01-01T00:00:00Z",
+        "actor": "coordinator",
+        "detail": detail,
+    }
+
+
 class PositionTableTests(unittest.TestCase):
     def test_positions_follow_the_published_chain_order(self):
         self.assertEqual(chain.POSITION_IDS, ("grill", "spec", "tickets", "build", "review"))
@@ -265,13 +284,32 @@ class CliTests(unittest.TestCase):
 
     def test_resume_reads_a_ledger_file(self):
         ledger = self.root / "ledger.jsonl"
-        ledger.write_text(json.dumps(acceptance("G-docs", checks=PASSED_CHECKS)) + "\n",
-                          encoding="utf-8")
+        ledger.write_text(
+            json.dumps(ledger_record({"gate": ["G-docs"], "checks": PASSED_CHECKS})) + "\n",
+            encoding="utf-8")
         code, out, _ = self.run_cli("resume", "--run-id", "r1", "--ledger", str(ledger))
         self.assertEqual(code, 0)
         payload = json.loads(out)
         self.assertEqual(payload["next"]["position"], "spec")
         self.assertEqual(payload["problems"], [])
+
+    def test_resume_degrades_to_unknown_when_the_archive_is_schema_invalid(self):
+        """Archive history is read through the ledger's validator, not a JSON-object reader."""
+        run_dir = self.root / "runs" / "r1"
+        archive = run_dir / "archive"
+        archive.mkdir(parents=True)
+        active = run_dir / "ledger.jsonl"
+        active.write_text("", encoding="utf-8")
+        (archive / "2026-01-01T00-00-00Z-ledger.jsonl").write_text(
+            '{"kind": "acceptance"}\n', encoding="utf-8")
+        for argv in (("--ledger-home", str(self.root)), ("--ledger", str(active))):
+            with self.subTest(entry=argv[0]):
+                code, out, _ = self.run_cli("resume", "--run-id", "r1", *argv)
+                self.assertEqual(code, 0)
+                payload = json.loads(out)
+                self.assertEqual(payload["state"], "unknown")
+                self.assertIsNone(payload["next"])
+                self.assertEqual(payload["history"]["state"], "unknown")
 
     def test_resume_without_a_ledger_still_answers(self):
         code, out, _ = self.run_cli("resume", "--run-id", "missing", "--ledger-home", str(self.root))

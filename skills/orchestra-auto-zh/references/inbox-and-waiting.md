@@ -105,19 +105,24 @@ terminal 或 CLI」——是另一份契约，不变；被拒绝的安装让 own
 
 脚本每轮先做无过滤 check，再装上阻塞等待，防止心跳与普通消息积压。完整响应按 deliveryId
 哈希原子写入 `deliveries/*.json`，并在重命名后 fsync 父目录——只 fsync 文件不够，因为重命名
-改的是目录项——所以已落盘的批次能扛住断电；文件不轮转删除。**已经在盘上且已经宣告过**的批次
-从不当作新消息：它是你尚未处理的责任，脚本会暂停等待而不是为它再唤醒一次或空转。
-`NEW-MESSAGE` 仅是最近落盘的提示，**不是待办清单**；收到新消息或恢复会话时枚举全部 delivery
-文件，对照台账处理。
+改的是目录项——所以已落盘的批次能扛住断电；文件不轮转删除。**已经在盘上且已有成功 ack
+receipt** 的批次从不当作新消息：它是你尚未处理的责任，脚本会暂停等待而不是为它再唤醒一次或空转。
+盘上没有该 receipt 的批次仍然是待发送的消息，即使上一个进程已经打印过它的唤醒——stdout 不是
+receipt。`NEW-MESSAGE` 仅是最近落盘的提示，**不是待办清单**；收到新消息或恢复会话时枚举全部
+delivery 文件，对照台账处理。
 
-重新安装时，脚本把每个 delivery 文件与成功 receipt 对账。若最老的未 ack 批次已落盘却从未宣告，
-它会发出恰好一次 `delivery` 唤醒，`detail` 写明这是对账；把 `reconciled_delivery_id` 与一条
-本地观察写入 `state.json`，然后退出。第二次安装不会为同一批再唤醒，已经宣告过的批次也不算
-新消息。这只发生在安装时：稳定运行期间，已落盘批次仍是你未处理的责任。对账只读一次
-`worker-list` 与 `state.json`，把 worker baseline 记进观察，并且只写 `state.json`；协调者把
-这条观察转录进台账，收件器自己从不写台账。观察包含 `kind`、`saved`、`unacked`、`blocked`、
-`reconciled_delivery_id` 与 `baseline_worker_signature`，并带 `write_scope: state.json` 和
-`transcribe_to: ledger`。
+唤醒交接是一份在打印唤醒行之前落盘的**待发送 intent**（`pending_wakes`），而不是“已宣告”：
+只有协调者的 `--ack` 在 `receipts.jsonl` 留下 `success` receipt，该 delivery 才算 announced。
+重新安装时，脚本把每个 delivery 文件与成功 receipt 对账：最老的未 ack 批次会产生恰好一次
+`delivery` 唤醒，`detail` 写明这是对账；把 `pending_wakes`、`reconciled_delivery_id` 与一条
+本地观察写入 `state.json`，然后退出。在成功 receipt 出现之前，intent 一直是 pending，所以崩溃后
+（包括在 intent 与 stdout 之间死掉）的重新安装会重放该唤醒，并按 delivery id 去重。因此在 ack
+之前，唤醒是**至少一次**：重复唤醒是不丢唤醒的代价，而成功 receipt 才是让它不再算新消息的依据。
+`reconciled_delivery_id` 记录的是重放了什么，是证据，不是抑制标记。这只发生在安装时：稳定运行
+期间，已落盘批次仍是你未处理的责任。对账只读一次 `worker-list` 与 `state.json`，把 worker
+baseline 记进观察，并且只写 `state.json`；协调者把这条观察转录进台账，收件器自己从不写台账。
+观察包含 `kind`、`saved`、`unacked`、`blocked`、`reconciled_delivery_id` 与
+`baseline_worker_signature`，并带 `write_scope: state.json` 和 `transcribe_to: ledger`。
 
 错误显式落盘并退出，不能将 CLI 失败、JSON 错误或绑定失效解释成空队列。
 
@@ -151,8 +156,8 @@ terminal 或 CLI」——是另一份契约，不变；被拒绝的安装让 own
 `processing` 这一条要写在它所描述的动作**之前**，绝不写在其后，并且要写明动作是什么（一次合并、
 一个 `reply --id`、一次文件改动）以及属于哪个 attempt。顺序就是全部要害：动作可能已经完成、进程
 在任何记录存在之前就死了；而 ack 要等整批处理完才发，所以批仍处于未 ack 状态，而它的效果可能已经
-落地。事后补写的台账分不清这种情况和「根本没跑过」，而收件器给的是 at-least-once 投递加不重复
-唤醒——它不给 exactly-once 效果。所以恢复时一条卡在 `processing` 的记录意味着**先确立事实再决定
+落地。事后补写的台账分不清这种情况和「根本没跑过」，而收件器给的是 at-least-once 投递——崩溃后
+可能重复唤醒——但不给 exactly-once 效果。所以恢复时一条卡在 `processing` 的记录意味着**先确立事实再决定
 是否重放**：读真实状态（PR 是否已合并、reply 是否已送达、文件是否已改），据证据判断，而不是据台账
 判断。效果可验证且动作幂等时，用同一个 delivery ID 重放是安全的；效果无法从证据确立时，交给人类，
 绝不盲目重跑——未经核实的重放绝不能只凭台账推断出来。
@@ -259,9 +264,10 @@ stage 变化）。`rounds_without_progress` 统计连续无这些标记的轮次
 三条腿都会唤醒，每条都因为另外两条看不见它而存在：
 
 1. **新消息**——盘上原先没有、且并非全是心跳的批次。纯心跳批次会被自动 ack，**不**唤醒：
-   它不携带任何决策。已经落盘且已经宣告过的批次的 FIFO 重放也不唤醒——那是你尚未处理的责任，
-   不是新消息，照台账处理即可。唯一的例外在安装时：已落盘却从未宣告的未 ack 批次会产生恰好
-   一次对账唤醒（§1），而持久化的 `reconciled_delivery_id` 防止第二次。
+   它不携带任何决策。已有成功 receipt 的批次的 FIFO 重放也不唤醒——那是你尚未处理的责任，
+   不是新消息，照台账处理即可。盘上未 ack 的批次仍然是 pending，所以安装时的重放会产生恰好
+   一次对账唤醒（§1），并按 delivery id 去重持续重放，直到你的 `--ack` 留下成功 receipt；
+   崩溃后可能出现重复唤醒，而“绝不丢唤醒”是更强的保证。
 2. **收件器自身死亡或错误**——非零退出本身就是一次唤醒，因为 harness 呈现的正是“进程结束”；
    `reason=error` 那一行说明原因。静默停掉的收件器是 §5.1 的「彻底安静」，不是空队列。
    现场实例：Orca app 重启时收件器正阻塞在 `check --wait`，CLI 回 `runtime_unavailable`

@@ -17,9 +17,12 @@ Public interface (deep module):
 * ``validate(record) -> errors`` — pure schema and minimum-evidence validation.
 * ``verify(record, authority) -> errors`` — cross-check claimed levels against an
   injected authority snapshot (PR host, tracker, git ancestry and git merges).
+* ``all_checks_passed(checks) -> bool`` — the one gate verdict: at least one check was
+  recorded and every one passed; a missing list or a ``fail`` is not a pass.
 * ``aggregate(ticket, records) -> ticket`` — pure four-level aggregation over ledger
   records: every linked PR must support a level, a later observation lowers a level
-  without rewriting history, and conflicting records are ``divergent``.
+  without rewriting history, and conflicting records are ``divergent``. A record whose
+  checks did not all pass supports no true level.
 
 CLI (product surface, not a test hook): ``record``, ``show``, ``observe``,
 ``open-questions``, ``resolve-question`` and ``retry``. JSON in and out; exit ``0`` is
@@ -220,6 +223,20 @@ def _validate_check(index, check, errors):
         errors.append(path + ".result must be 'pass' or 'fail'")
     if not is_nonempty(check.get("evidence_ref")):
         errors.append(path + ".evidence_ref must name the log that was captured")
+
+
+def all_checks_passed(checks):
+    """Whether every recorded check passed.
+
+    A gate passes only when at least one check was recorded and every one of them
+    passed. A missing list, an empty list or any ``fail`` result is not a pass: the
+    evidence stays durable, but the conclusion is failure. There is no implicit
+    baseline exemption; an exemption would have to be an explicit, evidenced field.
+    """
+    if not isinstance(checks, list) or not checks:
+        return False
+    return all(isinstance(check, dict) and check.get("result") == "pass"
+               for check in checks)
 
 
 def _validate_review(review, errors):
@@ -725,6 +742,20 @@ def _pr_number(value):
     return as_int(value)
 
 
+def _level_value(detail, name):
+    """One raw level value, or ``None`` when the record is malformed."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level.get("value") if isinstance(level, dict) else None
+
+
+def _level_object(detail, name):
+    """One raw level object; a malformed level is a false claim, never a crash."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level if isinstance(level, dict) else {"value": False}
+
+
 def aggregate(ticket, records):
     """Return the ticket-level four levels over its ledger records.
 
@@ -735,7 +766,10 @@ def aggregate(ticket, records):
     appended to, never overwritten. A later attempt re-accepting the same PR is the claim
     in force and leaves the earlier ones in ``records`` as history; records at the *same*
     attempt that disagree about the same PR are ``divergent``, and that PR's levels are
-    neither averaged nor claimed.
+    neither averaged nor claimed. The claim in force also has to carry a passed gate:
+    when any of its checks is a ``fail``, it supports no true level. Each PR entry
+    names the selected attempt (``record_id`` and ``current_record_ids``) so a consumer
+    reads the claim in force instead of re-deriving the selection.
     """
     accepted, observations = [], []
     for record in records or []:
@@ -772,19 +806,18 @@ def aggregate(ticket, records):
         signatures = {LEDGER.canonical_json({
             "accepted_sha": _detail(record).get("accepted_sha"),
             "levels": [
-                (_level_name, _detail(record).get("levels", {}).get(_level_name, {}).get(
-                    "value"))
+                (_level_name, _level_value(_detail(record), _level_name))
                 for _level_name in LEVEL_NAMES
             ],
         }) for record in current}
         divergent = len(signatures) > 1
         latest = current[-1]
         detail = _detail(latest)
+        gate_passed = all_checks_passed(detail.get("checks"))
         levels = {}
         for name in LEVEL_NAMES:
-            value = detail.get("levels", {}).get(name)
-            levels[name] = dict(value) if isinstance(value, dict) else {"value": False}
-            if divergent:
+            levels[name] = dict(_level_object(detail, name))
+            if divergent or not gate_passed:
                 levels[name]["value"] = False
         for record in observations:
             observed_detail = _detail(record)
@@ -815,6 +848,8 @@ def aggregate(ticket, records):
             "divergent": divergent,
             "accepted_sha": detail.get("accepted_sha"),
             "levels": levels,
+            "record_id": latest.get("record_id"),
+            "current_record_ids": [record.get("record_id") for record in current],
             "records": [record.get("record_id") for record in group],
         })
 
@@ -1027,7 +1062,7 @@ def command_record(args, home):
         return 1
     _emit({
         "recorded": True,
-        "gate_passed": True,
+        "gate_passed": all_checks_passed(payload.get("checks")),
         "record_id": record_id,
         "ticket": payload["ticket"],
         "pr": payload["pr"]["number"],
@@ -1061,8 +1096,18 @@ def command_observe(args, home):
 
 
 def command_show(args, home):
-    records = LEDGER.read(args.run_id, home=home)
+    records, unknown = LEDGER.effective_records(args.run_id, home=home)
     ticket = aggregate(args.ticket, records)
+    if unknown is None:
+        ticket["history"] = {"state": "ok", "reason": ""}
+    else:
+        # An unreadable archive means the levels cannot be claimed either way. Withhold
+        # them explicitly instead of reporting a level false because its record was moved.
+        ticket["history"] = unknown
+        ticket["state"] = "unknown"
+        for name in LEVEL_NAMES:
+            ticket["levels"][name] = {"value": None, "evidence_refs": [],
+                                      "state": "unknown"}
     shown = [record for record in records
              if record.get("kind") in ("acceptance", "observation")
              and _ticket_of(record) == args.ticket]

@@ -2222,6 +2222,200 @@ class ProgressTests(unittest.TestCase):
             self.assertIn(token, chinese, f'Chinese reference misses {token!r}')
 
 
+class PruneConcurrencyTests(unittest.TestCase):
+    """prune serializes with the recorder and with a writer inside the copy window.
+
+    Both guards reproduce the SP-08 interleavings: a Run revived to ``active``
+    between prune's selection and its archive, and a record committed after the
+    cross-filesystem copy was verified but before the source was deleted.
+    """
+
+    #: A fixed instant and age keep the guards independent of the wall clock.
+    NOW = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    OLD = '2020-01-01T00:00:00+00:00'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        # macOS TMPDIR lives under /var, a symlink to /private/var; the state
+        # path validator rejects symlink components, so resolve the root.
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        (self.repo / '.git').mkdir()
+        self.home = self.root / 'progress-home'
+
+    def progress_module(self):
+        spec = importlib.util.spec_from_file_location('progress_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def terminal_run(self, module):
+        """A registered, ended Run old enough for prune to select it."""
+        state = self.root / 'audit' / 'run1'
+        module.mutate(state, 'init',
+                      {'id': 'run1', 'target_repo': str(self.repo), 'mode': 'REAL'},
+                      'init', 'coordinator')
+        module.mutate(state, 'end', {'status': 'completed'}, 'end', 'coordinator')
+        snapshot = json.loads((state / 'progress.json').read_text())
+        snapshot['run'].update(ended_at=self.OLD, updated_at=self.OLD,
+                               last_observed=self.OLD)
+        module.save(state, snapshot)
+        module.register({'run_id': 'run1', 'state_path': str(state)}, home=self.home)
+        return state
+
+    def test_prune_cannot_archive_a_run_that_became_active(self):
+        module = self.progress_module()
+        state = self.terminal_run(module)
+        prune_thread = threading.current_thread()
+        after_selection = threading.Barrier(2)
+        writer_committed = threading.Barrier(2)
+        injected = []
+        writer_errors = []
+        real_read_state = module.read_state
+
+        def read_state(directory):
+            snapshot = real_read_state(directory)
+            if threading.current_thread() is prune_thread and not injected:
+                injected.append(directory)
+                # prune has selected the Run from this stale terminal snapshot.
+                # Let the normal recorder commit before prune continues.
+                after_selection.wait(5)
+                writer_committed.wait(5)
+            return snapshot
+
+        def revive():
+            after_selection.wait(5)
+            try:
+                module.mutate(state, 'run', {'status': 'active'},
+                              'revive', 'coordinator')
+            except Exception as error:  # surfaced by the assertion below
+                writer_errors.append(error)
+            finally:
+                writer_committed.wait(5)
+
+        writer = threading.Thread(target=revive)
+        writer.start()
+        try:
+            with unittest.mock.patch.object(module, 'read_state', read_state):
+                report, failed = module.prune(home=self.home, older_than_days=7,
+                                              keep=0, now_timestamp=self.NOW)
+        finally:
+            writer.join(5)
+        self.assertFalse(writer.is_alive(), 'the recorder never returned')
+        self.assertEqual(writer_errors, [])
+        self.assertFalse(failed)
+        self.assertEqual(report['pruned'], [],
+                         'prune archived a Run the recorder had just revived')
+        self.assertEqual(report['archived'], [])
+        self.assertIn('run1', report['kept'])
+        self.assertTrue((state / 'progress.json').exists())
+        run = json.loads((state / 'progress.json').read_text())['run']
+        self.assertEqual(run['status'], 'active')
+        self.assertTrue((self.home / 'runs' / 'run1.json').exists())
+
+    def test_prune_never_deletes_a_descriptor_replaced_after_selection(self):
+        module = self.progress_module()
+        state = self.terminal_run(module)
+        replacement = self.root / 'audit' / 'replacement'
+        prune_thread = threading.current_thread()
+        after_selection = threading.Barrier(2)
+        writer_committed = threading.Barrier(2)
+        injected = []
+        writer_errors = []
+        real_read_state = module.read_state
+
+        def read_state(directory):
+            snapshot = real_read_state(directory)
+            if threading.current_thread() is prune_thread and not injected:
+                injected.append(directory)
+                after_selection.wait(5)
+                writer_committed.wait(5)
+            return snapshot
+
+        def reregister():
+            after_selection.wait(5)
+            try:
+                # A normal open/register points the same Run at a new state
+                # directory after prune selected the old one.
+                module.mutate(replacement, 'init',
+                              {'id': 'run1', 'target_repo': str(self.repo),
+                               'mode': 'REAL'}, 'replacement-init', 'coordinator')
+                module.register({'run_id': 'run1', 'state_path': str(replacement)},
+                                home=self.home)
+            except Exception as error:  # surfaced by the assertion below
+                writer_errors.append(error)
+            finally:
+                writer_committed.wait(5)
+
+        writer = threading.Thread(target=reregister)
+        writer.start()
+        try:
+            with unittest.mock.patch.object(module, 'read_state', read_state):
+                report, failed = module.prune(home=self.home, older_than_days=7,
+                                              keep=0, now_timestamp=self.NOW)
+        finally:
+            writer.join(5)
+        self.assertFalse(writer.is_alive(), 'open/register never returned')
+        self.assertEqual(writer_errors, [])
+        self.assertFalse(failed)
+        self.assertEqual(report['pruned'], [],
+                         'prune archived a Run whose descriptor had moved')
+        self.assertEqual(report['archived'], [])
+        self.assertEqual([item['reason'] for item in report['skipped']],
+                         ['descriptor_changed'])
+        self.assertTrue((state / 'progress.json').exists())
+        descriptor = json.loads((self.home / 'runs' / 'run1.json').read_text())
+        self.assertEqual(descriptor['state_path'], str(replacement))
+        self.assertTrue((replacement / 'progress.json').exists())
+
+    def test_a_writer_that_commits_before_rmtree_survives_the_exdev_move(self):
+        module = self.progress_module()
+        state = self.terminal_run(module)
+        real_rename = os.rename
+        real_fsync_tree = module._fsync_tree
+        cross_device = [True]
+        injected = []
+
+        def rename(source, destination):
+            # Force the cross-filesystem branch once; every later rename (the
+            # staging install and any rollback) proceeds normally.
+            if cross_device[0]:
+                cross_device[0] = False
+                raise OSError(errno.EXDEV, 'cross-device link')
+            return real_rename(source, destination)
+
+        def fsync_tree(root):
+            real_fsync_tree(root)
+            if not injected:
+                # The copy has been verified and is about to be installed. A
+                # writer that commits now must reach the final archived copy.
+                snapshot = json.loads((state / 'progress.json').read_text())
+                snapshot['events'].append({
+                    'id': 'committed-before-rmtree', 'at': self.OLD,
+                    'type': 'event', 'source': 'coordinator',
+                    'entity_id': 'run1',
+                    'summary': 'committed after the copy was verified'})
+                module.save(state, snapshot)
+                injected.append(True)
+
+        with unittest.mock.patch.object(module.os, 'rename', rename), \
+                unittest.mock.patch.object(module, '_fsync_tree', fsync_tree):
+            report, failed = module.prune(home=self.home, older_than_days=7,
+                                          keep=0, now_timestamp=self.NOW)
+        self.assertTrue(injected, 'the cross-filesystem copy was never exercised')
+        self.assertFalse(failed)
+        self.assertEqual(report['pruned'], ['run1'])
+        self.assertEqual(report['archived'], ['run1'])
+        self.assertFalse(state.exists())
+        archived = self.home / 'archive' / 'run1' / state.name / 'progress.json'
+        self.assertTrue(archived.exists())
+        events = json.loads(archived.read_text())['events']
+        self.assertIn('committed-before-rmtree', [event['id'] for event in events],
+                      'a committed record disappeared with the deleted source')
+
+
 class SchemaDiscoveryTests(unittest.TestCase):
     """``--print-schema`` names the fields the recorder enforces, from the same constants.
 
