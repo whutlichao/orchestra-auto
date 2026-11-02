@@ -669,12 +669,16 @@ def worker_signature(directory, run_id):
     ``stage.detail``. ``liveness.reason`` is appended only when it is present, because its
     absence is normal and a trailing ``unknown`` would hide that.
 
-    Every page is followed through ``page.nextCursor`` until ``page.hasMore`` is false, so a
-    remote worker on a later page is part of the signature. A page that claims more rows but
-    carries no usable, unseen cursor, or a page that carries no ``page`` object at all, is a
-    truncated read and raises: half a roster must never compare equal to a full one. Missing
-    fields serialize as ``unknown`` — never as a healthy-looking value — and an object-valued
-    field is reduced to ``unknown`` rather than being embedded whole.
+    Pagination is read in either shape the CLI has published. The live CLI (1.4.246) puts
+    the cursor flat on the result: ``result.nextCursor`` is a non-empty string while more
+    rows exist, and is absent on the final page. Older CLIs nest ``hasMore`` and
+    ``nextCursor`` under ``result.page``; that shape is still followed when present. In both
+    shapes every page is read, so a remote worker on a later page is part of the signature.
+    A page that claims more rows but carries no usable, unseen cursor, or a response that
+    carries a non-object ``page`` and no usable flat cursor, is a truncated read and raises:
+    half a roster must never compare equal to a full one. Missing fields serialize as
+    ``unknown`` — never as a healthy-looking value — and an object-valued field is reduced
+    to ``unknown`` rather than being embedded whole.
 
     Comparing whole lines rather than a count is the point: a count cannot see one worker
     replace another, and a snapshot taken after an event is exactly how a real wake-up was
@@ -691,17 +695,26 @@ def worker_signature(directory, run_id):
             command.extend(["--cursor", cursor])
         code, raw, problem = cli_run(directory, command, "worker-list")
         data = parse_cli_result(code, raw, problem)
-        page_rows = data["result"].get("workers")
+        result = data["result"]
+        page_rows = result.get("workers")
         if not isinstance(page_rows, list):
             raise RuntimeError("worker-list returned no workers array")
         rows.extend(row for row in page_rows if isinstance(row, dict))
-        page = data["result"].get("page")
-        if not isinstance(page, dict):
-            raise RuntimeError(
-                "worker-list returned no page object: a truncated page is not a complete signature")
-        if not page.get("hasMore"):
-            return "\n".join(sorted(signature_lines(rows)))
-        following = page.get("nextCursor")
+        page = result.get("page")
+        if isinstance(page, dict):
+            # Older CLI: the page object decides whether the list is exhausted.
+            if not page.get("hasMore"):
+                return "\n".join(sorted(signature_lines(rows)))
+            following = page.get("nextCursor")
+        else:
+            # Live CLI: the cursor is flat, and its absence on the final page is normal.
+            following = result.get("nextCursor")
+            if not isinstance(following, str) or not following:
+                if "page" in result:
+                    raise RuntimeError(
+                        "worker-list returned neither result.page nor result.nextCursor "
+                        "(saw: %s)" % ", ".join(sorted(result)))
+                return "\n".join(sorted(signature_lines(rows)))
         if not isinstance(following, str) or not following or following in seen:
             raise RuntimeError(
                 "worker-list pagination has no usable cursor: a truncated page is not a "
