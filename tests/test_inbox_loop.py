@@ -75,10 +75,19 @@ if argv[:2] == ["orchestration", "worker-list"]:
         sys.stderr.write(entry["fail"])
         sys.exit(1)
     if isinstance(entry, dict) and "workers" in entry:
-        result = {"workers": entry["workers"],
-                  "page": entry.get("page", {"hasMore": False, "nextCursor": None})}
+        # The live CLI (1.4.246) publishes the cursor flat, on ``result``: a final page
+        # carries no ``nextCursor`` at all. ``page`` is only for older CLIs.
+        result = {"workers": entry["workers"], "scope": {"source": "flag"}}
+        if "page" in entry:
+            result["page"] = entry["page"]
+        elif entry.get("nextCursor"):
+            result["nextCursor"] = entry["nextCursor"]
+            # The live CLI's own warnings text still says "page.nextCursor"; that is an
+            # Orca-side inconsistency, so the fixture does not repeat it.
+            result["warnings"] = entry.get("warnings", [
+                "Showing a page of Dispatches, newest first; more are on later pages."])
     else:
-        result = {"workers": entry, "page": {"hasMore": False, "nextCursor": None}}
+        result = {"workers": entry, "scope": {"source": "flag"}}
     sys.stdout.write(json.dumps({"ok": True, "result": result}))
     sys.exit(0)
 
@@ -154,7 +163,7 @@ if argv[:2] == ["orchestration", "worker-list"]:
     if os.path.exists(MARKER):
         time.sleep(__WORKER_SLEEP__)
     sys.stdout.write(json.dumps({"ok": True, "result": {
-        "workers": [], "page": {"hasMore": False, "nextCursor": None}}}))
+        "workers": [], "scope": {"source": "flag"}}}))
     sys.exit(0)
 
 if argv[:3] != __CHECK_PREFIX__:
@@ -262,6 +271,10 @@ class FakeOrca:
 
     def calls_starting(self, prefix):
         return [call for call in self.calls() if call.startswith(prefix)]
+
+    def call_argv(self):
+        """Every recorded call as an argv list, for assertions about flags."""
+        return [line.split() for line in self.calls()]
 
     def acks(self):
         if not self.ack_log.exists():
@@ -2066,17 +2079,18 @@ class WorkerSignaturePaginationTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.state = self.tmp / "state"
         self.state.mkdir()
-        self.fake_orca = load_fake_orca()
 
     def signature(self, worker_pages):
-        fake = self.fake_orca.FakeOrca(self.tmp / "fake-workers",
-                                       worker_pages=worker_pages).write()
+        fake = FakeOrca(self.tmp / "fake-workers", [],
+                        worker_states=worker_pages).write()
         module = load_inbox_module_with_cli(SKILL_DIRS[0], fake.path)
         return module.worker_signature(self.state, "run_test"), fake, module
 
     def test_rows_on_later_pages_and_remote_rows_are_included(self):
+        """The live CLI's flat ``nextCursor`` is followed to the final page."""
         signature, fake, _ = self.signature([
-            {"workers": [worker_row("ctx_first", state="ready")]},
+            {"workers": [worker_row("ctx_first", state="ready")],
+             "nextCursor": "cursor-1"},
             {"workers": [worker_row("ctx_remote", state="working", remote=True)]},
         ])
 
@@ -2091,6 +2105,21 @@ class WorkerSignaturePaginationTests(unittest.TestCase):
             self.assertIn("--limit", call)
             self.assertIn("--json", call)
         self.assertIn("--cursor", worker_calls[1])
+        self.assertEqual(worker_calls[1][worker_calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_legacy_page_object_pagination_is_still_followed(self):
+        """Older CLIs nest ``hasMore``/``nextCursor`` under ``result.page``."""
+        signature, fake, _ = self.signature([
+            {"workers": [worker_row("ctx_first")],
+             "page": {"hasMore": True, "nextCursor": "cursor-1"}},
+            {"workers": [worker_row("ctx_second")],
+             "page": {"hasMore": False, "nextCursor": None}},
+        ])
+
+        self.assertEqual(len(signature.splitlines()), 2, "a page was dropped or duplicated")
+        worker_calls = [call for call in fake.call_argv()
+                        if call[:2] == ["orchestration", "worker-list"]]
+        self.assertEqual(len(worker_calls), 2, "the second page was never requested")
         self.assertEqual(worker_calls[1][worker_calls[1].index("--cursor") + 1], "cursor-1")
 
     def test_extended_scalar_fields_are_serialized(self):
@@ -2167,12 +2196,24 @@ class WorkerSignaturePaginationTests(unittest.TestCase):
 
         self.assertIn("cursor", str(raised.exception).lower())
 
-    def test_a_response_without_a_page_object_is_not_a_complete_signature(self):
-        """Without ``page`` the reader cannot know whether more rows exist."""
+    def test_a_repeated_flat_cursor_is_never_a_complete_signature(self):
+        """A flat cursor that never advances would loop forever, not finish."""
+        with self.assertRaises(RuntimeError) as raised:
+            self.signature([
+                {"workers": [worker_row("ctx_first")], "nextCursor": "cursor-1"},
+                {"workers": [worker_row("ctx_second")], "nextCursor": "cursor-1"},
+            ])
+
+        self.assertIn("cursor", str(raised.exception).lower())
+
+    def test_a_malformed_page_object_without_a_flat_cursor_is_not_a_complete_signature(self):
+        """Neither shape is readable: ``page`` is not an object and no flat cursor exists."""
         with self.assertRaises(RuntimeError) as raised:
             self.signature([{"workers": [worker_row("ctx_x")], "page": None}])
 
-        self.assertIn("page object", str(raised.exception))
+        message = str(raised.exception)
+        self.assertIn("neither result.page nor result.nextCursor", message)
+        self.assertIn("saw: page, scope, workers", message)
 
     def test_counts_are_never_the_signature(self):
         """One worker replacing another keeps the count and must still read as a change."""
