@@ -2376,7 +2376,9 @@ def _normalized_task_row(raw):
     if "task_id" not in row and isinstance(raw.get("id"), str):
         row["task_id"] = raw["id"]
     if not isinstance(row.get("orca_task_id"), str):
-        row["orca_task_id"] = None
+        # The live CLI names the Orca Task id ``id``; it is the only join key.
+        raw_id = raw.get("id")
+        row["orca_task_id"] = raw_id if isinstance(raw_id, str) and raw_id else None
     if "task_id" in row and not isinstance(row["task_id"], str):
         row.pop("task_id")
     if not isinstance(row.get("provisional"), bool):
@@ -2390,9 +2392,11 @@ class LiveAuthority:
     The Orca command is resolved from ``ORCA_CLI_COMMAND`` (the same contract the
     inbox loop uses), so tests point it at the shared fake and nothing touches a
     live Orca. Every read failure becomes ``unknown`` with a reason; an empty
-    success is never invented. Pagination follows ``page.hasMore`` and
-    ``page.nextCursor`` for ``worker-list`` (with ``--include-remote``) and
-    ``task-list``; a missing or repeated cursor is an unreadable read.
+    success is never invented. Pagination reads either shape the CLI publishes
+    for ``worker-list`` (with ``--include-remote``) and ``task-list``: the live
+    CLI's flat ``result.nextCursor`` (absent on the final page) or the older
+    ``result.page.hasMore``/``nextCursor`` object. A non-object ``page`` with no
+    usable flat cursor, or a repeated cursor, is an unreadable read.
 
     ``replay`` is the only mutation: it runs the command recorded on the intent
     with ``--retry-request`` set to the same request id. No merge, tracker close,
@@ -2432,7 +2436,7 @@ class LiveAuthority:
 
     def _request_show_one(self, request_id):
         result, error = self._call(
-            ["orchestration", "request-show", "--request", request_id])
+            ["orchestration", "request-show", "--request", request_id, "--json"])
         if result is None:
             return {"state": "unknown", "reason": "request-show: " + error, "receipt": {}}
         request = result.get("request", result)
@@ -2480,11 +2484,22 @@ class LiveAuthority:
                 return _unknown_source(rows_key + ": the CLI returned no row list")
             rows.extend(normalize(row) for row in page_rows if isinstance(row, dict))
             page = result.get("page")
-            if not isinstance(page, dict):
-                page = {}
-            if not page.get("hasMore"):
-                return _source("ok", "", rows=rows)
-            following = page.get("nextCursor")
+            if isinstance(page, dict):
+                # Older CLIs: the page object decides whether the list is exhausted.
+                if not page.get("hasMore"):
+                    return _source("ok", "", rows=rows)
+                following = page.get("nextCursor")
+            else:
+                # Live CLI 1.4.246: the cursor is flat, and its absence on the
+                # final page is normal. A present but non-object ``page`` with no
+                # flat cursor is a truncated read, never a complete list.
+                following = result.get("nextCursor")
+                if not isinstance(following, str) or not following:
+                    if "page" in result:
+                        return _unknown_source(
+                            rows_key + ": neither result.page nor result.nextCursor "
+                            "(saw: %s)" % ", ".join(sorted(result)))
+                    return _source("ok", "", rows=rows)
             if not isinstance(following, str) or not following or following in seen:
                 return _unknown_source(rows_key + ": pagination has no usable cursor")
             seen.add(following)
@@ -2499,8 +2514,7 @@ class LiveAuthority:
 
     def _task_list(self, run_id):
         return self._page(
-            ["orchestration", "task-list", "--run", run_id,
-             "--limit", str(PAGE_LIMIT)],
+            ["orchestration", "task-list", "--run", run_id, "--json"],
             "tasks", _normalized_task_row)
 
     def _worker_show(self, records, workers):
@@ -2516,7 +2530,7 @@ class LiveAuthority:
         entries = {}
         for dispatch_id in dispatch_ids:
             result, error = self._call(
-                ["orchestration", "worker-show", "--dispatch", dispatch_id])
+                ["orchestration", "worker-show", "--dispatch", dispatch_id, "--json"])
             if result is None:
                 entries[dispatch_id] = {
                     "state": "unknown", "reason": "worker-show: " + error, "worker": {}}
