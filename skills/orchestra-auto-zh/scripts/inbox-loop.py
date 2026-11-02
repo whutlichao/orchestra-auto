@@ -25,14 +25,18 @@ These safety guarantees must survive every change to this file:
 On top of them this process owns the wake contract, because a file on disk cannot start a
 coordinator turn by itself — only the end of a command the harness surfaces can:
 
-* a **newly persisted** batch that carries anything other than heartbeats ends the process
-  and prints one machine-readable line on stdout (``event``, ``reason``, ``deliveryId``);
-  the end of the process, not the file, is the wake;
-* a **reinstall** compares every saved delivery with the successful receipts. If the oldest
-  unacknowledged batch was saved but never announced, it emits exactly one wake naming the
-  reconciliation, records ``reconciled_delivery_id`` and a local observation in
-  ``state.json``, and exits. A batch already announced is never news again, and the consumer
-  never writes the ledger — the coordinator transcribes the observation;
+* a **newly persisted** batch that carries anything other than heartbeats writes a durable
+  *send intent* to ``state.json`` and then ends the process with one machine-readable line
+  on stdout (``event``, ``reason``, ``deliveryId``); the end of the process, not the file,
+  is the wake;
+* a delivery is **announced** only when the coordinator's successful ack receipt exists in
+  ``receipts.jsonl``. stdout is not a receipt: a process can die between the durable intent
+  and the line. Until that receipt exists the intent stays **pending**, and a **reinstall**
+  replays exactly one wake for the oldest pending delivery, deduplicated by delivery id,
+  records ``reconciled_delivery_id`` and a local observation in ``state.json``, and exits.
+  The wake is therefore at-least-once until the coordinator acks; the success receipt is
+  what makes it not-news. The consumer never writes the ledger — the coordinator transcribes
+  the observation;
 * a change in this Run's worker signature — the read-only ``worker-list --run --include-remote``
   read to the last page, reduced to one line per worker of
   ``dispatchId:workerState:dispatchStatus:stage.detail`` plus the scalar projection fields that
@@ -126,12 +130,17 @@ UNKNOWN = "unknown"
 RECEIPTS_FILE = "receipts.jsonl"
 
 #: Local durable markers. They survive every state rewrite because they answer questions a
-#: transient phase cannot: which batches were already announced, which one a reinstall
-#: reconciliation already woke for, whether worker watching was installed at all, the
+#: transient phase cannot: which wake intents are still owed, which delivery the last
+#: reinstall reconciliation replayed, whether worker watching was installed at all, the
 #: reconciliation observation (#34), the last wake's observation, the stall counters, and a
 #: recorded binding loss. ``observation`` stays the reconciliation record; every wake writes
 #: its own ``wake_observation`` next to it rather than overwriting that evidence.
-WOKEN_KEY = "woken_deliveries"
+#:
+#: ``pending_wakes`` is a durable *send intent*, never an announcement: it is written before
+#: the wake line and cleared only by a successful ack receipt. The old pre-emit
+#: ``woken_deliveries`` marker is deliberately not read — a line that never reached stdout
+#: cannot be proof that the coordinator was told.
+PENDING_KEY = "pending_wakes"
 RECONCILED_KEY = "reconciled_delivery_id"
 OBSERVATION_KEY = "observation"
 WATCH_KEY = "watch"
@@ -139,7 +148,7 @@ PROGRESS_KEY = "progress"
 BINDING_KEY = "binding"
 WAKE_OBSERVATION_KEY = "wake_observation"
 LOCAL_STATE_KEYS = (
-    WOKEN_KEY, RECONCILED_KEY, OBSERVATION_KEY, WATCH_KEY, PROGRESS_KEY, BINDING_KEY,
+    PENDING_KEY, RECONCILED_KEY, OBSERVATION_KEY, WATCH_KEY, PROGRESS_KEY, BINDING_KEY,
     WAKE_OBSERVATION_KEY,
 )
 
@@ -279,11 +288,11 @@ def write_state(directory, payload, current=None):
     """Write ``state.json`` while keeping the durable local markers.
 
     Phase, error text and the pid of the moment are transient: a new install must be able
-    to replace them. ``woken_deliveries``, ``reconciled_delivery_id``, the last observed
+    to replace them. ``pending_wakes``, ``reconciled_delivery_id``, the last observed
     ``observation``, the ``watch`` switch, the stall ``progress`` counters and a recorded
-    ``binding`` loss are not — they are how a restart knows what was already announced and
-    what it last proved, so every rewrite carries them forward. ``current`` lets the
-    install-time reconciliation reuse the one read it already made.
+    ``binding`` loss are not — they are how a restart knows which wake intents are still
+    owed and what it last proved, so every rewrite carries them forward. ``current`` lets
+    the install-time reconciliation reuse the one read it already made.
     """
     if current is None:
         current = read_json(directory / "state.json")
@@ -428,59 +437,83 @@ def inbox_progress(directory):
     }
 
 
-def woken_deliveries(directory, state=None):
-    """Delivery ids whose arrival this consumer already announced."""
-    if state is None:
-        state = read_json(directory / "state.json")
-    woken = state.get(WOKEN_KEY)
-    if not isinstance(woken, list):
-        return []
-    return [item for item in woken if isinstance(item, str)]
+def announced_delivery_ids(directory):
+    """Delivery ids whose wake the coordinator has verifiably received.
 
-
-def mark_woken(directory, delivery_id):
-    """Record that a wake for this batch was emitted, before the process ends.
-
-    The write happens before the wake line, so a batch that was really announced is never
-    reconciled as if it had been silent. If the process dies between the delivery write and
-    this marker, the reinstall reconciliation is exactly what covers that window.
+    stdout is not a durable receipt: a process can die between the durable intent and the
+    line, and the line dies with the process. The only local proof that the coordinator was
+    told is the ``success`` receipt its ``--ack`` — or the heartbeat auto-ack — appended to
+    ``receipts.jsonl``. ``pending`` and ``failed`` are evidence, never an announcement.
     """
-    current = read_json(directory / "state.json")
-    woken = woken_deliveries(directory, current)
-    if delivery_id not in woken:
-        woken = woken + [delivery_id]
-    write_state(directory, {WOKEN_KEY: woken}, current=current)
+    return acked_delivery_ids(directory)
+
+
+def pending_wake_rows(directory, progress=None):
+    """The saved batches this consumer still owes a wake for, oldest first.
+
+    This is the one announced/pending predicate shared by ``persist_batch`` and
+    ``reconcile_reinstall``: a saved batch stays pending until a successful ack receipt
+    exists, so a crash between the durable intent and stdout is replayed instead of
+    suppressed. The order is the delivery files' FIFO order (mtime, then name), which is
+    also the order the durable ``pending_wakes`` list is rewritten in whenever the loop
+    records a wake. That list records the handoff the coordinator can read; it is never a
+    second source of truth, so a batch saved by a process that died before updating it is
+    still found, and duplicate ids collapse to one.
+    """
+    if progress is None:
+        progress = inbox_progress(directory)
+    announced = announced_delivery_ids(directory)
+    rows = []
+    seen = set()
+    for row in progress["rows"]:
+        delivery_id = row["deliveryId"]
+        if delivery_id in seen or delivery_id in announced:
+            continue
+        seen.add(delivery_id)
+        rows.append(row)
+    return rows
+
+
+def persist_pending_wakes(directory, progress=None):
+    """Write the durable send intents before any wake line is printed.
+
+    Returns the pending rows. The write is the handoff a crash cannot undo: the process may
+    die before stdout, and the next install reads this list — or reconstructs it from the
+    delivery files and receipts — and replays the wake.
+    """
+    rows = pending_wake_rows(directory, progress)
+    write_state(directory, {PENDING_KEY: [row["deliveryId"] for row in rows]})
+    return rows
 
 
 def reconcile_reinstall(directory, run_id, terminal, baseline):
-    """Compare saved deliveries with receipts once per install.
+    """Replay the one wake this install owes, once, without claiming it was received.
 
-    Returns the one wake payload this install must emit, or ``None``. The oldest
-    unacknowledged batch that the consumer saved but never announced is the gap a crash
-    leaves between the delivery write and the wake line; waking once for it is how a
-    reinstall does not silently absorb it. A batch already announced stays the
-    coordinator's outstanding duty and is not news. ``reconciled_delivery_id`` and the
-    local observation are written before the wake, so neither a crash nor a second install
-    can wake twice for the same batch.
+    Returns the wake payload, or ``None``. Every saved delivery without a successful ack
+    receipt is *pending* — the same predicate ``persist_batch`` uses — and the oldest one is
+    the gap a crash leaves between the durable intent and stdout; replaying it is how a
+    reinstall does not silently absorb it. Nothing is marked announced here: only the
+    coordinator's success receipt can do that, so an unacknowledged intent stays replayable
+    and a second install without an ack is a replay, not a duplicate. Writing
+    ``reconciled_delivery_id`` and the local observation before the wake records what was
+    replayed; it is evidence, never a suppression marker.
 
     The observation is deliberately local: the consumer writes ``state.json`` only, and the
     coordinator transcribes the record into the ledger.
     """
     current = read_json(directory / "state.json")
     progress = inbox_progress(directory)
-    woken = woken_deliveries(directory, current)
+    pending = pending_wake_rows(directory, progress)
     previous = current.get(RECONCILED_KEY)
     reconciled_id = previous if isinstance(previous, str) and previous else None
-    oldest = progress["oldest_unacked"]
     payload = None
-    if oldest is not None and oldest["deliveryId"] not in woken \
-            and oldest["deliveryId"] != reconciled_id:
+    if pending:
+        oldest = pending[0]
         reconciled_id = oldest["deliveryId"]
-        woken = woken + [reconciled_id]
         payload = wake_event(
             "delivery", run_id, terminal,
-            f"reconciliation: oldest unacknowledged batch {reconciled_id} was saved but "
-            f"never announced; {progress['unacked']} unacknowledged of "
+            f"reconciliation: oldest unacknowledged batch {reconciled_id} has no successful "
+            f"ack receipt; {progress['unacked']} unacknowledged of "
             f"{progress['saved']} saved",
             delivery_id=reconciled_id, types=oldest["types"], saved=str(oldest["path"]))
     observation = {
@@ -496,7 +529,7 @@ def reconcile_reinstall(directory, run_id, terminal, baseline):
         "transcribe_to": "ledger",
     }
     write_state(directory, {
-        WOKEN_KEY: woken,
+        PENDING_KEY: [row["deliveryId"] for row in pending],
         RECONCILED_KEY: reconciled_id,
         OBSERVATION_KEY: observation,
         "phase": "reconciling",
@@ -1099,12 +1132,13 @@ def ack_main(directory, delivery_id):
 def persist_batch(directory, run_id, terminal, data):
     """Persist one batch and report what it means for the coordinator.
 
-    Returns ``(wake, acknowledged)``. ``wake`` is the payload for a batch that was not on
-    disk before and carries anything other than heartbeats — the "new message" leg, raised
-    after the file is durable. ``acknowledged`` says the batch was heartbeat-only and has
-    been acknowledged. An empty batch is ``(None, False)``, and so is a batch already on
-    disk: a FIFO replay of a batch the coordinator already saw is its outstanding duty, not
-    news, so it must neither wake again nor be overwritten.
+    Returns ``(wake, acknowledged)``. ``wake`` is the payload for a batch that still has no
+    successful ack receipt: the "new message" leg for a batch just saved, or a replay of a
+    pending one — raised only after the durable send intent is written. ``acknowledged``
+    says the batch was heartbeat-only and has been acknowledged. An empty batch is
+    ``(None, False)``, and so is a batch whose successful receipt proves the coordinator
+    already received it: that FIFO replay is its outstanding duty, not news, so it must
+    neither wake again nor be overwritten.
     """
     messages = batch_messages(data)
     if not messages:
@@ -1136,17 +1170,25 @@ def persist_batch(directory, run_id, terminal, data):
         append_receipt(directory, did, "success")
         log(directory, f"AUTO-ACK heartbeat-only {did}")
         return None, True
-    if not saved:
+    if did in announced_delivery_ids(directory):
+        # The coordinator's success receipt is the verifiable announcement: this FIFO replay
+        # is its outstanding duty, not news, and waking for it would spin.
         return None, False
-    atomic(directory / "NEW-MESSAGE", f"{did}\nfile={file}\n")
-    log(directory, f"PENDING {did} file={file}")
-    # Record the announcement before the wake line is printed: the durable marker is what
-    # lets a later install tell "already news" from "saved, then the process died before
-    # saying so". The window before this line is what reconciliation covers.
-    mark_woken(directory, did)
+    # The durable handoff is a *pending* send intent written before any wake line: a crash
+    # between this point and stdout is replayed by the next install instead of being lost.
+    persist_pending_wakes(directory)
     types = [(m.get("type") if isinstance(m, dict) else None) for m in messages]
-    return wake_event("delivery", run_id, terminal,
-                      f"new batch {did} saved: {len(messages)} message(s) {types}",
+    if saved:
+        atomic(directory / "NEW-MESSAGE", f"{did}\nfile={file}\n")
+        log(directory, f"PENDING {did} file={file}")
+        detail = f"new batch {did} saved: {len(messages)} message(s) {types}"
+    else:
+        # A FIFO replay of a delivery whose wake was never acknowledged (or was lost in a
+        # crash) is still the coordinator's missing news, so the pending wake is replayed.
+        log(directory, f"REPLAY {did} file={file} no successful ack")
+        detail = (f"pending batch {did} replayed: {len(messages)} message(s) {types}; "
+                  "no successful ack receipt")
+    return wake_event("delivery", run_id, terminal, detail,
                       delivery_id=did, types=types, saved=str(file)), False
 
 
