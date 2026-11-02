@@ -307,6 +307,24 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertIn("merge_sha", problems)
         self.assertIn("merge_sha", " ".join(row(checklist, 2)["detail"]["problems"]))
 
+    def test_closeout_blocks_a_failed_check(self):
+        record = acceptance_record()
+        record["checks"] = [{
+            "name": "a command that failed",
+            "command": "false",
+            "result": "fail",
+            "evidence_ref": "evidence/failing-command.log",
+        }]
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "",
+            "records": [{"record_id": ACCEPTANCE_RECORD_ID, **record}]}))
+
+        self.assertEqual(row(checklist, 1)["status"], "blocked")
+        self.assertIn(1, checklist["blocking"])
+        self.assertFalse(checklist["ready"])
+        problems = " ".join(row(checklist, 1)["detail"]["problems"])
+        self.assertIn("did not pass", problems)
+
     def test_row_one_names_the_answer_location_of_each_accepted_record(self):
         checklist = self.module.plan(facts())
         entries = row(checklist, 1)["detail"]["entries"]

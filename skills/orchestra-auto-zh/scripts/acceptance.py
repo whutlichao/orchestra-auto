@@ -17,9 +17,12 @@ Public interface (deep module):
 * ``validate(record) -> errors`` — pure schema and minimum-evidence validation.
 * ``verify(record, authority) -> errors`` — cross-check claimed levels against an
   injected authority snapshot (PR host, tracker, git ancestry and git merges).
+* ``all_checks_passed(checks) -> bool`` — the one gate verdict: at least one check was
+  recorded and every one passed; a missing list or a ``fail`` is not a pass.
 * ``aggregate(ticket, records) -> ticket`` — pure four-level aggregation over ledger
   records: every linked PR must support a level, a later observation lowers a level
-  without rewriting history, and conflicting records are ``divergent``.
+  without rewriting history, and conflicting records are ``divergent``. A record whose
+  checks did not all pass supports no true level.
 
 CLI (product surface, not a test hook): ``record``, ``show``, ``observe``,
 ``open-questions``, ``resolve-question`` and ``retry``. JSON in and out; exit ``0`` is
@@ -220,6 +223,20 @@ def _validate_check(index, check, errors):
         errors.append(path + ".result must be 'pass' or 'fail'")
     if not is_nonempty(check.get("evidence_ref")):
         errors.append(path + ".evidence_ref must name the log that was captured")
+
+
+def all_checks_passed(checks):
+    """Whether every recorded check passed.
+
+    A gate passes only when at least one check was recorded and every one of them
+    passed. A missing list, an empty list or any ``fail`` result is not a pass: the
+    evidence stays durable, but the conclusion is failure. There is no implicit
+    baseline exemption; an exemption would have to be an explicit, evidenced field.
+    """
+    if not isinstance(checks, list) or not checks:
+        return False
+    return all(isinstance(check, dict) and check.get("result") == "pass"
+               for check in checks)
 
 
 def _validate_review(review, errors):
@@ -735,7 +752,8 @@ def aggregate(ticket, records):
     appended to, never overwritten. A later attempt re-accepting the same PR is the claim
     in force and leaves the earlier ones in ``records`` as history; records at the *same*
     attempt that disagree about the same PR are ``divergent``, and that PR's levels are
-    neither averaged nor claimed.
+    neither averaged nor claimed. The claim in force also has to carry a passed gate:
+    when any of its checks is a ``fail``, it supports no true level.
     """
     accepted, observations = [], []
     for record in records or []:
@@ -780,11 +798,12 @@ def aggregate(ticket, records):
         divergent = len(signatures) > 1
         latest = current[-1]
         detail = _detail(latest)
+        gate_passed = all_checks_passed(detail.get("checks"))
         levels = {}
         for name in LEVEL_NAMES:
             value = detail.get("levels", {}).get(name)
             levels[name] = dict(value) if isinstance(value, dict) else {"value": False}
-            if divergent:
+            if divergent or not gate_passed:
                 levels[name]["value"] = False
         for record in observations:
             observed_detail = _detail(record)
@@ -1027,7 +1046,7 @@ def command_record(args, home):
         return 1
     _emit({
         "recorded": True,
-        "gate_passed": True,
+        "gate_passed": all_checks_passed(payload.get("checks")),
         "record_id": record_id,
         "ticket": payload["ticket"],
         "pr": payload["pr"]["number"],

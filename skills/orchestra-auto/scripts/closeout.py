@@ -343,6 +343,7 @@ def _row_one(run_id, facts):
     problems, entries, evidence = [], [], []
     for item in accepted:
         payload = item["payload"]
+        gate_passed = ACCEPTANCE.all_checks_passed(payload.get("checks"))
         entries.append({
             "record_id": item["record_id"],
             "ticket": payload.get("ticket"),
@@ -350,6 +351,7 @@ def _row_one(run_id, facts):
             "attempt": payload.get("attempt"),
             "accepted_sha": payload.get("accepted_sha"),
             "answer_location": payload.get("answer_location"),
+            "gate_passed": gate_passed,
             "valid": not item["errors"],
         })
         evidence.append(_evidence(
@@ -357,6 +359,10 @@ def _row_one(run_id, facts):
             "ok" if not item["errors"] else "invalid"))
         problems.extend(
             str(item["record_id"]) + ": " + error for error in item["errors"])
+        if not gate_passed:
+            problems.append(
+                str(item["record_id"]) + ": a recorded check did not pass; the gate "
+                "did not pass and blocks the declaration")
     if not accepted:
         problems.append(
             "no acceptance record is persisted; the accepted SHA must be captured at "
