@@ -1914,6 +1914,150 @@ class InstallRefusalInvariantTests(InboxLoopCase):
             self.stop(process)
 
 
+class ArgumentGuardTests(unittest.TestCase):
+    """A misread argument must be a usage error, not a directory created in place.
+
+    ``main()`` used to unpack three positional arguments as soon as there were three of
+    them, so ``inbox-loop.sh RUN --run STATE`` read the literal ``--run`` as the state
+    directory: it created ``./--run``, wrote ``state.json``, ``run-id`` and ``deliveries/``
+    into the working directory, and only then exited non-zero. The guard runs before any
+    resolve or ``mkdir``, and a state directory may not live inside a git repository at
+    all — that is what turned the stray directory into a failing published-text scan as
+    well as a mess.
+
+    Most of these run the real entry point as a subprocess in a temporary working
+    directory; the last one calls the guard directly to show that only the directory, never
+    the run id, is classified by path. The refusal cases point ``ORCA_CLI_COMMAND`` at a path
+    that does not exist, so a refusal that reached the CLI would be visible rather than
+    silently answered by the real one.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inbox-loop-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.cwd = self.tmp / "cwd"
+        self.cwd.mkdir()
+
+    def run_inbox(self, arguments, cwd=None, env_extra=None):
+        env = dict(os.environ)
+        env["ORCA_CLI_COMMAND"] = str(self.tmp / "no-such-orca")
+        env.update(env_extra or {})
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *arguments],
+            env=env, capture_output=True, text=True, timeout=30,
+            cwd=str(cwd or self.cwd),
+        )
+
+    def git_repository(self, name="repo"):
+        repository = self.tmp / name
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        return repository
+
+    def test_a_flag_in_the_state_directory_position_creates_nothing(self):
+        unused = self.tmp / "unused"
+        result = self.run_inbox([str(unused), "--run", "run_abc"])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("a state directory must not start with '-'", result.stderr)
+        # The correct order is on screen: a usage error has to say what the order is.
+        self.assertIn("RUN STATE_DIR COORDINATOR_HANDLE", result.stderr)
+        self.assertFalse((self.cwd / "--run").exists(),
+                         "a refused invocation still created ./--run")
+        self.assertFalse(unused.exists())
+
+    def test_a_flag_in_the_run_or_handle_position_creates_nothing(self):
+        state = self.tmp / "state"
+        for arguments in (["--run", str(state), "term_coordinator"],
+                          ["run_test", str(state), "--terminal"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_inbox(arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("must not start with '-'", result.stderr)
+                self.assertIn("RUN STATE_DIR COORDINATOR_HANDLE", result.stderr)
+                self.assertFalse(state.exists())
+
+    def test_a_state_directory_inside_a_git_repository_is_refused(self):
+        repository = self.git_repository()
+        state = repository / ".run" / "state"
+        result = self.run_inbox(["run_test", str(state), "term_coordinator"])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("the state directory must live outside every git repository",
+                      result.stderr)
+        self.assertIn(str(state), result.stderr)
+        self.assertFalse((repository / ".run").exists(), "the parent directory was created")
+
+    def test_a_repository_found_from_the_resolved_path_is_refused_too(self):
+        """The check reads the resolved directory, not the spelling of the argument."""
+        repository = self.git_repository()
+        result = self.run_inbox(
+            ["run_test", "repo/nested/state", "term_coordinator"], cwd=self.tmp)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("the state directory must live outside every git repository",
+                      result.stderr)
+        self.assertFalse((repository / "nested").exists())
+
+    def test_status_refuses_a_state_directory_inside_a_git_repository(self):
+        repository = self.git_repository()
+        state = repository / "state"
+        result = self.run_inbox(["--status", "--json", str(state)])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("the state directory must live outside every git repository",
+                      result.stderr)
+        self.assertFalse(state.exists())
+
+    def test_status_refuses_a_leading_dash_path(self):
+        result = self.run_inbox(["--status", "--json", "--run"])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("a state directory must not start with '-'", result.stderr)
+        self.assertIn("--status", result.stderr)
+        self.assertFalse((self.cwd / "--run").exists())
+
+    def test_ack_refuses_a_state_directory_inside_a_git_repository(self):
+        repository = self.git_repository()
+        result = self.run_inbox(["--ack", "delivery_x", str(repository / "state")])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        # The refusal names the repository rule, not the "directory missing" fallback
+        # that ack_main would otherwise report for the same exit code.
+        self.assertIn("the state directory must live outside every git repository",
+                      result.stderr)
+
+    def test_a_state_directory_outside_a_repository_still_runs_from_inside_one(self):
+        """The guard is about the directory, not the coordinator's working directory."""
+        repository = self.git_repository()
+        state = self.tmp / "state-outside"
+        fake = FakeOrca(self.tmp / "fake-start", [batch("delivery_ok", [normal()])]).write()
+        result = self.run_inbox(
+            ["run_test", str(state), "term_coordinator"], cwd=repository,
+            env_extra={"ORCA_CLI_COMMAND": str(fake.path), "WAIT_TIMEOUT_MS": "200",
+                       "BACKOFF_SECONDS": "0.15", "PENDING_BACKOFF_SECONDS": "0.15",
+                       "WORKER_POLL_SECONDS": "0.1"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["event"], "wake")
+        self.assertEqual((state / "run-id").read_text().strip(), "run_test")
+
+    def test_the_state_directory_guard_checks_the_directory_not_the_bound_run(self):
+        """A run id is an identifier, never a path: only the directory is checked for a repo."""
+        module = load_inbox_module(SKILL_DIRS[0])
+        self.assertIsNone(module.flag_problem("run_abc", "run"))
+        self.assertIsNone(module.flag_problem("term_coordinator", "coordinator handle"))
+        self.assertIn("must not start with '-'",
+                      module.flag_problem("--run", "state directory"))
+        # A relative state directory is classified by where it resolves to, which is why the
+        # guard cannot be satisfied by the spelling of the argument alone.
+        repository = self.git_repository("nested-repo")
+        with mock.patch("pathlib.Path.resolve", return_value=repository / "state"):
+            self.assertIn("outside every git repository",
+                          module.state_directory_problem("state"))
+
+
 class WorkerSignaturePaginationTests(unittest.TestCase):
     """The signature reads every page, includes remote rows, and never trusts a stub."""
 

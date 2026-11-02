@@ -1398,6 +1398,68 @@ def status_arguments(arguments):
     return json_mode, rest[0]
 
 
+#: The full invocation, printed when the install positionals are refused or miscounted.
+USAGE = ("usage: inbox-loop.sh RUN STATE_DIR COORDINATOR_HANDLE"
+         " | --status STATE_DIR | --ack DELIVERY_ID STATE_DIR")
+
+
+def repository_root(path):
+    """The repository containing ``path``, or ``None``.
+
+    This repeats ``ledger.py``'s ``_repository_root`` (ledger.py:280-284) rather than
+    importing it: the two scripts are standalone files in two separate bundles, with no
+    package between them, so the copy keeps the path policy identical without inventing an
+    import path. A refusal is the same one the ledger applies to its own home.
+    """
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def flag_problem(raw, role):
+    """Why a positional that opens with ``-`` may not be the ``role`` argument.
+
+    The count of positional arguments is not evidence that they are in the documented
+    order: ``RUN --run STATE`` has exactly three and puts a literal ``--run`` in the state
+    directory slot. A positional that starts with ``-`` is therefore a misordered flag, not
+    a path or a handle, and the refusal names it.
+    """
+    if raw.startswith("-"):
+        return f"a {role} must not start with '-': {raw!r}"
+    return None
+
+
+def state_directory_problem(raw):
+    """Why ``raw`` may not be used as the state directory, or ``None`` when it may.
+
+    Both checks run before ``Path(path).resolve()`` and every ``mkdir``: a usage error must
+    leave no ``./--run`` and no half-built state directory behind, which is the defect. The
+    repository check keeps the state outside every git repository, the same rule the ledger
+    applies to its own home — the stray ``./--run`` such a misordered call used to create was
+    picked up by the published-text scan.
+    """
+    problem = flag_problem(raw, "state directory")
+    if problem is not None:
+        return problem
+    try:
+        directory = Path(raw).resolve()
+    except OSError:
+        # An unreadable path cannot be classified here: let the existing path handling
+        # report it rather than turning it into a guard refusal.
+        return None
+    if repository_root(directory) is not None:
+        return "the state directory must live outside every git repository: " + str(directory)
+    return None
+
+
+def usage_error(detail):
+    """Refuse a usage error on stderr, always naming the correct order, and exit 2."""
+    print(detail, file=sys.stderr)
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--status":
         parsed = status_arguments(sys.argv[2:])
@@ -1405,17 +1467,31 @@ def main():
             print("usage: inbox-loop.sh --status [--json] STATE_DIR", file=sys.stderr)
             return 2
         json_mode, path = parsed
+        # Checked before ``status`` resolves or touches anything: a refused read must not
+        # create or probe a directory the install would have been refused.
+        problem = state_directory_problem(path)
+        if problem is not None:
+            return usage_error(problem)
         return status(path, json_mode=json_mode)
     if len(sys.argv) >= 2 and sys.argv[1] == "--ack":
         if len(sys.argv) != 4:
             print("usage: inbox-loop.sh --ack DELIVERY_ID STATE_DIR", file=sys.stderr)
             return 2
+        problem = state_directory_problem(sys.argv[3])
+        if problem is not None:
+            return usage_error(problem)
         return ack_main(Path(sys.argv[3]).resolve(), sys.argv[2])
     if len(sys.argv) != 4:
-        print("usage: inbox-loop.sh RUN STATE_DIR COORDINATOR_HANDLE"
-              " | --status STATE_DIR | --ack DELIVERY_ID STATE_DIR", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     run_id, path, terminal = sys.argv[1:]
+    for value, role in ((run_id, "run"), (terminal, "coordinator handle")):
+        problem = flag_problem(value, role)
+        if problem is not None:
+            return usage_error(problem)
+    problem = state_directory_problem(path)
+    if problem is not None:
+        return usage_error(problem)
     directory = Path(path).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     handle = locked(directory)

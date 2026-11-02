@@ -40,6 +40,9 @@ ORCA_CLI_COMMAND=<confirmed executable path> <SKILL_DIR>/scripts/inbox-loop.sh \
   <run_id> /tmp/orch-<repo>-<run_id> <coordinator_handle>
 ```
 
+The state directory must live outside every git repository and may not start with `-`; a
+misordered call exits with a usage error instead of creating a directory in place.
+
 Run that command the way §3 describes — as a blocking call the harness surfaces — **not** as
 `nohup … &`. The script persists every batch atomically, fsyncs the parent directory after the
 rename, acknowledges heartbeat-only batches, and then **ends the process** when something needs
@@ -83,7 +86,8 @@ Exit codes, and nothing else:
   healthy live loop: the lock is held or the state is clean, no unacked head, watch on;
 - `1` — a fatal error: `phase=error`, the last `ERROR` line in `watch.log`, or an unreadable
   delivery file (never read as an empty inbox);
-- `2` — the state directory does not exist;
+- `2` — the state directory does not exist, or the path argument is refused by the install's
+  argument guard: it starts with `-`, or it lies inside a git repository;
 - `3` — degraded or blocked: an unacknowledged FIFO head (`blocked`), worker watching switched off
   (`watch_off`), or a loop that stopped with an active phase and wrote neither a wake nor an
   error (`loop_not_running`).
@@ -94,7 +98,8 @@ queue and never changes a delivery's fate.
 
 Legacy plain `--status` (no `--json`) keeps its current `0` (a loop holds the directory) / `1`
 (everything else) exit codes for one minor version and prints a deprecation notice on stderr; it
-shows the same local facts in text form. The new `2`/`3` codes belong to `--json` alone. The
+shows the same local facts in text form. The new `2`/`3` codes belong to `--json` alone, except
+the argument guard above, which refuses a bad path with `2` in either mode. The
 install command's own exit `2` — "another instance holds this directory / the directory is bound to
 a different Run, terminal or CLI" — is a separate contract and does not change; a refused install
 leaves the owner's state directory byte for byte as it was.
