@@ -112,6 +112,33 @@ class FakeRunner:
         return failed("unscripted command: " + " ".join(argv), returncode=127)
 
 
+class NoJsonRunner:
+    """Run the shared fake but drop ``--json`` from the worker-list probe.
+
+    This reproduces the pre-fix argv exactly. It is the end-to-end half of the fixture
+    authenticity test: if the fixture ever went back to answering JSON without being
+    asked, this runner's reply would be JSON and the item would pass, so the test would
+    fail.
+    """
+
+    def __init__(self, fake):
+        self.fake = fake
+
+    def run(self, argv, timeout=None):
+        args = list(argv[1:])
+        if args[:2] == ["orchestration", "worker-list"]:
+            args = [arg for arg in args if arg != "--json"]
+        completed = subprocess.run(
+            [str(self.fake.path), *args], text=True, capture_output=True,
+            timeout=timeout,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        }
+
+
 def make_state_database(profile_dir, rows=None, create_table=True, name="state.db",
                         payload=None):
     """Write a temporary settings fixture; never a live Orca database.
@@ -423,6 +450,19 @@ class ReceiptTests(PreflightTestCase):
 
 class MechanicalItemTests(PreflightTestCase):
     """The mechanical items and the command runner they use."""
+
+    def test_every_probe_asks_the_cli_for_json(self):
+        runner = self.runner()
+        self.check(runner=runner)
+        self.assertEqual(
+            runner.calls,
+            [
+                ["orca", "agent", "hooks", "status", "--json"],
+                ["orca", "status", "--json"],
+                ["orca", "orchestration", "worker-list", "--run", RUN_ID,
+                 "--limit", "1", "--json"],
+            ],
+        )
 
     def test_cli_liveness_is_two_mechanical_evidence_items(self):
         receipt = self.check()
@@ -856,6 +896,15 @@ class CommandLineTests(PreflightTestCase):
             capture_output=True,
         )
 
+    def make_fake(self, name):
+        """The happy-path fake with a profile the live-settings item can read."""
+        return self.fake_orca.FakeOrca(
+            self.root / name,
+            status={"app": "up"},
+            agent_hooks_status={"settingsPath": str(self.profile / "settings.json")},
+            worker_pages=[{"workers": []}],
+        ).write()
+
     def prepare_check_files(self, **context_overrides):
         ticket = self.write_json("ticket.json", make_ticket())
         context, _runner = self.context()
@@ -863,6 +912,33 @@ class CommandLineTests(PreflightTestCase):
         context.update(context_overrides)
         context_path = self.write_json("context.json", context)
         return ticket, context_path
+
+    def test_the_fake_answers_text_without_json_like_the_real_cli(self):
+        """The fixture must reproduce the real CLI shape, or a missing flag stays green."""
+        fake = self.make_fake("fake-text")
+        probes = (
+            (["status"], "appRunning:"),
+            (["agent", "hooks", "status"], "agentStatusHooksEnabled:"),
+            (["orchestration", "worker-list", "--run", RUN_ID, "--limit", "1"],
+             "No workers found."),
+        )
+        for argv, expected in probes:
+            with self.subTest(command=" ".join(argv)):
+                result = subprocess.run(
+                    [str(fake.path), *argv], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stdout)
+                with self.assertRaises(ValueError):
+                    json.loads(result.stdout)
+
+    def test_a_worker_list_probe_without_json_fails_and_blocks_the_dispatch(self):
+        fake = self.make_fake("fake-no-json")
+        receipt = self.check(runner=NoJsonRunner(fake))
+        surface = self.item(receipt, "cli-command-surface")
+        self.assertEqual(surface["result"], "fail")
+        self.assertIn("did not return a JSON object", surface["note"])
+        self.assertEqual(receipt["blocking"]["failed_items"], ["cli-command-surface"])
+        self.assertFalse(receipt["blocking"]["allowed"])
 
     def test_check_cli_allows_a_clean_preflight_and_runs_no_mutation(self):
         fake = self.fake_orca.FakeOrca(
