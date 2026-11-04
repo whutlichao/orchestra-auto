@@ -111,8 +111,12 @@ explicitly asked to keep an open PR, stop here.
 
 ### §6.5 Merge execution and teardown
 
-1. In DAG or stacked-PR order, check the current head against the accepted SHA and merge each one
-   with the method the repository allows. Merge conflicts go back to that ticket's worker to
+1. In DAG or stacked-PR order, check the current head against the accepted SHA, then merge each
+   one with a method that makes the accepted head an ancestor of the merge SHA. A merge commit
+   satisfies that by construction; squash and rebase do not, so under them the merge is recorded
+   by §6.6's `equivalence` shape (`git diff <accepted_sha> <merge_sha>` is empty). Before merging,
+   read the merge methods the repository allows; when that cannot be read, or all three are
+   enabled, default to a merge commit. Merge conflicts go back to that ticket's worker to
    resolve in its worktree, and the affected gates plus G-merge are re-run.
 2. After each merge run §6.5.1 and check the main branch's tree SHA against the verified prefix.
    Pause and update the integration evidence only on an unplanned main-branch commit, a different
@@ -142,6 +146,23 @@ not hold, preserve the scene and report "merged remotely, local sync blocked", p
 merges; do not auto-stash, reset, check out, or create a local merge commit. A network error may
 be retried once after diagnosis.
 
+**Fork repositories sync in a different direction.** When the PR merges into *upstream*, plain
+`git pull --ff-only` fetches `origin/<default branch>` — the fork's own main — which that merge
+never touched. The pull is a no-op, the local main falls permanently behind, and the ancestry
+check above then fails for good: the section reports "merged remotely, local sync blocked" and
+pauses every later merge with no legal exit, because the same section forbids reset, checkout and
+a local merge commit. A fork's sync action is therefore: `git fetch upstream`, fast-forward the
+local target main branch to `upstream/<default branch>`, then push that to the fork's remote. Under
+that action `git merge-base --is-ancestor <merge_sha> HEAD` still holds, and the other
+preconditions are unchanged — the main working copy sits on the target main branch, and the
+working tree and index are clean. The hard constraints stay exactly as written: no reset, no
+automatic stash, no switching the user's current branch, no local merge commit; fast-forward only,
+and a branch that cannot fast-forward is reported as "local sync blocked" rather than forced. This
+holds unconditionally while the fork's default branch stays a pure mirror of upstream's (§4.3); a
+fork carrying private commits fixes those first instead of relying on a base-ref choice. The
+ledger and closeout row 5 still read "local target main branch is synced", unchanged — no script
+change follows from this.
+
 ### §6.6 Acceptance records and the four levels
 
 A gate result is durable or it did not happen. Record it as a ledger `kind: acceptance` record
@@ -166,7 +187,7 @@ recorded PR-host/tracker/git read.
 
 | Claim | What proves it |
 | --- | --- |
-| merge | PR host `MERGED`, the merge SHA, and `git merge-base --is-ancestor <accepted_sha> <merge_sha>` |
+| merge | PR host `MERGED`, the merge SHA, and one of the two `levels.merged` evidence shapes: `ancestry {ancestor, descendant, result: true}` from `git merge-base --is-ancestor <accepted_sha> <merge_sha>`, or `equivalence {accepted_sha, merge_sha, diff_empty: true, command}` naming the `git diff <accepted_sha> <merge_sha>` that came back empty |
 | tracker close | a tracker read-back showing `closed`, with the read time |
 | start | `turnStart: observed`, or the attempt's artifact / status-projection reference |
 | tests | the command, the result and the log reference. A `grep` only proves a string exists, so it is never a test run |
@@ -174,6 +195,19 @@ recorded PR-host/tracker/git read.
 
 `worker_done` proves settlement only. It is never start evidence and never produces an
 acceptance: a level made `true` on it is rejected.
+
+**`levels.merged` has two evidence shapes, and exactly one of them per record.** `ancestry` is
+the merge-commit shape: `{ancestor, descendant, result: true}`, with the two SHAs equal to the
+record's `accepted_sha` and the level's `merge_sha`. `equivalence` is the squash / rebase shape:
+`{accepted_sha, merge_sha, diff_empty: true, command}`, where both SHAs repeat the same two
+fields and `command` is the `git diff` that returned nothing — a `grep`, a `git log` or a
+`git rev-parse` names the two SHAs without comparing them and is refused. `validate` rejects a
+record with neither shape and a record with both. `verify` proves each shape against its own
+authority: `ancestry` from git's `ancestry` rows, `equivalence` from git's `merges` rows
+(`{accepted_sha, merge_sha, diff_empty}`), and the record's own `diff_empty` is never accepted
+as the proof. A git read that carries no `merges` row cannot prove equivalence: it is
+unreadable, not "empty". Closeout row 3 reads the same two shapes; row 4 (main contains the
+merge) is ancestry from the merge SHA to `main.head` under either one.
 
 **Four levels.** `implemented`, `integrated`, `merged` and `tracker_closed` are separate claims,
 recorded per PR. The ticket-level level is true only when **every** linked PR record supports
@@ -212,7 +246,7 @@ python3 "$CLOSEOUT" show --run-id "$RUN"
 | --- | --- | --- | --- | --- |
 | 1 | the accepted SHA per PR | ledger acceptance record | **no** | must be persisted at acceptance; it cannot be reconstructed later |
 | 2 | PR `MERGED`, base and merge SHA | PR host API | yes | read back and write an observation |
-| 3 | the merge covers the accepted head | `git merge-base --is-ancestor` | yes | failure → divergent, escalate |
+| 3 | the merge covers the accepted head | `git merge-base --is-ancestor` / git merges (equivalence) | yes | failure → divergent, escalate |
 | 4 | main contains the merge | `git rev-parse` / ancestry | yes | record the ancestry result |
 | 5 | local main is synced | `git status` / `rev-parse` / upstream, ff-only | yes | blocked → pause later merges |
 | 6 | every ticket is integrated | integration branch ancestry / PR `Closes` | yes | record the result per ticket |

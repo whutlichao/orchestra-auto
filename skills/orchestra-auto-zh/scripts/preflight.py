@@ -310,7 +310,8 @@ def _check_status(runner):
 
 
 def _check_command_surface(runner, run_id):
-    argv = ["orca", "orchestration", "worker-list", "--run", run_id, "--limit", "1"]
+    argv = ["orca", "orchestration", "worker-list", "--run", run_id, "--limit", "1",
+            "--json"]
     command = " ".join(argv)
     result = _run(runner, argv)
     reply, problem = _command_reply(result, "orca orchestration worker-list")

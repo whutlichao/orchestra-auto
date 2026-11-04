@@ -11,14 +11,18 @@ tests need):
 
 * ``orchestration check`` for inbox tests, including ``--ack`` and ``--wait``
   semantics and keepalive lines;
-* ``orchestration worker-list`` with cursor pagination: pages answer
-  ``page.hasMore`` and ``page.nextCursor`` and remote rows are served verbatim;
+* ``orchestration worker-list`` with cursor pagination: pages default to the live
+  CLI 1.4.246 shape (flat ``result.nextCursor`` plus ``warnings``, no ``page``
+  object); a page that carries an explicit ``page`` key serves the legacy shape;
+  remote rows are served verbatim;
 * ``orchestration request-show --request <id>`` with fixture states
   ``completed`` / ``pending`` / ``absent``, or a scripted failure;
 * ``orchestration worker-show --dispatch <id>`` and ``orchestration task-list``;
-* the preflight probes ``status --json`` (app up) and ``agent hooks status --json``
-  (the current profile's ``result.settingsPath``), both scripted fixtures rather than
-  claims about a live Orca shape;
+* the preflight probes ``status --json`` (app up), ``agent hooks status --json``
+  (the current profile's ``result.settingsPath``) and ``worker-list --json``. These
+  mirror the real CLI's flag contract: without ``--json`` the command prints text and
+  still exits 0, so a probe that forgets the flag fails in the tests instead of only in
+  a live preflight;
 * the mutation classes ``worker-start``, ``send``, ``reply`` (plus the other
   lifecycle verbs) so joinable-replay tests can observe that an action ran, in
   what order, and with which ``--retry-request`` key.
@@ -99,6 +103,10 @@ def emit(result):
     sys.stdout.write(json.dumps({"ok": True, "result": result}))
     sys.exit(0)
 
+def text_only(text):
+    sys.stdout.write(text)
+    sys.exit(0)
+
 def flag(name, default=None):
     if name in argv:
         index = argv.index(name)
@@ -110,12 +118,16 @@ if argv and argv[0] == "status":
     response = CONFIG.get("status")
     if isinstance(response, dict) and "fail" in response:
         fail(response["fail"])
+    if "--json" not in argv:
+        text_only("appRunning: true\\npid: 1234\\ndesktopWindowStatus: available\\n")
     emit(response if response is not None else {"app": "up"})
 
 if argv[:3] == ["agent", "hooks", "status"]:
     response = CONFIG.get("agent_hooks_status")
     if isinstance(response, dict) and "fail" in response:
         fail(response["fail"])
+    if "--json" not in argv:
+        text_only("agentStatusHooksEnabled: true\\nappliedBy: offline\\n")
     emit(response if response is not None else {"settingsPath": ""})
 
 if not argv or argv[0] != "orchestration":
@@ -150,16 +162,18 @@ def page_for(pages, cursor, rows_key):
     page = pages[index]
     if isinstance(page, dict) and "fail" in page:
         fail(page["fail"])
+    rows = page.get(rows_key, []) if isinstance(page, dict) else []
     if isinstance(page, dict) and "page" in page:
-        page_object = page["page"]
+        # Legacy shape, served only when a fixture asks for it explicitly; a
+        # non-object value models the malformed-page error case.
+        result = {rows_key: rows, "page": page["page"]}
     else:
-        more = index + 1 < len(pages)
-        page_object = {
-            "hasMore": more,
-            "nextCursor": ("cursor-" + str(index + 1)) if more else None,
-        }
-    result = {rows_key: page.get(rows_key, []) if isinstance(page, dict) else []}
-    result["page"] = page_object
+        # Live CLI 1.4.246 shape: the cursor is flat and the final page carries none.
+        result = {rows_key: rows, "scope": {"source": "flag"}}
+        if index + 1 < len(pages):
+            result["nextCursor"] = "cursor-" + str(index + 1)
+            result["warnings"] = [
+                "Showing a page of rows, newest first; more are on later pages."]
     emit(result)
 
 if kind == "check":
@@ -184,6 +198,8 @@ if kind == "check":
     emit(response)
 
 if kind == "worker-list":
+    if "--json" not in argv:
+        text_only("No workers found.\\n")
     page_for(CONFIG.get("worker_pages") or [{"workers": []}], flag("--cursor", ""), "workers")
 
 if kind == "request-show":
@@ -237,13 +253,16 @@ fail("unexpected command: " + " ".join(argv))
 class FakeOrca:
     """A generated ``orca`` executable serving scripted responses.
 
-    ``worker_pages`` and ``task_pages`` are lists of page dictionaries. A page may
-    carry its own ``page`` object; otherwise the shim derives
-    ``hasMore``/``nextCursor`` from the list position, and a later call passes the
-    cursor back through ``--cursor``. ``request_show`` and ``worker_show`` are
-    dictionaries keyed by id; an entry of ``{"fail": "reason"}`` makes the command
-    exit non-zero. ``mutations`` maps an action name to a list of scripted
-    responses (``{"state": ..., ...}``); an unscripted call gets a fixture
+    ``worker_pages`` and ``task_pages`` are lists of page dictionaries. By default
+    the shim answers the live CLI 1.4.246 shape: a flat ``result.nextCursor`` and
+    ``warnings`` while more pages exist, and no cursor on the final page. A page
+    that carries a ``page`` key selects the legacy nested shape (a non-object
+    value models the malformed case). A later call passes the cursor back through
+    ``--cursor``. ``request_show`` and
+    ``worker_show`` are dictionaries keyed by id; an entry of
+    ``{"fail": "reason"}`` makes the command exit non-zero. ``mutations`` maps an
+    action name to a list of scripted responses (``{"state": ..., ...}``); an
+    unscripted call gets a fixture
     completion carrying the same ``--retry-request`` id.
 
     The object is intentionally configuration-only: it writes files and returns

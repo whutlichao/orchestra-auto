@@ -21,6 +21,7 @@ The declared seams are deliberate and narrow:
 The acceptance schema is local. It is recorded in ``references/gate-acceptance.md``.
 """
 
+import copy
 import importlib.util
 import json
 import os
@@ -106,6 +107,20 @@ def acceptance(**overrides):
         "answer_location": "tickets/task-39-answer.md",
     }
     record.update(overrides)
+    return record
+
+
+def equivalence_record():
+    """A squash/rebase-shaped merge record: no ancestry, content equivalence instead."""
+    record = acceptance()
+    merged = record["levels"]["merged"]
+    merged.pop("ancestry")
+    merged["equivalence"] = {
+        "accepted_sha": sha("a"),
+        "merge_sha": sha("b"),
+        "diff_empty": True,
+        "command": "git diff " + sha("a") + " " + sha("b"),
+    }
     return record
 
 
@@ -292,7 +307,7 @@ class MinimumEvidenceTests(unittest.TestCase):
         record["levels"]["merged"].pop("merge_sha")
         self.assert_error("merge_sha", record)
 
-    def test_a_merge_without_ancestry_is_rejected(self):
+    def test_a_merge_without_evidence_is_rejected(self):
         record = acceptance()
         record["levels"]["merged"].pop("ancestry")
         self.assert_error("ancestry", record)
@@ -307,6 +322,44 @@ class MinimumEvidenceTests(unittest.TestCase):
         record = acceptance()
         record["levels"]["merged"]["ancestry"]["descendant"] = sha("d")
         self.assert_error("ancestry", record)
+
+    def test_a_squash_merge_is_accepted_as_equivalence_evidence(self):
+        self.assertEqual(self.errors(equivalence_record()), [])
+
+    def test_an_empty_equivalence_diff_is_required(self):
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["diff_empty"] = False
+        self.assert_error("equivalent", record)
+
+    def test_equivalence_must_name_the_recorded_shas(self):
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["accepted_sha"] = sha("c")
+        self.assert_error("accepted_sha", record)
+        record = equivalence_record()
+        record["levels"]["merged"]["equivalence"]["merge_sha"] = sha("d")
+        self.assert_error("merge_sha", record)
+
+    def test_equivalence_needs_a_real_diff_command(self):
+        for command in ("", "   ",
+                        "git rev-parse " + sha("a"),
+                        "git log --oneline " + sha("a") + ".." + sha("b"),
+                        "grep -c . change.patch"):
+            with self.subTest(command=command):
+                record = equivalence_record()
+                record["levels"]["merged"]["equivalence"]["command"] = command
+                self.assert_error("diff", record)
+
+    def test_a_merge_needs_ancestry_or_equivalence(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        errors = self.errors(record)
+        self.assertTrue(any("ancestry" in error and "equivalence" in error
+                            for error in errors), errors)
+        record = equivalence_record()
+        record["levels"]["merged"].pop("equivalence")
+        errors = self.errors(record)
+        self.assertTrue(any("ancestry" in error and "equivalence" in error
+                            for error in errors), errors)
 
     def test_a_tracker_close_without_a_read_back_is_rejected(self):
         record = acceptance()
@@ -472,6 +525,27 @@ class AuthorityVerificationTests(unittest.TestCase):
             git={"state": "ok", "reason": "", "ancestry": []}))
         self.assertTrue(any("ancestry" in error for error in errors), errors)
 
+    def test_equivalence_evidence_is_verified_against_the_git_merges_row(self):
+        git = {"state": "ok", "reason": "", "ancestry": [],
+               "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                           "diff_empty": True}]}
+        self.assertEqual(self.module.verify(equivalence_record(),
+                                            self.snapshot(git=git)), [])
+        errors = self.module.verify(equivalence_record(), self.snapshot(
+            git={"state": "ok", "reason": "", "ancestry": [], "merges": []}))
+        self.assertTrue(any("equivalence" in error for error in errors), errors)
+        errors = self.module.verify(equivalence_record(), self.snapshot(
+            git={"state": "ok", "reason": "", "ancestry": []}))
+        self.assertTrue(any("unreadable" in error for error in errors), errors)
+
+    def test_equivalence_is_authority_proven_not_record_asserted(self):
+        """A record saying diff_empty is not proof; only the git row is."""
+        git = {"state": "ok", "reason": "", "ancestry": [],
+               "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                           "diff_empty": False}]}
+        errors = self.module.verify(equivalence_record(), self.snapshot(git=git))
+        self.assertTrue(any("equivalence" in error for error in errors), errors)
+
     def test_the_tracker_close_must_be_read_back(self):
         errors = self.module.verify(acceptance(), self.snapshot(
             tracker=self.tracker(state="open")))
@@ -597,6 +671,20 @@ class AggregationTests(unittest.TestCase):
         self.assertTrue(ticket["divergent"])
         self.assertTrue(ticket["prs"][0]["divergent"])
         self.assertFalse(ticket["levels"]["implemented"]["value"])
+
+    def test_same_attempt_records_with_different_merge_shas_are_divergent(self):
+        first_payload = self.pr_record(12, accepted_sha=sha("a"))
+        second_payload = copy.deepcopy(first_payload)
+        second_payload["levels"]["merged"]["merge_sha"] = sha("c")
+        second_payload["levels"]["merged"]["ancestry"]["descendant"] = sha("c")
+        ticket = self.module.aggregate("39", [
+            self.ledger_record(first_payload, sequence=1),
+            self.ledger_record(second_payload, sequence=2),
+        ])
+
+        self.assertTrue(ticket["divergent"])
+        self.assertTrue(ticket["prs"][0]["divergent"])
+        self.assertFalse(ticket["levels"]["merged"]["value"])
 
     def test_never_merge_is_terminal_and_human(self):
         levels = open_levels()
@@ -750,6 +838,40 @@ class CliTests(unittest.TestCase):
         self.assertFalse(result["gate_passed"])
         self.assertEqual(self.ledger_records(), [])
 
+    def test_an_equivalence_record_is_accepted_through_the_cli_authority_file(self):
+        """The CLI must carry git.merges through, or no squash merge could ever record."""
+        authority_file = self.root / "authority.json"
+        authority_file.write_text(json.dumps(authority_snapshot(
+            pr_host={"state": "ok", "reason": "", "pull_requests": [
+                {"pr": 12, "state": "MERGED", "head_sha": sha("a"),
+                 "merge_sha": sha("b"), "base": "main"}]},
+            tracker={"state": "ok", "reason": "", "tickets": [
+                {"ticket": "39", "state": "closed"}]},
+            git={"state": "ok", "reason": "", "ancestry": [],
+                 "merges": [{"accepted_sha": sha("a"), "merge_sha": sha("b"),
+                             "diff_empty": True}]},
+        )))
+        written = self.record(equivalence_record(), "--authority", str(authority_file))
+        self.assertTrue(written["recorded"])
+        self.assertTrue(written["gate_passed"])
+
+    def test_an_authority_file_without_merges_cannot_prove_equivalence(self):
+        authority_file = self.root / "authority.json"
+        authority_file.write_text(json.dumps(authority_snapshot(
+            pr_host={"state": "ok", "reason": "", "pull_requests": [
+                {"pr": 12, "state": "MERGED", "head_sha": sha("a"),
+                 "merge_sha": sha("b"), "base": "main"}]},
+            tracker={"state": "ok", "reason": "", "tickets": [
+                {"ticket": "39", "state": "closed"}]},
+            git={"state": "ok", "reason": "", "ancestry": []},
+        )))
+        result = self.record(equivalence_record(), "--authority", str(authority_file),
+                             ok=False)
+        self.assertFalse(result["recorded"])
+        self.assertTrue(any("unreadable" in error for error in result["errors"]),
+                        result["errors"])
+        self.assertEqual(self.ledger_records(), [])
+
     def test_a_write_failure_is_recorded_and_retried(self):
         run_dir = self.home / "runs" / RUN_ID
         run_dir.mkdir(parents=True)
@@ -844,6 +966,269 @@ class CliTests(unittest.TestCase):
         kinds = [record["kind"] for record in self.ledger_records()]
         self.assertEqual(kinds.count("pending"), 4)
         self.assertEqual(kinds.count("observation"), 1)
+
+
+class SchemaDiscoveryTests(unittest.TestCase):
+    """``--print-schema`` prints the record shape from the constants ``validate`` uses.
+
+    Each assertion compares the printed document with the module's own constants: a field
+    added to one and not the other fails here instead of drifting in silence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "acceptance.py")
+        cls.chinese = load_module(SKILL_DIRS[1], "acceptance.py")
+        cls.schema = cls.module.schema()
+
+    def cli(self, *args):
+        root = Path(tempfile.mkdtemp()).resolve()
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env={**os.environ, "HOME": str(root), "ORCA_LEDGER_HOME": str(root / "ledger")},
+            cwd=str(root), text=True, capture_output=True)
+
+    def test_print_schema_is_parseable_json_and_exits_zero(self):
+        for bundle, module in ((SKILL_DIRS[0], self.module),
+                               (SKILL_DIRS[1], self.chinese)):
+            with self.subTest(bundle=bundle.name):
+                result = subprocess.run(
+                    [sys.executable, str(bundle / SCRIPT_RELATIVE), "--print-schema"],
+                    text=True, capture_output=True, env=os.environ)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = json.loads(result.stdout)
+                self.assertEqual(parsed["schema_version"], module.SCHEMA_VERSION)
+                self.assertEqual(tuple(parsed["record"]["fields"]), module.RECORD_KEYS)
+
+    def test_the_printed_field_sets_equal_the_source_constants(self):
+        record = self.schema["record"]
+        self.assertEqual(tuple(record["fields"]), self.module.RECORD_KEYS)
+        self.assertEqual(tuple(record["required"]), self.module.RECORD_KEYS)
+        self.assertEqual(tuple(record["pr_fields"]), self.module.PR_KEYS)
+        self.assertEqual(tuple(record["pr_required"]), self.module.PR_KEYS)
+        self.assertEqual(tuple(record["check_fields"]), self.module.CHECK_KEYS)
+        self.assertEqual(tuple(record["check_required"]), self.module.CHECK_KEYS)
+        self.assertEqual(tuple(record["review_fields"]), self.module.REVIEW_KEYS)
+        self.assertEqual(tuple(record["review_required"]), self.module.REVIEW_REQUIRED)
+        self.assertEqual(tuple(record["waiver_fields"]), self.module.WAIVER_KEYS)
+        self.assertEqual(tuple(record["waiver_required"]), self.module.WAIVER_KEYS)
+        self.assertEqual(tuple(record["level_fields"]), self.module.LEVEL_KEYS)
+        self.assertEqual(tuple(record["level_names"]), self.module.LEVEL_NAMES)
+        self.assertEqual(tuple(record["level_required"]), self.module.LEVEL_REQUIRED)
+        self.assertEqual(tuple(self.schema["observation"]["fields"]),
+                         self.module.OBSERVATION_KEYS)
+        self.assertEqual(tuple(self.schema["observation"]["required"]),
+                         self.module.OBSERVATION_KEYS)
+        self.assertEqual({key: tuple(value)
+                          for key, value in record["level_shapes"].items()},
+                         {key: tuple(value)
+                          for key, value in self.module.LEVEL_SHAPES.items()})
+
+    def test_every_printed_required_field_is_really_required(self):
+        """A printed ``required`` list is only useful if validation enforces it."""
+        record = self.schema["record"]
+        for field in record["required"]:
+            candidate = acceptance()
+            candidate.pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["pr_required"]:
+            candidate = acceptance()
+            candidate["pr"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["check_required"]:
+            candidate = acceptance()
+            candidate["checks"][0].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["review_required"]:
+            candidate = acceptance()
+            candidate["review"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["waiver_required"]:
+            candidate = acceptance()
+            candidate["review"] = {"axis": ["standards", "spec"], "result": "waiver",
+                                   "waiver": {"reason": "copy-only",
+                                              "spec_evidence_ref": "spec:1",
+                                              "answer_evidence_ref": "answer.md"}}
+            candidate["review"]["waiver"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in record["level_required"]:
+            candidate = acceptance()
+            candidate["levels"]["integrated"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in self.schema["observation"]["required"]:
+            candidate = {
+                "ticket": "39", "pr": 12, "level": "merged", "observation": "revert",
+                "reason": "reverted", "evidence_ref": "pr.json",
+                "observed_at": utc_now(),
+            }
+            candidate.pop(field)
+            self.assertNotEqual(self.module.validate_observation(candidate), [], field)
+
+    def test_every_printed_conditional_requirement_is_enforced(self):
+        """The prose in ``*_conditional_required`` must match what validation rejects."""
+        record = self.schema["record"]
+        candidate = acceptance()
+        candidate["review"].pop("evidence_ref")
+        self.assertNotEqual(self.module.validate(candidate), [])
+        for field in ("merge_sha", "pr_state", "ancestry"):
+            candidate = acceptance()
+            candidate["levels"]["merged"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        for field in ("start",):
+            candidate = acceptance()
+            candidate["levels"]["implemented"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        candidate = acceptance()
+        candidate["levels"]["tracker_closed"].pop("read_back")
+        self.assertNotEqual(self.module.validate(candidate), [])
+        for field in ("decided_by", "reason", "evidence_ref"):
+            candidate = acceptance()
+            candidate["levels"]["merged"].update({
+                "value": False, "terminal": "never_merge", "decided_by": "human",
+                "reason": "the merge was reverted"})
+            candidate["levels"]["merged"].pop(field)
+            self.assertNotEqual(self.module.validate(candidate), [], field)
+        candidate = acceptance()
+        candidate["levels"]["merged"].update({
+            "value": False, "terminal": "never_merge", "decided_by": "coordinator",
+            "reason": "the merge was reverted"})
+        self.assertNotEqual(self.module.validate(candidate), [])
+        self.assertEqual(
+            tuple(record["review_conditional_required"][0]["fields"]),
+            ("evidence_ref",))
+        self.assertEqual(
+            tuple(record["review_conditional_required"][1]["fields"]),
+            self.module.WAIVER_KEYS)
+
+    def test_the_printed_enums_equal_the_source_constants(self):
+        enums = self.schema["enums"]
+        self.assertEqual(tuple(enums["gates"]), self.module.GATES)
+        self.assertEqual(tuple(enums["deciders"]), self.module.DECIDERS)
+        self.assertEqual(tuple(enums["review_axes"]), self.module.REVIEW_AXES)
+        self.assertEqual(tuple(enums["check_results"]), self.module.CHECK_RESULTS)
+        self.assertEqual(tuple(enums["review_results"]), self.module.REVIEW_RESULTS)
+        self.assertEqual(tuple(enums["start_sources"]), self.module.START_SOURCES)
+        self.assertEqual(tuple(enums["terminals"]), self.module.TERMINALS)
+        self.assertEqual(tuple(enums["observations"]), self.module.OBSERVATIONS)
+
+    def test_help_points_at_print_schema(self):
+        result = self.cli("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--print-schema", result.stdout)
+
+    def test_the_ancestry_read_back_and_waiver_errors_print_their_shape(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        record["levels"]["tracker_closed"].pop("read_back")
+        record["levels"]["implemented"]["start"] = {"turn_start": "unobserved"}
+        record["review"] = {"axis": ["standards", "spec"], "result": "waiver"}
+        errors = self.module.validate(record)
+        ancestry = next(error for error in errors if "ancestry" in error)
+        read_back = next(error for error in errors if "read_back" in error)
+        start = next(error for error in errors if ".start" in error)
+        waiver = next(error for error in errors if "waiver" in error)
+        for key in self.module.ANCESTRY_KEYS:
+            self.assertIn(key, ancestry)
+        for key in self.module.READ_BACK_KEYS:
+            self.assertIn(key, read_back)
+        for source in self.module.START_SOURCES[1:]:
+            self.assertIn(source, start)
+        for key in self.module.WAIVER_KEYS:
+            self.assertIn(key, waiver)
+
+    def test_the_merged_evidence_error_prints_both_accepted_shapes(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        errors = self.module.validate(record)
+        message = next(error for error in errors if "merged" in error)
+        for key in (*self.module.ANCESTRY_KEYS, *self.module.EQUIVALENCE_KEYS):
+            self.assertIn(key, message)
+
+    def test_the_cli_prints_the_shape_in_the_record_errors(self):
+        record = acceptance()
+        record["levels"]["merged"].pop("ancestry")
+        result = self.cli(
+            "record", "--run-id", RUN_ID, "--record", json.dumps(record))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("{ancestor, descendant, result}", result.stdout)
+
+
+class FailedCheckGateTests(unittest.TestCase):
+    """A recorded failing check is durable evidence and never a passed gate.
+
+    The seam is the product surface: the real ``record`` command against a temporary
+    ledger home reports the gate verdict, and ``show``/``aggregate`` must not turn the
+    same record's claimed levels back into a true gate result.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.env = {
+            **os.environ,
+            "HOME": str(self.root / "home"),
+            "ORCA_LEDGER_HOME": str(self.home),
+        }
+        self.env.pop("ORCA_LEDGER_RETENTION_DAYS", None)
+        self.env.pop("ORCA_LEDGER_RETENTION_BYTES", None)
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env=self.env, cwd=str(self.root), text=True, capture_output=True,
+        )
+
+    def record(self, payload):
+        result = self.run_cli(
+            "record", "--run-id", RUN_ID, "--record", json.dumps(payload))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return json.loads(result.stdout)
+
+    def show(self, ticket="39"):
+        result = self.run_cli("show", "--run-id", RUN_ID, "--ticket", ticket)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def ledger_records(self):
+        path = self.home / "runs" / RUN_ID / "ledger.jsonl"
+        if not path.exists() or path.is_symlink():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+    @staticmethod
+    def failed_check_record():
+        record = acceptance()
+        record["checks"] = [{
+            "name": "a command that failed",
+            "command": "false",
+            "result": "fail",
+            "evidence_ref": "evidence/failing-command.log",
+        }]
+        return record
+
+    def test_a_failed_check_never_reports_gate_passed(self):
+        written = self.record(self.failed_check_record())
+
+        self.assertTrue(written["recorded"], "the failed evidence must stay durable")
+        self.assertFalse(written["gate_passed"])
+        stored = self.ledger_records()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["detail"]["checks"][0]["result"], "fail")
+
+    def test_a_failed_check_never_produces_a_true_level(self):
+        self.record(self.failed_check_record())
+
+        ticket = self.show()["tickets"]["39"]
+        for level in LEVELS:
+            self.assertFalse(ticket["prs"][0]["levels"][level]["value"], level)
+            self.assertFalse(ticket["levels"][level]["value"], level)
+
+        # The record keeps the claim it was given: only the reported level changes.
+        stored = self.ledger_records()[0]["detail"]
+        self.assertEqual(stored["checks"][0]["result"], "fail")
+        self.assertTrue(stored["levels"]["implemented"]["value"])
 
 
 if __name__ == "__main__":

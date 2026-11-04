@@ -7,6 +7,12 @@ have a terminal.
 
 ## Confirming the turn
 
+**No receipt at all, and the Task still `ready`?** Before reading any terminal, rule out the
+stale-base guard: when the coordinator worktree is far enough behind the task's base, Orca refuses
+the dispatch and never creates a Dispatch, so there is nothing to confirm and nothing at the
+receiver. Take evidence per §9, sync or recreate the worktree, and do not re-dispatch — the
+refusal, its threshold and `allow-stale-base` are in [dispatch loop](dispatch-loop.md) §4.3.
+
 `state: ready` / `stage: input_accepted` does not prove the model has started. `turnStart: observed`
 does: it is the receipt's own start evidence, so nothing extra is needed on top of it — the steps
 below are for `unsupported`, `unobserved` or a missing field, where the agent cannot report a turn

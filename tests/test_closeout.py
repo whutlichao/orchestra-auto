@@ -118,6 +118,33 @@ def acceptance_record(**overrides):
     return record
 
 
+def equivalence_acceptance_record():
+    """A squash/rebase-shaped acceptance: no ancestry, content equivalence instead."""
+    record = acceptance_record()
+    merged = record["levels"]["merged"]
+    merged.pop("ancestry")
+    merged["equivalence"] = {
+        "accepted_sha": ACCEPTED,
+        "merge_sha": MERGE,
+        "diff_empty": True,
+        "command": "git diff " + ACCEPTED + " " + MERGE,
+    }
+    return record
+
+
+def premerge_acceptance_record():
+    """The acceptance persisted before the merge: no merge SHA, merged false (SP-05).
+
+    This is the crash window the closeout must repair: the accepted head is durable,
+    while the merge state, base and SHA are read back from the PR host afterwards.
+    """
+    record = acceptance_record()
+    at = utc_now()
+    record["levels"]["merged"] = {"value": False, "at": at}
+    record["levels"]["tracker_closed"] = {"value": False, "at": at}
+    return record
+
+
 def facts(**overrides):
     """A complete facts object: every row can be proven from it."""
     at = utc_now()
@@ -292,7 +319,27 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual(row(checklist, 1)["status"], "blocked")
         problems = " ".join(row(checklist, 1)["detail"]["problems"])
         self.assertIn("merge_sha", problems)
-        self.assertIn("merge_sha", " ".join(row(checklist, 2)["detail"]["problems"]))
+        self.assertEqual(row(checklist, 2)["status"], "ok")
+        self.assertEqual(row(checklist, 2)["detail"]["merges"][0]["merge_sha"], MERGE)
+        self.assertFalse(checklist["ready"])
+
+    def test_closeout_blocks_a_failed_check(self):
+        record = acceptance_record()
+        record["checks"] = [{
+            "name": "a command that failed",
+            "command": "false",
+            "result": "fail",
+            "evidence_ref": "evidence/failing-command.log",
+        }]
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "",
+            "records": [{"record_id": ACCEPTANCE_RECORD_ID, **record}]}))
+
+        self.assertEqual(row(checklist, 1)["status"], "blocked")
+        self.assertIn(1, checklist["blocking"])
+        self.assertFalse(checklist["ready"])
+        problems = " ".join(row(checklist, 1)["detail"]["problems"])
+        self.assertIn("did not pass", problems)
 
     def test_row_one_names_the_answer_location_of_each_accepted_record(self):
         checklist = self.module.plan(facts())
@@ -351,9 +398,12 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual([entry["attempt"] for entry in row(checklist, 1)["detail"]["entries"]],
                          [1, 2, 3])
         self.assertFalse(checklist["ready"])
-        for index in (2, 3, 4):
+        for index in (2, 3):
             with self.subTest(row=index):
                 self.assertEqual(row(checklist, index)["status"], "blocked")
+        # Row 4 independently reports that the host-reported merge is contained in
+        # main; it does not select an older acceptance attempt or make closeout ready.
+        self.assertEqual(row(checklist, 4)["status"], "ok")
 
     def test_conflicting_records_at_the_latest_attempt_remain_divergent(self):
         first = acceptance_record(attempt=2)
@@ -371,6 +421,26 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertTrue(row(checklist, 1)["detail"]["divergent"])
         self.assertIn("divergent acceptance records at attempt 2",
                       " ".join(row(checklist, 1)["detail"]["problems"]))
+
+    def test_same_attempt_merge_sha_conflict_blocks_row_one(self):
+        host_matching = acceptance_record()
+        conflict = copy.deepcopy(host_matching)
+        conflict["levels"]["merged"]["merge_sha"] = "c" * 40
+        conflict["levels"]["merged"]["ancestry"]["descendant"] = "c" * 40
+        checklist = self.module.plan(facts(acceptance={
+            "state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **conflict},
+                {"record_id": PENDING_RECORD_ID, **host_matching},
+            ]}))
+
+        self.assertEqual(row(checklist, 1)["status"], "blocked")
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        self.assertEqual(row(checklist, 1)["detail"]["divergent"], [{
+            "ticket": "39", "pr": 12, "attempt": 1,
+            "record_ids": [ACCEPTANCE_RECORD_ID, PENDING_RECORD_ID],
+        }])
+        self.assertTrue(all(entry["valid"] for entry in row(checklist, 1)["detail"]["entries"]))
 
     def test_row_two_needs_the_pr_host_merged_state_base_and_merge_sha(self):
         for broken in (
@@ -396,6 +466,49 @@ class RowOneToFiveTests(unittest.TestCase):
         self.assertEqual(row(checklist, 3)["status"], "blocked")
         self.assertTrue(row(checklist, 3)["detail"]["escalate"])
         self.assertEqual(checklist["classification"], "ancestry_divergent")
+
+    def equivalence_facts(self):
+        """The same closeout, recorded as a squash merge: equivalence plus git.merges.
+
+        The ancestry rows carry only merge→main: a squash merge has no ancestry from the
+        accepted head to the merge, so row 3 can only be proven by ``git.merges``.
+        """
+        data = facts()
+        data["acceptance"]["records"] = [
+            {"record_id": ACCEPTANCE_RECORD_ID, **equivalence_acceptance_record()}]
+        data["git"]["ancestry"] = [
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True}]
+        data["git"]["merges"] = [
+            {"accepted_sha": ACCEPTED, "merge_sha": MERGE, "diff_empty": True}]
+        return data
+
+    def test_row_three_accepts_equivalence_evidence_for_a_squash_merge(self):
+        checklist = self.module.plan(self.equivalence_facts())
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(checklist["classification"], "ready")
+        self.assertTrue(checklist["ready"])
+
+    def test_row_three_blocks_when_the_git_merges_proof_is_missing(self):
+        data = self.equivalence_facts()
+        data["git"].pop("merges")
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+        problems = " ".join(row(checklist, 3)["detail"]["problems"])
+        self.assertIn("equivalence", problems)
+        self.assertEqual(checklist["classification"], "ancestry_divergent")
+
+    def test_row_three_blocks_when_equivalence_authority_says_not_empty(self):
+        data = self.equivalence_facts()
+        data["git"]["merges"][0]["diff_empty"] = False
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+
+    def test_row_four_is_unaffected_by_equivalence_evidence(self):
+        """main contains the merge is ancestry from merge_sha to main.head either way."""
+        data = self.equivalence_facts()
+        checklist = self.module.plan(data)
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+        self.assertTrue(checklist["ready"])
 
     def test_row_four_requires_main_to_contain_the_merge(self):
         git = facts()["git"]
@@ -454,6 +567,149 @@ class RowOneToFiveTests(unittest.TestCase):
         checklist = self.module.plan(facts(git=git))
         self.assertTrue(checklist["merge_blocked"])
         self.assertIn(5, checklist["blocking"])
+
+
+class CloseoutAggregationTests(unittest.TestCase):
+    """Closeout consumes ``acceptance.aggregate``: the claim in force per PR.
+
+    A superseded attempt must not keep blocking (#47) and a same-attempt disagreement
+    must not be a false green (review V05). Both are the aggregate's latest-attempt and
+    divergence results, not a second judgement made inside the checklist.
+    """
+
+    OLD_ACCEPTED = "c" * 40
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+        cls.acceptance = load_module(SKILL_DIRS[0], "acceptance.py")
+
+    def record_at(self, accepted_sha, **overrides):
+        """A complete record whose merge ancestry starts at ``accepted_sha``."""
+        payload = acceptance_record(
+            accepted_sha=accepted_sha,
+            pr={"number": 12, "head_at_acceptance": accepted_sha, "base": "main"},
+            **overrides)
+        payload["levels"]["merged"]["ancestry"] = {
+            "ancestor": accepted_sha, "descendant": MERGE, "result": True}
+        return payload
+
+    def implemented_only(self):
+        """An earlier attempt that only implemented the ticket: no merge claim yet."""
+        payload = self.record_at(self.OLD_ACCEPTED, attempt=1)
+        at = utc_now()
+        payload["levels"] = {
+            "implemented": payload["levels"]["implemented"],
+            "integrated": {"value": False, "at": at},
+            "merged": {"value": False, "at": at},
+            "tracker_closed": {"value": False, "at": at},
+        }
+        return payload
+
+    def facts_with(self, *records):
+        return facts(acceptance={"state": "ok", "reason": "", "records": [
+            {"record_id": record_id, **payload}
+            for record_id, payload in records]})
+
+    def payload_of(self, entry):
+        return {key: value for key, value in entry.items() if key != "record_id"}
+
+    def aggregate_over(self, data):
+        """The same payloads through ``acceptance.aggregate``, the shared judgement."""
+        return self.acceptance.aggregate("39", [
+            self.acceptance._ledger_record(self.payload_of(entry), RUN_ID)
+            for entry in data["acceptance"]["records"]])
+
+    def latest_attempt_facts(self):
+        return self.facts_with(
+            ("44444444-4444-4444-8444-444444444444", self.implemented_only()),
+            ("55555555-5555-4555-8555-555555555555", acceptance_record(attempt=2)))
+
+    def failed_earlier_attempt(self):
+        """An earlier attempt whose test check failed, at the same PR."""
+        payload = self.record_at(self.OLD_ACCEPTED, attempt=1)
+        payload["checks"] = [{
+            "name": "first attempt tests",
+            "command": "python3 -m unittest",
+            "result": "fail",
+            "evidence_ref": "evidence/attempt-1-tests.log",
+        }]
+        return payload
+
+    def test_a_failed_superseded_attempt_does_not_block_the_current_claim(self):
+        """#47: an old attempt's failed check is history once a later attempt is in force."""
+        data = self.facts_with(
+            ("44444444-4444-4444-8444-444444444444", self.failed_earlier_attempt()),
+            ("55555555-5555-4555-8555-555555555555", acceptance_record(attempt=2)))
+        for entry in data["acceptance"]["records"]:
+            self.assertEqual(self.acceptance.validate(self.payload_of(entry)), [])
+
+        aggregated = self.aggregate_over(data)
+        self.assertTrue(all(aggregated["levels"][name]["value"]
+                            for name in self.acceptance.LEVEL_NAMES), aggregated)
+
+        checklist = self.module.plan(data)
+
+        self.assertTrue(checklist["ready"], row(checklist, 1)["detail"])
+        self.assertEqual(checklist["blocking"], [])
+        self.assertNotIn("did not pass",
+                         " ".join(row(checklist, 1)["detail"]["problems"]))
+        entries = row(checklist, 1)["detail"]["entries"]
+        self.assertEqual([entry["attempt"] for entry in entries], [1, 2])
+        self.assertFalse(entries[0]["gate_passed"])
+        self.assertTrue(entries[1]["gate_passed"])
+
+    def divergent_facts(self):
+        """Two records at attempt 1 that disagree about the accepted SHA."""
+        data = self.facts_with(
+            ("66666666-6666-4666-8666-666666666666",
+             self.record_at(self.OLD_ACCEPTED, attempt=1)),
+            ("77777777-7777-4777-8777-777777777777",
+             self.record_at(ACCEPTED, attempt=1)))
+        data["git"]["ancestry"] = [
+            {"ancestor": self.OLD_ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        return data
+
+    def test_closeout_uses_only_the_latest_attempt(self):
+        """Old implemented-only + new complete attempt: the new attempt is in force."""
+        data = self.latest_attempt_facts()
+        for entry in data["acceptance"]["records"]:
+            self.assertEqual(self.acceptance.validate(self.payload_of(entry)), [])
+
+        checklist = self.module.plan(data)
+
+        self.assertTrue(checklist["ready"], row(checklist, 1)["detail"])
+        self.assertFalse(checklist["divergent"])
+        entries = row(checklist, 1)["detail"]["entries"]
+        self.assertEqual([entry["attempt"] for entry in entries], [1, 2])
+
+    def test_closeout_and_aggregate_agree_on_divergence(self):
+        divergent = self.divergent_facts()
+        checklist = self.module.plan(divergent)
+        aggregated = self.aggregate_over(divergent)
+        self.assertTrue(aggregated["divergent"])
+        self.assertTrue(checklist.get("divergent"), row(checklist, 1)["detail"])
+        self.assertEqual(checklist.get("divergent"), aggregated["divergent"])
+
+        control = self.latest_attempt_facts()
+        control_checklist = self.module.plan(control)
+        control_aggregate = self.aggregate_over(control)
+        self.assertFalse(control_aggregate["divergent"])
+        self.assertEqual(control_checklist.get("divergent"),
+                         control_aggregate["divergent"])
+
+    def test_a_divergent_attempt_is_blocking(self):
+        """Two records at the same attempt disagree: never a ready closeout."""
+        checklist = self.module.plan(self.divergent_facts())
+
+        self.assertTrue(checklist.get("divergent"), row(checklist, 1)["detail"])
+        self.assertFalse(checklist["ready"])
+        self.assertIn(1, checklist["blocking"])
+        self.assertIn("divergent",
+                      " ".join(row(checklist, 1)["detail"]["problems"]).lower())
 
 
 class RowSixToEightTests(unittest.TestCase):
@@ -874,8 +1130,17 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(
             [item["detail"].get("observation") for item in after].count("revert"), 1)
 
-    def test_a_crash_between_merge_and_tracker_is_repaired_from_rows_two_three_four_seven(self):
-        self.record_acceptance()
+    def test_a_crash_between_merge_and_tracker_is_repaired_from_rows_two_three_four_seven(
+            self):
+        """The crashed window: only the premerge acceptance exists, tracker still open.
+
+        The fixture is the true crash shape (review SP-05): one ``merged=false`` record
+        with no merge SHA. The PR host reports ``MERGED`` with the merge SHA, git proves
+        ``A -> M`` and ``M -> H``, and only the tracker lags; the next turn repairs the
+        merge from the host row instead of demanding the record predicted the SHA.
+        """
+        record = self.record_acceptance(
+            levels=premerge_acceptance_record()["levels"])
         first = self.reconcile(authority=self.authority(tracker={
             "state": "ok", "reason": "",
             "tickets": [{"ticket": "39", "state": "open"}]}))
@@ -883,9 +1148,12 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(first["closeout"]["outcome"], "failure")
         self.assertTrue(first["closeout"]["evidence_refs"])
         self.assertEqual(first["closeout"]["classification"], "tracker_unclosed")
+        self.assertEqual(first["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
 
         second = self.reconcile()
-        self.assertTrue(second["checklist"]["ready"])
+        self.assertTrue(second["checklist"]["ready"],
+                        [row(second["checklist"], i)["detail"] for i in (2, 3, 4, 7)])
         self.assertEqual(second["closeout"]["outcome"], "success")
         self.assertNotEqual(first["record_id"], second["record_id"])
         closeouts = self.records("closeout")
@@ -1015,6 +1283,398 @@ class ReconciliationTests(unittest.TestCase):
         authority.sections["pr_host"] = section
         result = self.reconcile(authority=authority)
         self.assertEqual(result["checklist"]["classification"], "ready")
+
+
+class CloseoutRecoveryTests(unittest.TestCase):
+    """SP-05: the merge is an authority fact, so a post-merge crash is recoverable.
+
+    Only the accepted head is non-repeatable. When the acceptance is persisted before
+    the merge (``merged=false``, no merge SHA) and the process crashes before a
+    post-merge record is written, rows 2-4 read the state, merge SHA and base back from
+    the PR host row, prove ``accepted_head -> merge_sha -> main head`` with git, and
+    reconcile the tracker read-back — without the record having predicted the SHA.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.module = load_module(SKILL_DIRS[0], "closeout.py")
+        self.acceptance = load_module(SKILL_DIRS[0], "acceptance.py")
+        self.ledger = self.module.LEDGER
+
+    def record_acceptance(self, payload):
+        self.assertEqual(self.acceptance.validate(payload), [])
+        record = self.acceptance._ledger_record(payload, RUN_ID)
+        self.ledger.append(record, home=self.home)
+        return record
+
+    def authority(self, **sections):
+        defaults = {
+            "pr_host": facts()["pr_host"],
+            "git": facts()["git"],
+            "tickets": facts()["tickets"],
+            "tracker": facts()["tracker"],
+            "workers": facts()["workers"],
+            "dashboard": facts()["dashboard"],
+            "release": facts()["release"],
+        }
+        defaults.update(sections)
+        return FactsAuthority(**defaults)
+
+    def premerge_facts(self):
+        return facts(acceptance={"state": "ok", "reason": "", "records": [
+            {"record_id": ACCEPTANCE_RECORD_ID, **premerge_acceptance_record()}]})
+
+    def test_premerge_acceptance_recovers_from_host_merge_facts(self):
+        checklist = self.module.plan(self.premerge_facts())
+        self.assertTrue(checklist["ready"],
+                        [row(checklist, i)["detail"] for i in (2, 3, 4, 7)])
+        self.assertEqual(checklist["classification"], "ready")
+        self.assertFalse(checklist["divergent"])
+        merges = row(checklist, 2)["detail"]["merges"]
+        self.assertEqual(merges[0]["merge_sha"], MERGE)
+        self.assertEqual(merges[0]["merge_source"], "pr_host")
+        self.assertEqual(merges[0]["accepted_sha"], ACCEPTED)
+        self.assertEqual(merges[0]["base"], "main")
+        self.assertIsNone(merges[0]["recorded_merge_sha"])
+        self.assertEqual(row(checklist, 2)["detail"]["problems"], [])
+        self.assertEqual(row(checklist, 3)["evidence"][0]["ref"],
+                         "git:ancestry:" + ACCEPTED + ".." + MERGE)
+        self.assertEqual(row(checklist, 4)["evidence"][0]["ref"],
+                         "git:ancestry:" + MERGE + ".." + MAIN_HEAD)
+
+    def test_the_repaired_closeout_is_persisted_with_the_recorded_acceptance(self):
+        record = self.record_acceptance(premerge_acceptance_record())
+        result = self.module.reconcile(
+            RUN_ID, self.authority(), home=self.home,
+            answer_location="tickets/task-40-answer.md")
+        self.assertTrue(result["recorded"], result)
+        self.assertEqual(result["closeout"]["outcome"], "success")
+        self.assertEqual(result["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
+        self.assertEqual(result["closeout"]["classification"], "ready")
+        stored = self.ledger.read(RUN_ID, {"kind": "closeout"}, home=self.home)[0]
+        self.assertEqual(
+            stored["detail"]["checklist"]["rows"][1]["detail"]["merges"][0]
+            ["merge_source"], "pr_host")
+        self.ledger.validate_record(stored)
+
+    def test_without_host_authority_the_merge_is_not_proven(self):
+        """No host row and no recorded merge claim: rows 2-4 stay unproven."""
+        premerge = premerge_acceptance_record()
+        premerge["accepted_sha"] = "a" * 40
+        checklist = self.module.plan(facts(
+            acceptance={"state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **premerge}]},
+            pr_host={"state": "ok", "reason": "", "pull_requests": []}))
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertEqual(checklist["classification"], "pr_not_merged")
+        self.assertFalse(checklist["ready"])
+
+    def test_host_merged_row_without_git_ancestry_is_not_merged(self):
+        """The host says MERGED, but git does not prove the accepted head is covered."""
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": False},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(
+            acceptance={"state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **premerge_acceptance_record()}]},
+            git=git))
+        self.assertEqual(row(checklist, 3)["status"], "blocked")
+        self.assertFalse(checklist["ready"])
+        self.assertNotEqual(checklist["classification"], "acceptance_divergent")
+
+    def test_merge_facts_that_contradict_the_record_are_divergent(self):
+        """The recorded claim disagrees with the host: the record is divergent."""
+        other = "f" * 40
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "main",
+            "head_sha": ACCEPTED, "merge_sha": other,
+        }]}
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": ACCEPTED, "descendant": other, "result": True},
+            {"ancestor": other, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(pr_host=host, git=git))
+        self.assertTrue(checklist["divergent"], row(checklist, 1)["detail"])
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertEqual(
+            row(checklist, 1)["detail"]["merge_divergent"][0]["divergence"][0]["field"],
+            "merge_sha")
+        self.assertTrue(row(checklist, 3)["detail"]["merge_divergent"])
+        self.assertTrue(row(checklist, 4)["detail"]["merge_divergent"])
+
+    def test_a_contradicting_host_state_is_divergent_before_git(self):
+        """A host base that contradicts the record is a conflict, not a missing fact."""
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "release",
+            "head_sha": ACCEPTED, "merge_sha": MERGE,
+        }]}
+        checklist = self.module.plan(facts(pr_host=host))
+        self.assertTrue(checklist["divergent"])
+        self.assertEqual(checklist["classification"], "acceptance_divergent")
+        self.assertEqual(
+            row(checklist, 2)["detail"]["merges"][0]["divergence"][0]["field"], "base")
+        self.assertFalse(checklist["ready"])
+
+    def test_a_divergent_merge_git_proof_is_not_a_merge(self):
+        """The host and the record disagree; git proving the recorded SHA is not enough."""
+        other = "f" * 40
+        host = {"state": "ok", "reason": "", "pull_requests": [{
+            "pr": 12, "state": "MERGED", "base": "main",
+            "head_sha": ACCEPTED, "merge_sha": other,
+        }]}
+        git = facts()["git"]
+        git["ancestry"] = [
+            {"ancestor": ACCEPTED, "descendant": MERGE, "result": True},
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True},
+        ]
+        checklist = self.module.plan(facts(pr_host=host, git=git))
+        self.assertTrue(checklist["divergent"])
+        for index in (2, 3, 4):
+            self.assertEqual(row(checklist, index)["status"], "blocked", index)
+        self.assertFalse(checklist["ready"])
+
+    def test_a_recorded_claim_backs_the_merge_when_the_host_row_is_absent(self):
+        """A missing host row is unproven; the recorded claim plus git is what is left."""
+        checklist = self.module.plan(facts(pr_host={
+            "state": "ok", "reason": "", "pull_requests": []}))
+        self.assertEqual(row(checklist, 2)["status"], "blocked")
+        self.assertIn("no record for PR 12",
+                      " ".join(row(checklist, 2)["detail"]["problems"]))
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+        self.assertFalse(checklist["ready"])
+
+    def test_an_unreadable_host_does_not_lend_the_record_authority_to_rows_three_and_four(
+            self):
+        checklist = self.module.plan(facts(pr_host={
+            "state": "unknown", "reason": "PR host unreachable"}))
+        self.assertEqual(row(checklist, 2)["status"], "unknown")
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 4)["status"], "ok")
+
+    def test_a_crash_between_merge_and_tracker_is_repaired_from_host_facts(self):
+        """The corrected fixture in its own recovery class: the same crash window.
+
+        The ledger holds one ``merged=false`` record with no merge SHA; the host reports
+        ``MERGED`` with the merge SHA, git proves ``A -> M`` and ``M -> H``. This is the
+        review fixture (V04) that used to plan ``ready=false`` with rows 2-4 blocked.
+        """
+        record = self.record_acceptance(premerge_acceptance_record())
+        first = self.module.reconcile(
+            RUN_ID, self.authority(tracker={
+                "state": "ok", "reason": "",
+                "tickets": [{"ticket": "39", "state": "open"}]}),
+            home=self.home, answer_location="tickets/task-40-answer.md")
+        self.assertEqual(first["checklist"]["classification"], "tracker_unclosed")
+        self.assertEqual(first["closeout"]["outcome"], "failure")
+        self.assertTrue(first["closeout"]["evidence_refs"])
+        self.assertEqual(first["closeout"]["acceptance_record_ids"],
+                         [record["record_id"]])
+
+        second = self.module.reconcile(
+            RUN_ID, self.authority(), home=self.home,
+            answer_location="tickets/task-40-answer.md")
+        self.assertTrue(second["checklist"]["ready"],
+                        [row(second["checklist"], i)["detail"] for i in (2, 3, 4, 7)])
+        self.assertEqual(second["closeout"]["outcome"], "success")
+        self.assertNotEqual(first["record_id"], second["record_id"])
+        outcomes = sorted(item["detail"]["outcome"]
+                          for item in self.ledger.read(
+                              RUN_ID, {"kind": "closeout"}, home=self.home))
+        self.assertEqual(outcomes, ["failure", "success"])
+
+
+class FailedDispatchRecoveryTests(unittest.TestCase):
+    """The failure recovery order is script-enforced, not remembered.
+
+    Release needs, in order: a read-back proving the Dispatch settled, a durable
+    ``kind: closeout`` carrying the failure classification, evidence references and the
+    dispatch mapping, and an ``authorize_release`` decision. ``failure-record`` refuses to
+    write without the settlement proof; ``failure-plan`` never emits ``worker-release``
+    before the durable record exists.
+    """
+
+    DISPATCH = {
+        "dispatch_id": "dispatch-failed-1",
+        "task_id": "task-39",
+        "attempt": 1,
+        "worktree": "worktrees/task-39",
+    }
+    EVIDENCE = ["evidence/receipt-dispatch-failed-1.json",
+                "evidence/terminal-setup-tail.txt"]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "ledger-home"
+        self.module = load_module(SKILL_DIRS[0], "closeout.py")
+        self.ledger = self.module.LEDGER
+
+    def read_back(self, settled=True, state="ok", dispatch_id=None):
+        """A worker-show read-back: settlement proof is the only start of recovery."""
+        return {
+            "state": state,
+            "reason": "" if state == "ok" else "the worker read-back was unreadable",
+            "worker": {
+                "dispatch_id": dispatch_id or self.DISPATCH["dispatch_id"],
+                "worker_state": "failed",
+                "settled": settled,
+            },
+        }
+
+    def test_another_dispatched_settled_proof_does_not_authorize_this_release(self):
+        """A settled worker proves its own Dispatch settled, not this failed one."""
+        other = self.read_back(dispatch_id="dispatch-other-9")
+        refused = self.module.failure_record(**self.record_args(read_back=other))
+        self.assertFalse(refused["recorded"], refused)
+        self.assertFalse(refused["durable"])
+        self.assertEqual(refused["next_action"], "escalate")
+        self.assertEqual(self.closeouts(), [])
+
+        recorded = self.module.failure_record(**self.record_args())
+        self.assertTrue(recorded["recorded"], recorded)
+        plan = self.module.failure_plan(**self.plan_args(read_back=other))
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "escalate")
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
+
+    def record_args(self, **overrides):
+        args = {
+            "run_id": RUN_ID,
+            "read_back": self.read_back(),
+            "dispatch": copy.deepcopy(self.DISPATCH),
+            "classification": "transient_infrastructure",
+            "evidence_refs": list(self.EVIDENCE),
+            "home": self.home,
+            "answer_location": "tickets/task-39-answer.md",
+        }
+        args.update(overrides)
+        return args
+
+    def plan_args(self, **overrides):
+        args = {
+            "run_id": RUN_ID,
+            "dispatch_id": self.DISPATCH["dispatch_id"],
+            "read_back": self.read_back(),
+            "home": self.home,
+        }
+        args.update(overrides)
+        return args
+
+    def closeouts(self):
+        return self.ledger.read(RUN_ID, {"kind": "closeout"}, home=self.home)
+
+    def test_failure_recovery_refuses_release_before_a_durable_closeout(self):
+        # A readable, settled read-back alone authorizes nothing: the durable closeout is
+        # the second step and the script must report it as the next action.
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "record-closeout")
+        self.assertIsNone(plan["authorize_release"])
+        self.assertTrue(any("failure-record" in command
+                            for command in plan["commands"]))
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
+
+        # The writer refuses an unsettled or unreadable read-back and persists nothing:
+        # release cannot turn an unsettled Dispatch into a settled one.
+        for read_back, expected in (
+                (self.read_back(settled=False), "escalate"),
+                (self.read_back(state="unknown"), "read-settled")):
+            with self.subTest(read_back=read_back["state"]):
+                refused = self.module.failure_record(
+                    **self.record_args(read_back=read_back))
+                self.assertFalse(refused["recorded"], refused)
+                self.assertFalse(refused["durable"])
+                self.assertEqual(refused["next_action"], expected)
+                self.assertEqual(self.closeouts(), [])
+
+        # An undurable write is not a closeout: the pending copy is kept, and release
+        # stays refused because there is no durable record to authorize it.
+        run_dir = self.home / "runs" / RUN_ID
+        run_dir.mkdir(parents=True, exist_ok=True)
+        ledger_file = run_dir / "ledger.jsonl"
+        ledger_file.write_text("")
+        os.chmod(ledger_file, 0o400)
+        self.addCleanup(os.chmod, ledger_file, 0o600)
+        undurable = self.module.failure_record(
+            **self.record_args(classification="setup_fault"))
+        self.assertFalse(undurable["recorded"], undurable)
+        self.assertFalse(undurable["durable"])
+        self.assertIn("closeout-pending", undurable["retry_path"])
+
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertFalse(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "record-closeout")
+        self.assertIsNone(plan["authorize_release"])
+        self.assertFalse(any("worker-release" in command
+                             for command in plan["commands"]))
+
+    def test_failure_recovery_records_classification_and_evidence(self):
+        recorded = self.module.failure_record(**self.record_args())
+        self.assertTrue(recorded["recorded"], recorded)
+        self.assertTrue(recorded["durable"])
+        self.assertEqual(recorded["next_action"], "authorize-release")
+        self.assertEqual(recorded["closeout"]["outcome"], "failure")
+        self.assertEqual(recorded["closeout"]["classification"],
+                         "transient_infrastructure")
+        self.assertEqual(recorded["closeout"]["evidence_refs"],
+                         sorted(self.EVIDENCE))
+        self.assertEqual(recorded["closeout"]["mapping"], [self.DISPATCH])
+
+        stored = self.closeouts()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["kind"], "closeout")
+        self.assertEqual(stored[0]["action"], "closeout")
+        self.assertEqual(stored[0]["state"], "failed")
+        detail = stored[0]["detail"]
+        self.assertEqual(detail["outcome"], "failure")
+        self.assertEqual(detail["classification"], "transient_infrastructure")
+        self.assertEqual(detail["evidence_refs"], sorted(self.EVIDENCE))
+        self.assertEqual(detail["mapping"], [self.DISPATCH])
+        self.assertEqual(detail["failure_recovery"]["settled"], True)
+
+        # The same failure is idempotent: one durable record, not one per retry.
+        repeated = self.module.failure_record(**self.record_args())
+        self.assertTrue(repeated["recorded"])
+        self.assertFalse(repeated["appended"])
+        self.assertEqual(repeated["record_id"], recorded["record_id"])
+        self.assertEqual(len(self.closeouts()), 1)
+
+        # Only now does the script run authorize_release and emit the release command.
+        plan = self.module.failure_plan(**self.plan_args())
+        self.assertTrue(plan["allowed"], plan)
+        self.assertEqual(plan["next_action"], "release")
+        self.assertTrue(plan["authorize_release"]["allowed"])
+        self.assertEqual(plan["closeout_record_id"], recorded["record_id"])
+        self.assertTrue(any("worker-release" in command
+                            for command in plan["commands"]))
+
+        # A classification or evidence set that cannot support a failure closeout is
+        # rejected before anything is written.
+        for broken in ({"classification": ""},
+                       {"classification": "made_up"},
+                       {"evidence_refs": []},
+                       {"evidence_refs": [" "]},
+                       {"dispatch": {**self.DISPATCH, "attempt": 0}}):
+            with self.subTest(broken=broken):
+                with self.assertRaises(ValueError):
+                    self.module.failure_record(**self.record_args(**broken))
 
 
 class ReferenceParityTests(unittest.TestCase):
@@ -1206,6 +1866,126 @@ class CliTests(unittest.TestCase):
                          "tickets/task-40-answer.md")
         self.assertEqual(records[0]["detail"]["release_verification"]["source"],
                          "worker-release --help (fixture)")
+
+
+class SchemaDiscoveryTests(unittest.TestCase):
+    """``--print-schema`` prints the facts shape from the constants ``plan`` reads.
+
+    Each assertion compares the printed document with the module's own constants, so the
+    published shape and the planner's shapes cannot drift apart.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+        cls.chinese = load_module(SKILL_DIRS[1], "closeout.py")
+        cls.schema = cls.module.schema()
+
+    def cli(self, *args):
+        root = Path(tempfile.mkdtemp()).resolve()
+        return subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE), *args],
+            env={**os.environ, "HOME": str(root), "ORCA_LEDGER_HOME": str(root / "ledger")},
+            cwd=str(root), text=True, capture_output=True)
+
+    def test_print_schema_is_parseable_json_and_exits_zero(self):
+        for bundle, module in ((SKILL_DIRS[0], self.module),
+                               (SKILL_DIRS[1], self.chinese)):
+            with self.subTest(bundle=bundle.name):
+                result = subprocess.run(
+                    [sys.executable, str(bundle / SCRIPT_RELATIVE), "--print-schema"],
+                    text=True, capture_output=True, env=os.environ)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = json.loads(result.stdout)
+                self.assertEqual(parsed["schema_version"], module.SCHEMA_VERSION)
+                self.assertEqual(tuple(parsed["facts"]["top_level_fields"]),
+                                 module.FACTS_TOP_KEYS)
+
+    def test_the_printed_facts_fields_equal_the_source_constants(self):
+        facts = self.schema["facts"]
+        self.assertEqual(tuple(facts["required"]), self.module.FACTS_REQUIRED)
+        self.assertEqual(tuple(facts["sections"]), self.module.FACTS_SECTIONS)
+        for name, section in facts["sections"].items():
+            self.assertEqual(tuple(section["fields"]), self.module.SECTION_KEYS, name)
+            self.assertEqual(section["required"], ["state"], name)
+            self.assertEqual(section["optional"], ["reason"], name)
+
+    def test_every_printed_required_field_is_really_required(self):
+        for field in self.schema["facts"]["required"]:
+            candidate = facts()
+            candidate.pop(field)
+            with self.assertRaises(ValueError, msg=field):
+                self.module.plan(candidate)
+        for section in self.schema["facts"]["sections"].values():
+            for field in section["required"]:
+                broken = facts()
+                broken["pr_host"].pop(field)
+                with self.assertRaises(ValueError):
+                    self.module.plan(broken)
+
+    def test_the_printed_row_shapes_equal_the_source_constants(self):
+        sections = self.schema["facts"]["sections"]
+        for name, (rows_key, row_fields) in self.module.SECTION_ROWS.items():
+            with self.subTest(section=name):
+                self.assertEqual(sections[name]["rows_key"], rows_key)
+                self.assertEqual(tuple(sections[name]["row_fields"]), row_fields)
+        self.assertEqual(tuple(sections["git"]["main_fields"]),
+                         self.module.MAIN_KEYS)
+        self.assertEqual(tuple(sections["release"]["verification_fields"]),
+                         self.module.RELEASE_VERIFICATION_KEYS)
+        self.assertEqual(tuple(sections["pending"]["checks_fields"]),
+                         self.module.PENDING_CHECKS)
+        self.assertEqual(tuple(sections["pending"]["row_fields"]),
+                         self.module.PENDING_ITEM_KEYS)
+        self.assertEqual(tuple(self.schema["authority_file"]["fields"]),
+                         self.module.AUTHORITY_SECTIONS)
+        self.assertEqual(tuple(self.schema["mapping"]["fields"]),
+                         self.module.MAPPING_KEYS)
+
+    def test_the_acceptance_section_mirrors_the_acceptance_module(self):
+        section = self.schema["facts"]["sections"]["acceptance"]
+        self.assertEqual(tuple(section["row_fields"]),
+                         ("record_id", *self.module.ACCEPTANCE.RECORD_KEYS))
+        self.assertEqual(tuple(section["level_object_fields"]),
+                         self.module.ACCEPTANCE.LEVEL_KEYS)
+        self.assertEqual({key: tuple(value)
+                          for key, value in section["level_shapes"].items()},
+                         {key: tuple(value) for key, value
+                          in self.module.ACCEPTANCE.LEVEL_SHAPES.items()})
+
+    def test_the_printed_enums_equal_the_source_constants(self):
+        enums = self.schema["enums"]
+        self.assertEqual(tuple(enums["section_states"]), self.module.SECTION_STATES)
+        self.assertEqual(tuple(enums["blocking_statuses"]),
+                         self.module.BLOCKING_STATUSES)
+        self.assertEqual(tuple(enums["closeout_outcomes"]),
+                         self.module.CLOSEOUT_OUTCOMES)
+        self.assertEqual(tuple(enums["observations"]), self.module.OBSERVATIONS)
+        self.assertEqual(tuple(enums["one_way_door_types"]),
+                         self.module.ONE_WAY_DOOR_TYPES)
+        self.assertEqual(tuple(enums["reclaimable_states"]),
+                         self.module.RECLAIMABLE_STATES)
+        self.assertEqual(tuple(enums["retained_states"]), self.module.RETAINED_STATES)
+        self.assertEqual(len(self.schema["rows"]), len(self.module.ROWS))
+
+    def test_help_points_at_print_schema(self):
+        result = self.cli("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--print-schema", result.stdout)
+
+    def test_the_release_verification_error_prints_its_shape(self):
+        broken = facts()
+        broken["release"] = {"state": "ok", "reason": ""}
+        result = self.cli(
+            "plan", "--run-id", RUN_ID, "--facts",
+            self.write_json("facts-broken.json", broken))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("{source, at, version_scope}", result.stderr)
+
+    def write_json(self, name, payload):
+        path = Path(tempfile.mkdtemp()).resolve() / name
+        path.write_text(json.dumps(payload))
+        return str(path)
 
 
 if __name__ == "__main__":

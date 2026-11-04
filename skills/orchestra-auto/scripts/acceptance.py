@@ -16,10 +16,13 @@ Public interface (deep module):
 
 * ``validate(record) -> errors`` — pure schema and minimum-evidence validation.
 * ``verify(record, authority) -> errors`` — cross-check claimed levels against an
-  injected authority snapshot (PR host, tracker, git ancestry).
+  injected authority snapshot (PR host, tracker, git ancestry and git merges).
+* ``all_checks_passed(checks) -> bool`` — the one gate verdict: at least one check was
+  recorded and every one passed; a missing list or a ``fail`` is not a pass.
 * ``aggregate(ticket, records) -> ticket`` — pure four-level aggregation over ledger
   records: every linked PR must support a level, a later observation lowers a level
-  without rewriting history, and conflicting records are ``divergent``.
+  without rewriting history, and conflicting records are ``divergent``. A record whose
+  checks did not all pass supports no true level.
 
 CLI (product surface, not a test hook): ``record``, ``show``, ``observe``,
 ``open-questions``, ``resolve-question`` and ``retry``. JSON in and out; exit ``0`` is
@@ -55,11 +58,13 @@ TERMINALS = ("never_merge",)
 OBSERVATIONS = ("revert", "reopen")
 
 LEVEL_KEYS = (
-    "value", "evidence_ref", "at", "merge_sha", "pr_state", "ancestry", "read_back",
-    "start", "terminal", "decided_by", "reason",
+    "value", "evidence_ref", "at", "merge_sha", "pr_state", "ancestry", "equivalence",
+    "read_back", "start", "terminal", "decided_by", "reason",
 )
+LEVEL_REQUIRED = ("value", "at")
 CHECK_KEYS = ("name", "command", "result", "evidence_ref")
 REVIEW_KEYS = ("axis", "result", "evidence_ref", "waiver")
+REVIEW_REQUIRED = ("axis", "result")
 WAIVER_KEYS = ("reason", "spec_evidence_ref", "answer_evidence_ref")
 PR_KEYS = ("number", "head_at_acceptance", "base")
 RECORD_KEYS = (
@@ -69,9 +74,27 @@ RECORD_KEYS = (
 OBSERVATION_KEYS = (
     "ticket", "pr", "level", "observation", "reason", "evidence_ref", "observed_at",
 )
+#: The nested objects inside a level. Error messages and ``--print-schema`` name these keys;
+#: the validator checks the keys it reads and ignores extras, exactly as before.
+ANCESTRY_KEYS = ("ancestor", "descendant", "result")
+#: The two documented shapes of ``levels.merged`` evidence, exactly one per record.
+EQUIVALENCE_KEYS = ("accepted_sha", "merge_sha", "diff_empty", "command")
+READ_BACK_KEYS = ("state", "at")
+START_KEYS = ("turn_start", "source", "evidence_ref")
+LEVEL_SHAPES = {
+    "ancestry": ANCESTRY_KEYS,
+    "equivalence": EQUIVALENCE_KEYS,
+    "read_back": READ_BACK_KEYS,
+    "start": START_KEYS,
+}
 
 #: A bare ``grep`` proves a string exists in a file; it never proves a command ran.
 _GREP_COMMANDS = ("grep", "egrep", "fgrep", "rg", "ag", "ack")
+#: A merge is proven by content equivalence only through a diff between the two trees.
+#: ``git log``, ``git rev-parse`` and every read-only probe are refused the same way a
+#: grep is: they can name the two SHAs without ever comparing them.
+_DIFF_COMMANDS = ("diff",)
+_GIT_DIFF_SUBCOMMANDS = ("diff", "diff-tree", "diff-index")
 _SHA_TEXT = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 
 PENDING_DIRNAME = "acceptance-pending"
@@ -146,6 +169,11 @@ def is_sha(value):
     return isinstance(value, str) and bool(_SHA_TEXT.fullmatch(value))
 
 
+def _shape(keys):
+    """One object shape as the error messages spell it: ``{a, b, c}``."""
+    return "{" + ", ".join(keys) + "}"
+
+
 def _unknown_keys(value, allowed, path, errors):
     unexpected = sorted(set(value) - set(allowed))
     if unexpected:
@@ -159,7 +187,7 @@ def _unknown_keys(value, allowed, path, errors):
 
 def _validate_pr(pr, errors):
     if not isinstance(pr, dict):
-        errors.append("pr must be an object")
+        errors.append("pr must be an object " + _shape(PR_KEYS))
         return
     _unknown_keys(pr, PR_KEYS, "pr", errors)
     number = pr.get("number")
@@ -175,7 +203,7 @@ def _validate_pr(pr, errors):
 def _validate_check(index, check, errors):
     path = f"checks[{index}]"
     if not isinstance(check, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(CHECK_KEYS))
         return
     _unknown_keys(check, CHECK_KEYS, path, errors)
     if not is_nonempty(check.get("name")):
@@ -197,10 +225,24 @@ def _validate_check(index, check, errors):
         errors.append(path + ".evidence_ref must name the log that was captured")
 
 
+def all_checks_passed(checks):
+    """Whether every recorded check passed.
+
+    A gate passes only when at least one check was recorded and every one of them
+    passed. A missing list, an empty list or any ``fail`` result is not a pass: the
+    evidence stays durable, but the conclusion is failure. There is no implicit
+    baseline exemption; an exemption would have to be an explicit, evidenced field.
+    """
+    if not isinstance(checks, list) or not checks:
+        return False
+    return all(isinstance(check, dict) and check.get("result") == "pass"
+               for check in checks)
+
+
 def _validate_review(review, errors):
     path = "review"
     if not isinstance(review, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(REVIEW_KEYS))
         return
     _unknown_keys(review, REVIEW_KEYS, path, errors)
     axis = review.get("axis")
@@ -215,7 +257,8 @@ def _validate_review(review, errors):
     if result == "waiver":
         waiver = review.get("waiver")
         if not isinstance(waiver, dict):
-            errors.append(path + ".waiver must record why both axes were waived")
+            errors.append(path + ".waiver must record why both axes were waived as "
+                          + _shape(WAIVER_KEYS))
             return
         _unknown_keys(waiver, WAIVER_KEYS, path + ".waiver", errors)
         if not is_nonempty(waiver.get("reason")):
@@ -231,7 +274,8 @@ def _validate_start(level, errors):
     path = "levels.implemented.start"
     start = level.get("start")
     if not isinstance(start, dict):
-        errors.append(path + " is required: an observed turn start or the attempt evidence")
+        errors.append(path + " is required: an observed turn start or the attempt "
+                              "evidence, as " + _shape(START_KEYS))
         return
     if start.get("turn_start") == "observed":
         return
@@ -243,14 +287,82 @@ def _validate_start(level, errors):
     if source in START_SOURCES[1:] and is_nonempty(start.get("evidence_ref")):
         return
     errors.append(
-        path + " must be turnStart: observed or the attempt's artifact / "
-        "status-projection evidence")
+        path + " must be {turn_start: observed} or {source: "
+        + " / ".join(START_SOURCES[1:]) + ", evidence_ref: <a reference>}")
+
+
+def _is_diff_command(command):
+    """True when ``command`` is a diff rather than a read-only probe.
+
+    Only ``diff`` itself and git's own diff subcommands count. A ``git log``, a
+    ``git rev-parse`` or a ``grep`` can name both SHAs without comparing them, so it
+    proves nothing about equivalence — the same judgement ``_validate_check`` makes
+    about a grep never proving a test ran.
+    """
+    tokens = command.split()
+    if not tokens:
+        return False
+    if tokens[0] in _DIFF_COMMANDS:
+        return True
+    return tokens[0] == "git" and len(tokens) > 1 and tokens[1] in _GIT_DIFF_SUBCOMMANDS
+
+
+def _validate_ancestry(ancestry, record, level, errors):
+    path = "levels.merged.ancestry"
+    if not isinstance(ancestry, dict):
+        errors.append(path + " must record the git ancestry check as "
+                      + _shape(ANCESTRY_KEYS)
+                      + ", e.g. {ancestor: <accepted_sha>, descendant: <merge_sha>, "
+                        "result: true}")
+        return
+    _unknown_keys(ancestry, ANCESTRY_KEYS, path, errors)
+    if ancestry.get("ancestor") != record.get("accepted_sha"):
+        errors.append(path + ".ancestor must be the accepted_sha")
+    if ancestry.get("descendant") != level.get("merge_sha"):
+        errors.append(path + ".descendant must be the merge_sha")
+    if ancestry.get("result") is not True:
+        errors.append(
+            path + ".result must be true: git merge-base "
+            "--is-ancestor <accepted_sha> <merge_sha>")
+
+
+def _validate_equivalence(equivalence, record, level, errors):
+    """A squash or rebase merge: the merge SHA's tree equals the accepted head's.
+
+    The record states it and names the diff that showed it; ``verify`` re-checks it
+    against git, so a stated ``diff_empty`` is never trusted on its own.
+    """
+    path = "levels.merged.equivalence"
+    if not isinstance(equivalence, dict):
+        errors.append(path + " must record the content-equivalence check as "
+                      + _shape(EQUIVALENCE_KEYS)
+                      + ", e.g. {accepted_sha: <accepted_sha>, "
+                        "merge_sha: <merge_sha>, diff_empty: true, "
+                        "command: git diff <accepted_sha> <merge_sha>}")
+        return
+    _unknown_keys(equivalence, EQUIVALENCE_KEYS, path, errors)
+    if equivalence.get("accepted_sha") != record.get("accepted_sha"):
+        errors.append(path + ".accepted_sha must be the accepted_sha")
+    if equivalence.get("merge_sha") != level.get("merge_sha"):
+        errors.append(path + ".merge_sha must be the merge_sha")
+    if equivalence.get("diff_empty") is not True:
+        errors.append(
+            path + ".diff_empty must be true: the accepted head and the merge are not "
+            "content-equivalent (git diff <accepted_sha> <merge_sha> was not empty)")
+    command = equivalence.get("command")
+    if not is_nonempty(command):
+        errors.append(
+            path + ".command must name the diff that compared the two trees")
+    elif not _is_diff_command(command):
+        errors.append(
+            path + ".command must be a diff: only git diff / git diff-tree / diff "
+            "compares the two trees, and a read-only probe proves no equivalence")
 
 
 def _validate_level(name, level, record, errors):
     path = "levels." + name
     if not isinstance(level, dict):
-        errors.append(path + " must be an object")
+        errors.append(path + " must be an object " + _shape(LEVEL_KEYS))
         return
     _unknown_keys(level, LEVEL_KEYS, path, errors)
     value = level.get("value")
@@ -290,25 +402,27 @@ def _validate_level(name, level, record, errors):
         if level.get("pr_state") != "MERGED":
             errors.append("levels.merged.pr_state must be MERGED as reported by the PR host")
         ancestry = level.get("ancestry")
-        if not isinstance(ancestry, dict):
-            errors.append("levels.merged.ancestry must record the git ancestry check")
+        equivalence = level.get("equivalence")
+        if ancestry is None and equivalence is None:
+            errors.append(
+                "levels.merged needs either ancestry "
+                + _shape(ANCESTRY_KEYS) + " or equivalence "
+                + _shape(EQUIVALENCE_KEYS))
+        elif ancestry is not None and equivalence is not None:
+            errors.append(
+                "levels.merged records both ancestry and equivalence; a merge is proven "
+                "by exactly one of them")
+        elif ancestry is not None:
+            _validate_ancestry(ancestry, record, level, errors)
         else:
-            if ancestry.get("ancestor") != record.get("accepted_sha"):
-                errors.append(
-                    "levels.merged.ancestry.ancestor must be the accepted_sha")
-            expected = level.get("merge_sha")
-            if ancestry.get("descendant") != expected:
-                errors.append(
-                    "levels.merged.ancestry.descendant must be the merge_sha")
-            if ancestry.get("result") is not True:
-                errors.append(
-                    "levels.merged.ancestry.result must be true: git merge-base "
-                    "--is-ancestor <accepted_sha> <merge_sha>")
+            _validate_equivalence(equivalence, record, level, errors)
     elif name == "tracker_closed":
         read_back = level.get("read_back")
         if not isinstance(read_back, dict):
             errors.append(
-                "levels.tracker_closed.read_back must be a tracker read-back")
+                "levels.tracker_closed.read_back must be a tracker read-back as "
+                + _shape(READ_BACK_KEYS)
+                + ", e.g. {state: closed, at: <RFC3339 UTC instant>}")
         else:
             if read_back.get("state") != "closed":
                 errors.append(
@@ -323,7 +437,8 @@ def validate(record):
 
     Rejects a ``true`` level without an ``evidence_ref`` and every missing piece of the
     minimum evidence the spec names: a merge needs the PR host's ``MERGED`` state, the
-    merge SHA and ancestry; a tracker close needs a read-back; a start needs
+    merge SHA and exactly one of the ``ancestry`` / ``equivalence`` shapes; a tracker
+    close needs a read-back; a start needs
     ``turnStart: observed`` or the attempt's artifact / projection evidence; a test check
     needs command, result and a log (a grep is not a test run); a review needs both axes
     and a reference, or a waiver whose reason is in both the spec and the Answer.
@@ -406,6 +521,81 @@ def validate_observation(observation):
     return errors
 
 
+def schema():
+    """The ``--print-schema`` document, derived from the module's own constants.
+
+    Pure: it reads module constants only, so it performs no I/O and never touches the
+    ledger, a PR host, a tracker or git.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record": {
+            "fields": list(RECORD_KEYS),
+            "required": list(RECORD_KEYS),
+            "schema_version_value": SCHEMA_VERSION,
+            "pr_fields": list(PR_KEYS),
+            "pr_required": list(PR_KEYS),
+            "check_fields": list(CHECK_KEYS),
+            "check_required": list(CHECK_KEYS),
+            "review_fields": list(REVIEW_KEYS),
+            "review_required": list(REVIEW_REQUIRED),
+            "review_conditional_required": [
+                {"fields": ["evidence_ref"], "when": "result is 'pass'"},
+                {"fields": list(WAIVER_KEYS), "when": "result is 'waiver' "
+                                                       "(inside review.waiver)"},
+            ],
+            "waiver_fields": list(WAIVER_KEYS),
+            "waiver_required": list(WAIVER_KEYS),
+            "level_names": list(LEVEL_NAMES),
+            "level_fields": list(LEVEL_KEYS),
+            "level_required": list(LEVEL_REQUIRED),
+            "level_conditional_required": {
+                "value is true or terminal is set": ["evidence_ref"],
+                "implemented.value is true": ["start"],
+                "merged.value is true": ["merge_sha", "pr_state"],
+                "merged.ancestry / merged.equivalence": [
+                    "exactly one of the two shapes"],
+                "tracker_closed.value is true": ["read_back"],
+                "merged.terminal is set": ["decided_by", "reason"],
+            },
+            "level_notes": ["a terminal level is merged-only, sets value false, and "
+                            "requires decided_by == 'human'",
+                            "a merge is proven by exactly one of "
+                            + _shape(ANCESTRY_KEYS) + " or "
+                            + _shape(EQUIVALENCE_KEYS)],
+            "level_shapes": {key: list(value) for key, value in LEVEL_SHAPES.items()},
+            "note": "levels carries all four level names; each level is an object "
+                    "with level_fields",
+        },
+        "observation": {
+            "fields": list(OBSERVATION_KEYS),
+            "required": list(OBSERVATION_KEYS),
+            "command": "observe",
+        },
+        "enums": {
+            "level_names": list(LEVEL_NAMES),
+            "gates": list(GATES),
+            "deciders": list(DECIDERS),
+            "review_axes": list(REVIEW_AXES),
+            "check_results": list(CHECK_RESULTS),
+            "review_results": list(REVIEW_RESULTS),
+            "start_sources": list(START_SOURCES),
+            "terminals": list(TERMINALS),
+            "observations": list(OBSERVATIONS),
+        },
+        "formats": {
+            "accepted_sha": "a commit SHA (7-64 hex characters)",
+            "head_at_acceptance": "a commit SHA (7-64 hex characters)",
+            "timestamp": "RFC3339 UTC instant with Z or +00:00, e.g. 2026-11-02T09:00:00Z",
+        },
+    }
+
+
+SCHEMA_HELP = ("Run with the top-level --print-schema flag to print the complete "
+               "record/observation schema: every field, the nested object shapes, and "
+               "the known enum values.")
+
+
 # ---------------------------------------------------------------------------
 # verify: cross-check claimed levels against injected authority
 # ---------------------------------------------------------------------------
@@ -416,6 +606,8 @@ def _section(snapshot, name, rows_key):
 
     A missing, unreadable or failed section is ``unknown`` with its rows withheld: an
     empty success is never invented, because "nothing there" is not "could not read".
+    An absent ``rows_key`` on a section that reads ``ok`` is unreadable, not empty: a
+    snapshot that predates a new evidence shape cannot prove it either way.
     """
     section = snapshot.get(name) if isinstance(snapshot, dict) else None
     if not isinstance(section, dict):
@@ -425,7 +617,7 @@ def _section(snapshot, name, rows_key):
         return "unknown", name + ": " + (reason if is_nonempty(reason) else "unreadable"), []
     rows = section.get(rows_key)
     if not isinstance(rows, list):
-        return "unknown", name + ": the section carries no rows", []
+        return "unknown", name + ": the section carries no " + rows_key + " rows", []
     return "ok", "", [row for row in rows if isinstance(row, dict)]
 
 
@@ -442,8 +634,10 @@ def verify(record, authority):
 
     Only claimed levels are checked, so a record whose levels are still false needs no
     readable authority. The PR host must report ``MERGED`` with the recorded merge SHA,
-    git ancestry must confirm the merge, and a tracker close needs a ``closed``
-    read-back. ``authority`` is an injected snapshot; this function performs no I/O.
+    and git must confirm the merge: an ``ancestry`` record is proven by the ``ancestry``
+    rows, an ``equivalence`` record by the ``merges`` rows, and neither shape accepts the
+    other's proof. A tracker close needs a ``closed`` read-back. ``authority`` is an
+    injected snapshot; this function performs no I/O.
     """
     errors = []
     levels = record.get("levels") if isinstance(record, dict) else None
@@ -471,11 +665,28 @@ def verify(record, authority):
                     errors.append(
                         "PR host merge_sha does not match the recorded merge_sha")
         git_state, git_reason, ancestry_rows = _section(authority, "git", "ancestry")
-        if git_state != "ok":
+        accepted = record.get("accepted_sha")
+        merge_sha = merged.get("merge_sha")
+        if isinstance(merged.get("equivalence"), dict):
+            # A squash or rebase merge: only git's own ``merges`` rows can prove it, and
+            # the record's own ``diff_empty`` is never trusted.
+            merges_state, merges_reason, merge_rows = _section(authority, "git", "merges")
+            if merges_state != "ok":
+                errors.append(
+                    "git equivalence proof is unreadable: no merges row can prove the "
+                    "accepted head and the merge are content equivalent: "
+                    + merges_reason)
+            elif not any(
+                    item.get("accepted_sha") == accepted
+                    and item.get("merge_sha") == merge_sha
+                    and item.get("diff_empty") is True
+                    for item in merge_rows):
+                errors.append(
+                    "git does not prove the recorded equivalence: no merges row has "
+                    "diff_empty true for the accepted_sha and the merge_sha")
+        elif git_state != "ok":
             errors.append("git ancestry is unreadable: " + git_reason)
         else:
-            accepted = record.get("accepted_sha")
-            merge_sha = merged.get("merge_sha")
             covered = any(
                 item.get("ancestor") == accepted
                 and item.get("descendant") == merge_sha
@@ -531,6 +742,20 @@ def _pr_number(value):
     return as_int(value)
 
 
+def _level_value(detail, name):
+    """One raw level value, or ``None`` when the record is malformed."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level.get("value") if isinstance(level, dict) else None
+
+
+def _level_object(detail, name):
+    """One raw level object; a malformed level is a false claim, never a crash."""
+    levels = detail.get("levels")
+    level = levels.get(name) if isinstance(levels, dict) else None
+    return level if isinstance(level, dict) else {"value": False}
+
+
 def aggregate(ticket, records):
     """Return the ticket-level four levels over its ledger records.
 
@@ -541,7 +766,10 @@ def aggregate(ticket, records):
     appended to, never overwritten. A later attempt re-accepting the same PR is the claim
     in force and leaves the earlier ones in ``records`` as history; records at the *same*
     attempt that disagree about the same PR are ``divergent``, and that PR's levels are
-    neither averaged nor claimed.
+    neither averaged nor claimed. The claim in force also has to carry a passed gate:
+    when any of its checks is a ``fail``, it supports no true level. Each PR entry
+    names the selected attempt (``record_id`` and ``current_record_ids``) so a consumer
+    reads the claim in force instead of re-deriving the selection.
     """
     accepted, observations = [], []
     for record in records or []:
@@ -578,19 +806,21 @@ def aggregate(ticket, records):
         signatures = {LEDGER.canonical_json({
             "accepted_sha": _detail(record).get("accepted_sha"),
             "levels": [
-                (_level_name, _detail(record).get("levels", {}).get(_level_name, {}).get(
-                    "value"))
+                (_level_name, _level_value(_detail(record), _level_name))
                 for _level_name in LEVEL_NAMES
             ],
+            # Closeout uses this recorded merge claim in rows 2-4. Two records
+            # that disagree about it cannot be treated as one accepted claim.
+            "merge_sha": _level_object(_detail(record), "merged").get("merge_sha"),
         }) for record in current}
         divergent = len(signatures) > 1
         latest = current[-1]
         detail = _detail(latest)
+        gate_passed = all_checks_passed(detail.get("checks"))
         levels = {}
         for name in LEVEL_NAMES:
-            value = detail.get("levels", {}).get(name)
-            levels[name] = dict(value) if isinstance(value, dict) else {"value": False}
-            if divergent:
+            levels[name] = dict(_level_object(detail, name))
+            if divergent or not gate_passed:
                 levels[name]["value"] = False
         for record in observations:
             observed_detail = _detail(record)
@@ -621,6 +851,8 @@ def aggregate(ticket, records):
             "divergent": divergent,
             "accepted_sha": detail.get("accepted_sha"),
             "levels": levels,
+            "record_id": latest.get("record_id"),
+            "current_record_ids": [record.get("record_id") for record in current],
             "records": [record.get("record_id") for record in group],
         })
 
@@ -755,6 +987,42 @@ def _emit(payload):
     print(json.dumps(payload, ensure_ascii=False))
 
 
+def _merges_rows(snapshot):
+    """The optional git ``merges`` rows, validated, or ``None`` when absent.
+
+    ``ledger.validated_authority`` projects the git section down to ``ancestry``; the
+    equivalence proof rides in ``merges`` and is carried through here so the CLI accepts
+    the same snapshot shape ``verify`` documents. A malformed row is an unreadable
+    authority file, not an empty proof.
+    """
+    section = snapshot.get("git") if isinstance(snapshot, dict) else None
+    rows = section.get("merges") if isinstance(section, dict) else None
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("git.merges must be a list of objects")
+    validated = []
+    for row in rows:
+        for key in ("accepted_sha", "merge_sha"):
+            if not is_sha(row.get(key)):
+                raise ValueError("git.merges rows need " + key)
+        if not isinstance(row.get("diff_empty"), bool):
+            raise ValueError("git.merges.diff_empty must be a boolean")
+        validated.append({"accepted_sha": row["accepted_sha"],
+                          "merge_sha": row["merge_sha"],
+                          "diff_empty": row["diff_empty"]})
+    return validated
+
+
+def _validated_authority(snapshot):
+    """Normalize an authority file and keep the optional git ``merges`` rows."""
+    authority = LEDGER.validated_authority(snapshot)
+    merges = _merges_rows(snapshot)
+    if merges is not None:
+        authority["git"]["merges"] = merges
+    return authority
+
+
 def command_record(args, home):
     try:
         payload = json.loads(args.record)
@@ -770,7 +1038,7 @@ def command_record(args, home):
     errors = validate(payload)
     if not errors and args.authority:
         try:
-            authority = LEDGER.validated_authority(
+            authority = _validated_authority(
                 json.loads(Path(args.authority).read_text()))
         except (OSError, ValueError) as error:
             errors = ["cannot read the authority file: " + str(error)]
@@ -797,7 +1065,7 @@ def command_record(args, home):
         return 1
     _emit({
         "recorded": True,
-        "gate_passed": True,
+        "gate_passed": all_checks_passed(payload.get("checks")),
         "record_id": record_id,
         "ticket": payload["ticket"],
         "pr": payload["pr"]["number"],
@@ -831,8 +1099,18 @@ def command_observe(args, home):
 
 
 def command_show(args, home):
-    records = LEDGER.read(args.run_id, home=home)
+    records, unknown = LEDGER.effective_records(args.run_id, home=home)
     ticket = aggregate(args.ticket, records)
+    if unknown is None:
+        ticket["history"] = {"state": "ok", "reason": ""}
+    else:
+        # An unreadable archive means the levels cannot be claimed either way. Withhold
+        # them explicitly instead of reporting a level false because its record was moved.
+        ticket["history"] = unknown
+        ticket["state"] = "unknown"
+        for name in LEVEL_NAMES:
+            ticket["levels"][name] = {"value": None, "evidence_refs": [],
+                                      "state": "unknown"}
     shown = [record for record in records
              if record.get("kind") in ("acceptance", "observation")
              and _ticket_of(record) == args.ticket]
@@ -991,8 +1269,13 @@ def _now():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="acceptance.py", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="acceptance.py", description=__doc__, epilog=SCHEMA_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--print-schema", action="store_true",
+        help="print the record/observation JSON schema and exit")
+    sub = parser.add_subparsers(dest="command", required=False)
 
     record_parser = sub.add_parser(
         "record", help="validate, verify and append one acceptance record")
@@ -1030,6 +1313,11 @@ def main(argv=None):
     retry_parser.add_argument("--run-id", required=True)
 
     args = parser.parse_args(argv)
+    if args.print_schema:
+        _emit(schema())
+        return 0
+    if args.command is None:
+        parser.error("a command is required (or --print-schema)")
     try:
         ledger_home = home()
         if args.command == "record":

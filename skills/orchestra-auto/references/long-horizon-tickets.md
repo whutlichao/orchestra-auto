@@ -57,7 +57,7 @@ PR skill: <absolute>/pr/SKILL.md — use it for the one integration PR body.
 Tracker: <docs/agents/issue-tracker.md or absolute local ticket directory>.
 Spec: <absolute path or issue URL>.
 Tickets: <tracker query / local directory; name the frontier and the blocking edges>.
-Integration branch: <name>; base: <default base ref>.
+Integration branch: <name>; base: <default base ref; for a fork, upstream/<default branch> — never the fork's own main>.
 Concurrency: at most <N> implementers; default 3 unless the user or repo says otherwise.
 ```
 

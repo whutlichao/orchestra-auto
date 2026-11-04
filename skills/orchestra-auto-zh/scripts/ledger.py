@@ -596,6 +596,92 @@ def read(run_id, filters=None, home=None):
     return read_report(run_id, filters=filters, home=home)[0]
 
 
+def _archive_history(run_dir):
+    """Return ``(records, unknown)`` for ``archive/`` in write order.
+
+    ``corrupt-*.jsonl`` files hold the lines retention preserved precisely because they
+    never validated. They are tombstones, not history, so they are not read here.
+    """
+    directory = run_dir / ARCHIVE_DIR
+    try:
+        if directory.is_symlink():
+            return [], {"state": "unknown",
+                        "reason": "the ledger archive must not be a symlink"}
+        # ``Path.glob`` swallows a permission error and would return an empty list, which a
+        # recovery path would read as "no archived history". ``scandir`` reports it instead.
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries
+                           if entry.name.endswith(".jsonl")
+                           and not entry.name.startswith("corrupt-"))
+    except FileNotFoundError:
+        return [], None
+    except NotADirectoryError:
+        return [], {"state": "unknown",
+                    "reason": "the ledger archive is not a readable directory"}
+    except OSError as error:
+        return [], {"state": "unknown",
+                    "reason": "the ledger archive cannot be listed: " + str(error)}
+    paths = [directory / name for name in names]
+    records = []
+    for path in paths:
+        try:
+            found, corrupt, partial = _scan(path)
+        except (OSError, ValueError) as error:
+            return records, {"state": "unknown",
+                             "reason": "archive file " + path.name
+                                       + " is unreadable: " + str(error)}
+        if corrupt or partial:
+            return records, {"state": "unknown",
+                             "reason": "archive file " + path.name
+                                       + " is corrupt and was not skipped"}
+        records.extend(found)
+    return records, None
+
+
+def effective_records_for_path(active):
+    """Return ``(records, unknown)`` for one ledger file and its sibling ``archive/``.
+
+    This is the path seam behind :func:`effective_records`: every caller that reads
+    effective history goes through the ledger's own schema validator, so a JSON object
+    that is not a schema-v1 record is never mistaken for history. ``active`` need not
+    exist; a missing file is an empty active view. The archive rules — no symlink, no
+    unreadable or corrupt record-bearing file — are the ones :func:`effective_records`
+    documents, and ``unknown`` is passed through unchanged.
+    """
+    active = Path(active)
+    archived, unknown = _archive_history(active.parent)
+    current, _corrupt, _partial = _scan(active)
+    records, seen = [], set()
+    for record in archived + current:
+        if record["record_id"] in seen:
+            continue
+        seen.add(record["record_id"])
+        records.append(record)
+    return records, unknown
+
+
+def effective_records(run_id, home=None):
+    """Return ``(records, unknown)``: active plus archived history in write order.
+
+    Retention moves complete records to ``archive/``; a recovery path that read only the
+    active file would forget them. Archive files predate the active file and sort by
+    creation time, so their records come first and the merge preserves append order.
+    Records are deduplicated by ``record_id`` with the first copy winning, because a crash
+    between the archive write and the active rewrite can leave one record in both places.
+
+    ``unknown`` is ``None`` when the archive was read completely, and
+    ``{"state": "unknown", "reason": ...}`` when the archive directory or a record-bearing
+    archive file cannot be read or holds a corrupt line. The readable records are still
+    returned, but a caller must not present them as the complete history.
+    """
+    _portable_identifier(run_id, "run_id")
+    root = home_path(home)
+    run_dir = root / RUNS_DIR / run_id
+    if run_dir.is_symlink():
+        _invalid("run directory must not be a symlink")
+    return effective_records_for_path(run_dir / LEDGER_NAME)
+
+
 def _summarize(run_id, records, corrupt):
     kinds = {kind: 0 for kind in KINDS}
     states = {state: 0 for state in STATES}
@@ -2218,7 +2304,7 @@ def reconcile(run_id, authority, home=None, replay=True):
     receipt that says ``pending`` for a joinable action.
     """
     _portable_identifier(run_id, "run_id")
-    records, _corrupt = read_report(run_id, home=home)
+    records, unknown = effective_records(run_id, home=home)
     if hasattr(authority, "snapshot"):
         snapshot = authority.snapshot(run_id, records)
     else:
@@ -2227,6 +2313,14 @@ def reconcile(run_id, authority, home=None, replay=True):
     if snapshot["run_id"] != run_id:
         _invalid("authority snapshot run_id does not match --run-id")
     report = classify(records, snapshot)
+    if unknown is not None:
+        # The archive could not be read, so the report cannot claim a complete ledger.
+        # Name the gap, claim no repair and write nothing: a repeated action or a
+        # closeout over a partial history would be worse than refusing to act.
+        report["unreadable"].append({"source": "ledger", "reason": unknown["reason"]})
+        report["authority_sources"]["ledger"] = "unknown"
+        validate_report(report)
+        return report
     records_by_id = {record["record_id"]: record for record in records}
     root = home_path(home)
     run_dir = root / RUNS_DIR / run_id
@@ -2376,7 +2470,9 @@ def _normalized_task_row(raw):
     if "task_id" not in row and isinstance(raw.get("id"), str):
         row["task_id"] = raw["id"]
     if not isinstance(row.get("orca_task_id"), str):
-        row["orca_task_id"] = None
+        # The live CLI names the Orca Task id ``id``; it is the only join key.
+        raw_id = raw.get("id")
+        row["orca_task_id"] = raw_id if isinstance(raw_id, str) and raw_id else None
     if "task_id" in row and not isinstance(row["task_id"], str):
         row.pop("task_id")
     if not isinstance(row.get("provisional"), bool):
@@ -2390,9 +2486,11 @@ class LiveAuthority:
     The Orca command is resolved from ``ORCA_CLI_COMMAND`` (the same contract the
     inbox loop uses), so tests point it at the shared fake and nothing touches a
     live Orca. Every read failure becomes ``unknown`` with a reason; an empty
-    success is never invented. Pagination follows ``page.hasMore`` and
-    ``page.nextCursor`` for ``worker-list`` (with ``--include-remote``) and
-    ``task-list``; a missing or repeated cursor is an unreadable read.
+    success is never invented. Pagination reads either shape the CLI publishes
+    for ``worker-list`` (with ``--include-remote``) and ``task-list``: the live
+    CLI's flat ``result.nextCursor`` (absent on the final page) or the older
+    ``result.page.hasMore``/``nextCursor`` object. A non-object ``page`` with no
+    usable flat cursor, or a repeated cursor, is an unreadable read.
 
     ``replay`` is the only mutation: it runs the command recorded on the intent
     with ``--retry-request`` set to the same request id. No merge, tracker close,
@@ -2432,7 +2530,7 @@ class LiveAuthority:
 
     def _request_show_one(self, request_id):
         result, error = self._call(
-            ["orchestration", "request-show", "--request", request_id])
+            ["orchestration", "request-show", "--request", request_id, "--json"])
         if result is None:
             return {"state": "unknown", "reason": "request-show: " + error, "receipt": {}}
         request = result.get("request", result)
@@ -2480,11 +2578,22 @@ class LiveAuthority:
                 return _unknown_source(rows_key + ": the CLI returned no row list")
             rows.extend(normalize(row) for row in page_rows if isinstance(row, dict))
             page = result.get("page")
-            if not isinstance(page, dict):
-                page = {}
-            if not page.get("hasMore"):
-                return _source("ok", "", rows=rows)
-            following = page.get("nextCursor")
+            if isinstance(page, dict):
+                # Older CLIs: the page object decides whether the list is exhausted.
+                if not page.get("hasMore"):
+                    return _source("ok", "", rows=rows)
+                following = page.get("nextCursor")
+            else:
+                # Live CLI 1.4.246: the cursor is flat, and its absence on the
+                # final page is normal. A present but non-object ``page`` with no
+                # flat cursor is a truncated read, never a complete list.
+                following = result.get("nextCursor")
+                if not isinstance(following, str) or not following:
+                    if "page" in result:
+                        return _unknown_source(
+                            rows_key + ": neither result.page nor result.nextCursor "
+                            "(saw: %s)" % ", ".join(sorted(result)))
+                    return _source("ok", "", rows=rows)
             if not isinstance(following, str) or not following or following in seen:
                 return _unknown_source(rows_key + ": pagination has no usable cursor")
             seen.add(following)
@@ -2494,13 +2603,12 @@ class LiveAuthority:
     def _worker_list(self, run_id):
         return self._page(
             ["orchestration", "worker-list", "--run", run_id,
-             "--include-remote", "--limit", str(PAGE_LIMIT)],
+             "--include-remote", "--limit", str(PAGE_LIMIT), "--json"],
             "workers", _normalized_worker_row)
 
     def _task_list(self, run_id):
         return self._page(
-            ["orchestration", "task-list", "--run", run_id,
-             "--limit", str(PAGE_LIMIT)],
+            ["orchestration", "task-list", "--run", run_id, "--json"],
             "tasks", _normalized_task_row)
 
     def _worker_show(self, records, workers):
@@ -2516,7 +2624,7 @@ class LiveAuthority:
         entries = {}
         for dispatch_id in dispatch_ids:
             result, error = self._call(
-                ["orchestration", "worker-show", "--dispatch", dispatch_id])
+                ["orchestration", "worker-show", "--dispatch", dispatch_id, "--json"])
             if result is None:
                 entries[dispatch_id] = {
                     "state": "unknown", "reason": "worker-show: " + error, "worker": {}}

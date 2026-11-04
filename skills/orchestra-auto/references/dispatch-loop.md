@@ -34,7 +34,7 @@ Every task worker, without exception:
   --worktree new-top-level --name <ticket slug> --setup run --agent <§0's worker> --json
 ```
 
-- `--worktree new-top-level`: an isolated top-level worktree, cut from the default base ref.
+- `--worktree new-top-level`: an isolated top-level worktree, cut from the base ref chosen below.
   **Never `current`, never `new-child`** — the first is main, the second may land inside a
   subdirectory of main.
 - `--name`: the ticket slug, so the worktree is recognizable later and locatable on a send-back.
@@ -56,6 +56,40 @@ Every task worker, without exception:
   when you need a planned fan-out, or when retrying a known Task.
 - Immediately after the receipt, confirm the turn really started per §4.3.1, and verify §4.5's
   inbox consumer and waiting method.
+
+**Base ref: read the fork state once per repository, before the first dispatch into it.** The
+fact is already recorded by Orca; the skill only has to read it:
+
+```bash
+orca repo show --repo <selector> --json            # result.repo.upstream is null when not a fork
+orca repo search-refs --repo <selector> --query <default branch> --json
+```
+
+- `upstream` **null** (a repository of your own): keep today's behaviour. The worktree is cut from
+  the repository's default base ref and no `--base-branch` is passed.
+- `upstream` **non-null** (a fork): run `git fetch upstream` first, cut from
+  `upstream/<default branch>`, and pass `--base-branch upstream/<default branch>` explicitly.
+  Without it the fork's private main commits ride into the PR as a gap the upstream repository
+  never had — the worktree's branch is `upstream`'s common ancestor plus everything the fork
+  stacked on its own main plus this ticket.
+- The judgement is made by **delivery endpoint** — which repository the PR merges into — not by
+  the size of the change or the ticket type. It is a repository-level fact, settled once, not a
+  per-ticket improvisation; later claims about the same repository must agree with it.
+- A ticket that genuinely depends on the fork's private commits is the one exception: pass
+  `--base-branch origin/<default branch>` and write down the reason.
+
+**A fork's default branch stays a pure mirror.** It should only mirror upstream's default branch;
+private work goes on its own branch or PR and is never stacked on the fork's main. Under that
+convention §6.5.1's `--ff-only` sync holds unconditionally. A fork that already accumulated
+private commits clears them first — merge them upstream or drop them — instead of picking a base
+ref that hides them for another round.
+
+**A stale coordinator worktree is refused before dispatch.** Check its lag against the target base
+first — in a fork `git fetch upstream`: the coordinator tracks `origin/main`, the worker cuts from
+`upstream/main`. Past a threshold Orca refuses and the Task stays `ready` with no Dispatch,
+looking like a worker that never started. Gather §9 evidence (`worker-list --run` `stage`/`outcome`,
+empty receiver), pull/rebase or recreate it, never re-dispatch. `allow-stale-base: true` only
+for expected drift, reasoned in the spec (Orca 1.4.245: 20 commits; version-scoped — CLI/guide).
 
 ## 4.3.0 Pre-skill: pick it by stage and ticket type, not by channel
 

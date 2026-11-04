@@ -8,7 +8,9 @@ remain readable and the next write migrates them to v2.
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import fcntl
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -16,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,13 @@ READABLE_VERSIONS = {1, 2}
 ASSET = Path(__file__).with_name('progress.html')
 BANNER = 'Read-only progress: '
 LOCK_TIMEOUT_SECONDS = 2.0
+#: The per-Run snapshot lock and the registry descriptor lock. See ``locked``
+#: for the order in which a path that needs both must take them.
+PROGRESS_LOCK_NAME = '.progress.lock'
+REGISTRY_LOCK_NAME = '.registry.lock'
+#: A cross-filesystem copy is retried this many times when a writer commits
+#: between verification and deletion, so the final copy keeps that record.
+COPY_VERIFICATION_ATTEMPTS = 3
 
 #: The singleton registry protocol. ``protocol_version`` starts at 1; a service that
 #: does not answer ``/health`` with at least this version is legacy or incompatible.
@@ -49,7 +59,12 @@ SERVER_NAME = 'server.json'
 STARTING_NAME = 'starting.json'
 STARTUP_LOCK_NAME = 'startup.lock'
 REGISTRY_RUNS_DIR = 'runs'
+REGISTRY_ARCHIVE_DIR = 'archive'
 DESCRIPTOR_FIELDS = {'run_id', 'state_path', 'registered_at', 'label'}
+#: Only an explicit ``registry prune`` may move these Runs out of the registry.
+TERMINAL_RUN_STATES = frozenset({'completed', 'cancelled', 'failed'})
+PRUNE_DEFAULT_OLDER_THAN_DAYS = 7
+PRUNE_DEFAULT_KEEP = 10
 SERVER_FIELDS = {'pid', 'port', 'protocol_version', 'started_at', 'binary_version'}
 #: The HTTP surface is read-only and local to this machine. Only these Host names are
 #: accepted (an optional ``:port`` suffix must name the serving port); anything else is a
@@ -89,7 +104,54 @@ RUN_HEALTH = {'healthy', 'degraded', 'blocked', 'lost', 'unknown'}
 LIFECYCLES = {'unknown', 'dispatched', 'running', 'waiting_user', 'reported_done', 'failed',
               'lost', 'reclaimable', 'closed'}
 DELIVERY = ('implemented', 'integrated', 'merged', 'tracker_closed')
-PORTABLE_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}\Z')
+PORTABLE_ID_PATTERN = r'[A-Za-z0-9_.:-]{1,128}'
+PORTABLE_ID = re.compile(PORTABLE_ID_PATTERN + r'\Z')
+
+#: Every enum ``validate_data`` checks, declared once. ``--print-schema`` prints these and the
+#: validation messages quote them, so neither can drift from the other.
+MODES = ('REAL', 'DEMO')
+ENUM_FIELDS = {
+    'health': RUN_HEALTH,
+    'lifecycle': LIFECYCLES,
+    'reported_lifecycle': LIFECYCLES,
+    'start_confirmation': ('unknown', 'observed', 'unobserved', 'unsupported'),
+    'kind': ('report', 'test', 'commit', 'pr', 'other'),
+    'mode': MODES,
+}
+#: ``end`` narrows ``run.status`` to the four terminal values in ``mutate``; every other
+#: command accepts ``RUN_STATES``. ``validate_data`` keeps its original two-way choice, so only
+#: the printed schema names the narrowed ``end`` set as well.
+END_STATES = ('completed', 'failed', 'paused', 'cancelled')
+SCHEMA_STATUS_ENUMS = {'task': TASK_STATES, 'end': END_STATES}
+#: ``validate_data``'s own two-way choice, unchanged: every non-task command accepts
+#: ``RUN_STATES`` there, and ``end`` narrows it later in ``mutate``.
+VALIDATION_STATUS_ENUMS = {'task': TASK_STATES}
+#: The field groups ``validate_data`` type-checks as one. Both the checks and ``--print-schema``
+#: read these tuples.
+BOOLEAN_FIELDS = frozenset(DELIVERY) | {'provisional'}
+LIST_FIELDS = ('dependencies', 'evidence')
+WORKER_REPORT_FIELDS = frozenset(
+    {'id', 'task_id', 'dispatch_id', 'attempt', 'reported_lifecycle', 'reported_summary'})
+#: The identity every worker record and worker report carries; ``required`` on a new attempt.
+WORKER_IDENTITY = ('task_id', 'dispatch_id', 'attempt')
+#: The fields a command always needs. ``mutate`` calls ``required`` with exactly these.
+REQUIRED_FIELDS = {
+    'init': ('id', 'target_repo', 'mode'),
+    'task': ('id',),
+    'worker': ('id',),
+    'event': ('type', 'summary'),
+    'delivery': ('task_id',),
+    'artifact': ('id', 'kind', 'label', 'reference'),
+    'end': ('status',),
+    'run': (),
+}
+#: ``required`` calls that apply only in one case; printed as ``conditionally_required``.
+EVENT_REPORT_FIELDS = ('worker_id', *WORKER_IDENTITY)
+CONDITIONAL_REQUIRED = {
+    'worker': ({'fields': list(WORKER_IDENTITY),
+                'when': 'the worker id is new, or --source worker'},),
+    'event': ({'fields': list(EVENT_REPORT_FIELDS), 'when': '--source worker'},),
+}
 
 
 class Degraded(Exception):
@@ -108,25 +170,39 @@ def timestamp(value):
     return datetime.fromisoformat(value).timestamp()
 
 
+def _choices(values):
+    """One enum as a stable message fragment: ``a/b/c`` in sorted order."""
+    return '/'.join(sorted(values))
+
+
 def validate_data(command, data, source):
     if not isinstance(data, dict) or set(data) - FIELDS[command]:
-        raise ValueError('input must be an object containing only documented summary fields')
+        unknown = sorted(set(data) - FIELDS[command]) if isinstance(data, dict) else []
+        message = ('input must be an object containing only documented summary fields; '
+                   + command + ' takes {' + ', '.join(sorted(FIELDS[command]))
+                   + '}; run --print-schema for the field table')
+        if unknown:
+            message += '; unknown: ' + ', '.join(unknown)
+        raise ValueError(message)
     if source == 'worker':
-        allowed = {'id', 'task_id', 'dispatch_id', 'attempt', 'reported_lifecycle', 'reported_summary'}
-        if command not in {'worker', 'event'} or (command == 'worker' and set(data) - allowed):
-            raise ValueError('worker reports cannot verify coordinator facts or delivery')
+        if command not in {'worker', 'event'} or (command == 'worker' and set(data) - WORKER_REPORT_FIELDS):
+            raise ValueError('a worker report takes only {'
+                             + ', '.join(sorted(WORKER_REPORT_FIELDS))
+                             + '} on worker/event, and cannot verify coordinator facts '
+                               'or delivery')
     for key, value in data.items():
-        if key in DELIVERY or key == 'provisional':
+        if key in BOOLEAN_FIELDS:
             if type(value) is not bool:
-                raise ValueError(key + ' must be boolean')
+                raise ValueError(key + ' must be boolean (true or false)')
         elif key == 'attempt':
             if type(value) is not int or value < 1:
                 raise ValueError('attempt must be a positive integer')
-        elif key in {'dependencies', 'evidence'}:
+        elif key in LIST_FIELDS:
             if not isinstance(value, list) or len(value) > 100:
-                raise ValueError(key + ' must be a list of at most 100 references')
+                raise ValueError(key + ' must be a list of at most 100 short strings, '
+                                 'e.g. ["tickets/answer.md#tests"]')
             if any(not isinstance(item, str) or len(item) > 2048 for item in value):
-                raise ValueError('references must be short strings')
+                raise ValueError(key + ' references must be short strings')
         elif key == 'orca_task_id' and value is None:
             pass
         elif not isinstance(value, str) or len(value) > 4096:
@@ -135,23 +211,25 @@ def validate_data(command, data, source):
             continue
         if key == 'id' or key.endswith('_id'):
             if not PORTABLE_ID.fullmatch(value):
-                raise ValueError(key + ' must be a portable identifier')
+                raise ValueError(key + ' must be a portable identifier ('
+                                        + PORTABLE_ID_PATTERN + ')')
     if 'status' in data:
-        choices = TASK_STATES if command == 'task' else RUN_STATES
+        choices = VALIDATION_STATUS_ENUMS.get(command, RUN_STATES)
         if data['status'] not in choices:
-            raise ValueError('unknown status')
-    if 'health' in data and data['health'] not in RUN_HEALTH:
-        raise ValueError('unknown run health')
+            raise ValueError('status must be one of ' + _choices(sorted(choices)))
+    if 'health' in data and data['health'] not in ENUM_FIELDS['health']:
+        raise ValueError('health must be one of ' + _choices(sorted(ENUM_FIELDS['health'])))
     if data.get('provisional') is True and data.get('orca_task_id') is not None:
         raise ValueError('a provisional task must not carry an Orca Task ID')
     for field in ('lifecycle', 'reported_lifecycle'):
-        if field in data and data[field] not in LIFECYCLES:
-            raise ValueError('unknown lifecycle')
-    if 'start_confirmation' in data and data['start_confirmation'] not in {
-            'unknown', 'observed', 'unobserved', 'unsupported'}:
-        raise ValueError('unknown start confirmation')
-    if command == 'artifact' and data.get('kind') not in {'report', 'test', 'commit', 'pr', 'other'}:
-        raise ValueError('artifact kind required: report/test/commit/pr/other')
+        if field in data and data[field] not in ENUM_FIELDS[field]:
+            raise ValueError(field + ' must be one of '
+                             + _choices(sorted(ENUM_FIELDS[field])))
+    if 'start_confirmation' in data and data['start_confirmation'] not in ENUM_FIELDS['start_confirmation']:
+        raise ValueError('start_confirmation must be one of '
+                         + _choices(ENUM_FIELDS['start_confirmation']))
+    if command == 'artifact' and data.get('kind') not in ENUM_FIELDS['kind']:
+        raise ValueError('artifact kind must be one of ' + _choices(ENUM_FIELDS['kind']))
 
 
 def repository_ancestor(path):
@@ -177,10 +255,19 @@ def guard_target(directory, target):
         raise ValueError('state and target repository must be separate directory trees')
 
 
+#: Lock order, never reversed: a Run's state lock (``state/PROGRESS_LOCK_NAME``)
+#: is taken before the registry lock (``home/REGISTRY_LOCK_NAME``). The recorder
+#: takes only the Run lock, ``register`` only the registry lock, and ``prune``
+#: takes the Run lock for its whole archive window and the registry lock around
+#: each descriptor check. No path waits for a Run lock while holding the
+#: registry lock.
 @contextmanager
-def locked(directory, timeout=LOCK_TIMEOUT_SECONDS):
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(directory / '.progress.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+def locked(directory, timeout=LOCK_TIMEOUT_SECONDS, create=True,
+           name=PROGRESS_LOCK_NAME):
+    directory = Path(directory)
+    if create:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'a') as lock:
         deadline = time.monotonic() + timeout
         while True:
@@ -250,7 +337,88 @@ def save(directory, state):
 
 def required(data, *fields):
     if any(field not in data or data[field] == '' for field in fields):
-        raise ValueError('required fields: ' + ', '.join(fields))
+        raise ValueError('required fields: ' + ', '.join(fields)
+                         + '; each must be present and non-empty in the --data object; '
+                           'run --print-schema for the field table')
+
+
+#: The type words ``field_type`` uses. They are not a second field table: which field is
+#: boolean, numeric, a list or an enum is read from ``BOOLEAN_FIELDS``, ``LIST_FIELDS``,
+#: ``ENUM_FIELDS`` and ``PORTABLE_ID_PATTERN`` above, exactly as ``validate_data`` reads them.
+def field_type(command, key):
+    """The type ``validate_data`` enforces for one field, derived from its constants."""
+    if key in BOOLEAN_FIELDS:
+        return 'boolean'
+    if key in LIST_FIELDS:
+        return 'list of at most 100 short strings'
+    if key == 'attempt':
+        return 'positive integer'
+    if key in ENUM_FIELDS:
+        return 'string, one of ' + _choices(ENUM_FIELDS[key])
+    if key == 'status':
+        choices = SCHEMA_STATUS_ENUMS.get(command, RUN_STATES)
+        return 'string, one of ' + _choices(sorted(choices))
+    if key == 'orca_task_id':
+        return 'portable identifier string or null'
+    if key == 'id' or key.endswith('_id'):
+        return 'portable identifier string ' + PORTABLE_ID_PATTERN
+    return 'string'
+
+
+def schema():
+    """The ``--print-schema`` document, derived from the module's own constants.
+
+    Pure: it reads module constants only, so it never starts the service, reads a state
+    directory or touches the registry.
+    """
+    commands = {}
+    for command in FIELDS:
+        required = set(REQUIRED_FIELDS[command])
+        commands[command] = {
+            'fields': sorted(FIELDS[command]),
+            'field_types': {key: field_type(command, key)
+                            for key in sorted(FIELDS[command])},
+            'required': sorted(required),
+            'optional': sorted(FIELDS[command] - required),
+            'conditionally_required': [dict(item)
+                                       for item in CONDITIONAL_REQUIRED.get(command, ())],
+            'boolean_fields': sorted(BOOLEAN_FIELDS & FIELDS[command]),
+            'list_fields': [key for key in LIST_FIELDS if key in FIELDS[command]],
+            'status_enum': (sorted(SCHEMA_STATUS_ENUMS[command])
+                            if command in SCHEMA_STATUS_ENUMS
+                            else ([] if 'status' not in FIELDS[command]
+                                  else sorted(RUN_STATES))),
+        }
+    return {
+        'schema_version': VERSION,
+        'commands': commands,
+        'worker_report': {
+            'commands': ['worker'],
+            'fields': sorted(WORKER_REPORT_FIELDS),
+            'note': 'a worker-sourced report is restricted to this set on worker; '
+                    'event takes its own fields and requires the identity fields',
+        },
+        'enums': {
+            'task_states': sorted(TASK_STATES),
+            'run_states': sorted(RUN_STATES),
+            'run_health': sorted(RUN_HEALTH),
+            'lifecycles': sorted(LIFECYCLES),
+            'start_confirmation': list(ENUM_FIELDS['start_confirmation']),
+            'modes': list(ENUM_FIELDS['mode']),
+            'artifact_kinds': list(ENUM_FIELDS['kind']),
+            'delivery': list(DELIVERY),
+        },
+        'evidence': {'type': 'list of at most 100 short strings, e.g. '
+                             '["tickets/task-39-answer.md#tests"]',
+                     'note': 'a delivery records implemented/integrated/merged/'
+                             'tracker_closed as booleans, each backed by evidence'},
+        'portable_identifier': {'pattern': PORTABLE_ID_PATTERN,
+                                'applies_to': 'id and every field ending in _id'},
+    }
+
+
+SCHEMA_HELP = ('Run with the top-level --print-schema flag to print every field this '
+               'script accepts, which are required, and the known enum values.')
 
 
 # --- singleton registry -----------------------------------------------------------
@@ -284,27 +452,41 @@ def ensure_private_directory(path):
     os.chmod(path, REGISTRY_DIRECTORY_MODE)
 
 
-def atomic_write_json(path, payload, directory=None, prefix=None):
-    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+def _fsync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path, payload, directory=None, prefix=None):
+    """Write exact bytes atomically: temp file, fsync, rename, directory fsync."""
     directory = Path(directory or path.parent)
     prefix = prefix or '.' + Path(path).name + '-'
     fd, name = tempfile.mkstemp(prefix=prefix, dir=directory)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            json.dump(payload, output, ensure_ascii=False, indent=2)
-            output.write('\n')
+        with os.fdopen(fd, 'wb') as output:
+            output.write(payload)
             output.flush()
             os.fsync(output.fileno())
         os.chmod(name, 0o600)
         os.replace(name, path)
-        dfd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+        _fsync_directory(directory)
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def atomic_write_json(path, payload, directory=None, prefix=None):
+    """Write ``payload`` atomically: temp file, fsync, rename, directory fsync."""
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    _atomic_write(path, encoded, directory, prefix)
+
+
+def atomic_write_bytes(path, payload, directory=None):
+    """Write one exact byte payload atomically: temp, fsync, rename, directory fsync."""
+    _atomic_write(path, payload, directory)
 
 
 def read_json_object(path, reason):
@@ -350,17 +532,20 @@ def register(run, home=None):
     ensure_private_directory(runs)
     descriptor = validated_descriptor(run)
     path = runs / (descriptor['run_id'] + '.json')
-    registered_at = now()
-    if path.exists():
-        try:
-            existing = validated_descriptor(read_json_object(path, 'descriptor_invalid'))
-            registered_at = existing.get('registered_at') or registered_at
-        except (Degraded, ValueError):
-            pass
-    descriptor['registered_at'] = registered_at
-    stored = {key: descriptor[key] for key in
-              ('run_id', 'state_path', 'registered_at', 'label')}
-    atomic_write_json(path, stored, runs)
+    # The registry lock serializes descriptor updates with prune's identity
+    # check and unlink, so a concurrent register is never silently deleted.
+    with locked(home, name=REGISTRY_LOCK_NAME):
+        registered_at = now()
+        if path.exists():
+            try:
+                existing = validated_descriptor(read_json_object(path, 'descriptor_invalid'))
+                registered_at = existing.get('registered_at') or registered_at
+            except (Degraded, ValueError):
+                pass
+        descriptor['registered_at'] = registered_at
+        stored = {key: descriptor[key] for key in
+                  ('run_id', 'state_path', 'registered_at', 'label')}
+        atomic_write_json(path, stored, runs)
     return stored
 
 
@@ -379,6 +564,379 @@ def discover(home=None):
         except (Degraded, ValueError):
             continue
     return descriptors
+
+
+def _nonnegative_integer(value, name):
+    text = str(value).strip()
+    if not text.isdigit():
+        raise ValueError(name + ' must be a nonnegative integer')
+    return int(text)
+
+
+def _timestamp_value(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _prune_age_basis(descriptor, run):
+    """The prune age basis: ended_at, updated_at, last_observed, registered_at."""
+    for key in ('ended_at', 'updated_at', 'last_observed'):
+        stamp = _timestamp_value(run.get(key))
+        if stamp is not None:
+            return stamp
+    return _timestamp_value(descriptor.get('registered_at'))
+
+
+def _tree_manifest(root):
+    """Every path below ``root`` with a content digest, for cross-filesystem checks."""
+    entries = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in directories + files:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            if path.is_symlink():
+                entries[relative] = ('link', os.readlink(path))
+            elif path.is_dir():
+                entries[relative] = ('dir', '')
+            else:
+                digest = hashlib.sha256()
+                with path.open('rb') as source:
+                    for chunk in iter(lambda: source.read(65536), b''):
+                        digest.update(chunk)
+                entries[relative] = ('file', digest.hexdigest())
+    return entries
+
+
+def _fsync_tree(root):
+    for directory, _directories, files in os.walk(root, followlinks=False):
+        for name in files:
+            path = Path(directory) / name
+            if path.is_symlink():
+                continue
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        _fsync_directory(directory)
+
+
+def _move_directory(source, destination):
+    """Rename a directory, or copy + verify + fsync + delete across filesystems.
+
+    The copy is verified before it is installed and again immediately before the
+    source is deleted. A writer that committed after the first verification is
+    therefore copied again, not deleted with the source. ``_archive_run`` holds
+    the Run write lock across this window; the second verification is defence
+    in depth for a writer that does not honour that lock, never a substitute
+    for it.
+    """
+    try:
+        os.rename(source, destination)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    staging = destination.parent / ('.state-copy-' + uuid.uuid4().hex)
+    try:
+        for _attempt in range(COPY_VERIFICATION_ATTEMPTS):
+            shutil.copytree(source, staging, symlinks=True)
+            # Hash the copy first and the live source last: a write that lands
+            # while either manifest is being built is then seen by the source
+            # snapshot instead of slipping past it.
+            if _tree_manifest(staging) != _tree_manifest(source):
+                _remove_path(staging)
+                continue
+            _fsync_tree(staging)
+            os.rename(staging, destination)
+            if _tree_manifest(destination) == _tree_manifest(source):
+                shutil.rmtree(source)
+                return
+            # A record committed after the copy was verified: install a copy
+            # that includes it instead of deleting the only remaining source.
+            _remove_path(destination)
+        raise OSError('state copy verification failed')
+    except Exception:
+        if staging.is_symlink():
+            staging.unlink()
+        elif staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def _remove_path(path):
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+class _DescriptorReplaced(Exception):
+    """The registry descriptor changed after prune selected this Run."""
+
+
+def _descriptor_matches(descriptor_path, raw_descriptor):
+    try:
+        if descriptor_path.is_symlink() or not descriptor_path.is_file():
+            return False
+        return descriptor_path.read_bytes() == raw_descriptor
+    except OSError:
+        return False
+
+
+def _archive_run(home, descriptor, descriptor_path, raw_descriptor):
+    """Archive one ended Run reversibly; ``ok``, ``conflict`` or ``failed``.
+
+    Called with the Run write lock held. The descriptor stays in ``runs/`` until
+    the state is inside ``archive/<run_id>/`` and the original descriptor bytes
+    are durable there too. Its identity is checked under the registry lock
+    before the move and again immediately before the unlink, so a descriptor
+    replaced by a concurrent ``register`` is preserved. Any failure rolls the
+    move back so the registry descriptor and the original state both survive.
+    """
+    try:
+        with locked(home, name=REGISTRY_LOCK_NAME):
+            if not _descriptor_matches(descriptor_path, raw_descriptor):
+                return 'conflict'
+    except (OSError, Degraded):
+        return 'failed'
+    source = Path(descriptor['state_path'])
+    archive_root = home / REGISTRY_ARCHIVE_DIR
+    archive_run = archive_root / descriptor['run_id']
+    try:
+        ensure_private_directory(archive_root)
+    except (OSError, Degraded):
+        return 'failed'
+    if archive_run.is_symlink() or archive_run.exists():
+        return 'conflict'
+    try:
+        archive_run.mkdir(mode=REGISTRY_DIRECTORY_MODE)
+    except FileExistsError:
+        return 'conflict'
+    except OSError:
+        return 'failed'
+    destination = archive_run / source.name
+    if source.name == 'descriptor.json' or source.is_symlink() or not source.is_dir():
+        _remove_path(archive_run)
+        return 'conflict' if source.name == 'descriptor.json' else 'failed'
+    if destination.exists() or destination.is_symlink():
+        _remove_path(archive_run)
+        return 'conflict'
+    try:
+        _move_directory(source, destination)
+        _fsync_directory(archive_run)
+        _fsync_directory(archive_root)
+        atomic_write_bytes(archive_run / 'descriptor.json', raw_descriptor, archive_run)
+        with locked(home, name=REGISTRY_LOCK_NAME):
+            if not _descriptor_matches(descriptor_path, raw_descriptor):
+                raise _DescriptorReplaced()
+            descriptor_path.unlink()
+            _fsync_directory(descriptor_path.parent)
+    except Exception as error:
+        try:
+            # A cross-filesystem move installs the verified copy at ``destination``
+            # before deleting the source. If that deletion fails halfway, the
+            # archive holds the only complete copy: put it back before removing it.
+            if destination.is_symlink() or destination.exists():
+                if source.is_symlink() or source.exists():
+                    _remove_path(source)
+                _move_directory(destination, source)
+            _remove_path(archive_run)
+        except Exception:
+            pass
+        if not descriptor_path.exists():
+            try:
+                atomic_write_bytes(descriptor_path, raw_descriptor,
+                                   descriptor_path.parent)
+            except Exception:
+                pass
+        return 'conflict' if isinstance(error, _DescriptorReplaced) else 'failed'
+    return 'ok'
+
+
+def _recheck_and_archive(home, descriptor_path, descriptor, raw_descriptor,
+                         cutoff, retained):
+    """Decide again from live bytes while the caller holds the Run write lock."""
+    run_id = descriptor['run_id']
+    if not _descriptor_matches(descriptor_path, raw_descriptor):
+        return 'skipped', 'descriptor_changed'
+    try:
+        run = read_state(Path(descriptor['state_path']))['run']
+    except (OSError, ValueError, KeyError, TypeError, Degraded):
+        return 'skipped', 'state_unreadable'
+    status = run.get('status')
+    if not isinstance(status, str) or status not in RUN_STATES:
+        return 'skipped', 'state_invalid_status'
+    if status not in TERMINAL_RUN_STATES or run_id in retained:
+        return 'kept', None
+    stamp = _prune_age_basis(descriptor, run)
+    if stamp is None:
+        return 'skipped', 'timestamp_missing'
+    if stamp >= cutoff:
+        return 'kept', None
+    try:
+        return _archive_run(home, descriptor, descriptor_path, raw_descriptor), None
+    except Exception:
+        return 'failed', None
+
+
+def _archive_selected(home, descriptor_path, descriptor, raw_descriptor,
+                      cutoff, retained):
+    """Re-read one selected Run under its write lock, then archive it.
+
+    Returns ``(outcome, reason)``: ``kept``, ``skipped`` (with a reason), or one
+    of ``_archive_run``'s outcomes. A Run that stopped being terminal, or whose
+    descriptor changed since selection, is never archived.
+    """
+    try:
+        with locked(Path(descriptor['state_path']), create=False):
+            return _recheck_and_archive(home, descriptor_path, descriptor,
+                                        raw_descriptor, cutoff, retained)
+    except Degraded as error:
+        if error.reason == 'lock_busy':
+            return 'skipped', 'state_busy'
+        return 'failed', None
+    except OSError:
+        return 'skipped', 'state_unreadable'
+
+
+def prune(home=None, older_than_days=PRUNE_DEFAULT_OLDER_THAN_DAYS,
+          keep=PRUNE_DEFAULT_KEEP, dry_run=False, now_timestamp=None):
+    """Archive ended Runs older than the cutoff, retaining the newest ``keep`` Runs.
+
+    Only ``completed``, ``cancelled`` and ``failed`` Runs are candidates. The newest
+    ``keep`` descriptors by ``registered_at`` are always retained, whatever their
+    status. An unreadable descriptor or state, a nonterminal Run, a Run without a
+    usable timestamp and any archive conflict or failure are never removed. A
+    selected Run is re-read under its write lock before the archive window opens,
+    so a Run revived by the recorder is kept and its descriptor survives. Returns
+    ``(report, failed)``; ``report`` is the JSON contract and ``failed`` is true when
+    an archive step failed, in which case the CLI exits 1. ``dry_run`` reads only.
+    """
+    older_than_days = _nonnegative_integer(older_than_days, '--older-than-days')
+    keep = _nonnegative_integer(keep, '--keep')
+    home = registry_home(home)
+    cutoff = (datetime.now(timezone.utc).timestamp()
+              if now_timestamp is None else now_timestamp) - older_than_days * 86400
+    runs = home / REGISTRY_RUNS_DIR
+    paths = []
+    if runs.is_symlink() or not runs.is_dir():
+        paths = []
+    else:
+        paths = [path for path in sorted(runs.iterdir()) if path.suffix == '.json']
+    report = {'pruned': [], 'archived': [], 'kept': [], 'skipped': []}
+    descriptors = []
+    for path in paths:
+        raw = None
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('descriptor is not a regular file')
+            raw = path.read_bytes()
+            descriptor = validated_descriptor(json.loads(raw))
+            if descriptor['run_id'] != path.stem:
+                raise ValueError('descriptor filename does not match run_id')
+        except (OSError, ValueError, TypeError, Degraded):
+            report['skipped'].append(
+                {'run_id': path.stem, 'reason': 'descriptor_unreadable'})
+            continue
+        descriptors.append((path, descriptor, raw))
+    ordered = sorted(
+        descriptors,
+        key=lambda item: (_timestamp_value(item[1].get('registered_at'))
+                          or float('-inf'), item[1]['run_id']),
+        reverse=True)
+    retained = {descriptor['run_id'] for _path, descriptor, _raw in ordered[:keep]}
+    decisions = []
+    for path, descriptor, raw in descriptors:
+        run_id = descriptor['run_id']
+        try:
+            run = read_state(Path(descriptor['state_path']))['run']
+        except (OSError, ValueError, KeyError, TypeError, Degraded):
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'state_unreadable'})
+            continue
+        status = run.get('status')
+        if not isinstance(status, str) or status not in RUN_STATES:
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'state_invalid_status'})
+            continue
+        if status not in TERMINAL_RUN_STATES or run_id in retained:
+            decisions.append({'action': 'kept', 'run_id': run_id})
+            continue
+        stamp = _prune_age_basis(descriptor, run)
+        if stamp is None:
+            decisions.append({'action': 'skipped', 'run_id': run_id,
+                              'reason': 'timestamp_missing'})
+            continue
+        if stamp >= cutoff:
+            decisions.append({'action': 'kept', 'run_id': run_id})
+            continue
+        if dry_run:
+            decisions.append({'action': 'pruned', 'run_id': run_id})
+            continue
+        decisions.append({'action': 'archive', 'run_id': run_id,
+                          'selection': (path, descriptor, raw)})
+    failed = False
+    for decision in decisions:
+        action = decision['action']
+        run_id = decision['run_id']
+        if action == 'skipped':
+            report['skipped'].append({'run_id': run_id, 'reason': decision['reason']})
+        elif action == 'kept':
+            report['kept'].append(run_id)
+        elif action == 'pruned':
+            report['pruned'].append(run_id)
+        else:
+            path, descriptor, raw = decision['selection']
+            outcome, reason = _archive_selected(home, path, descriptor, raw,
+                                                cutoff, retained)
+            if outcome == 'kept':
+                report['kept'].append(run_id)
+            elif outcome == 'skipped':
+                report['skipped'].append({'run_id': run_id, 'reason': reason})
+            elif outcome == 'ok':
+                report['pruned'].append(run_id)
+                report['archived'].append(run_id)
+            elif outcome == 'conflict':
+                report['skipped'].append(
+                    {'run_id': run_id, 'reason': 'archive_conflict'})
+            else:
+                report['skipped'].append(
+                    {'run_id': run_id, 'reason': 'archive_failed'})
+                failed = True
+    return report, failed
+
+
+def _prune_summary(report, dry_run):
+    lines = []
+    if dry_run:
+        lines.append('Dry run: no file was created, moved or deleted.')
+    for key in ('pruned', 'archived', 'kept'):
+        lines.append(key + ': ' + (', '.join(report[key]) or 'none'))
+    if report['skipped']:
+        lines.append('skipped:')
+        lines.extend('  ' + item['run_id'] + ': ' + item['reason']
+                     for item in report['skipped'])
+    else:
+        lines.append('skipped: none')
+    return '\n'.join(lines)
+
+
+def _prune_command(args):
+    try:
+        home = registry_home(args.registry)
+    except Degraded as error:
+        raise ValueError(str(error))
+    report, failed = prune(home, args.older_than_days, args.keep, args.dry_run)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False))
+    else:
+        print(_prune_summary(report, args.dry_run))
+    return 1 if failed else 0
 
 
 def read_server(home):
@@ -730,9 +1288,9 @@ def mutate(directory, command, data, event_id, source, effective=False,
     if command == 'worker' and data.get('start_confirmation') == 'unsupported':
         data['start_confirmation'] = 'unknown'
     if command == 'init':
-        required(data, 'id', 'target_repo', 'mode')
-        if data['mode'] not in {'REAL', 'DEMO'}:
-            raise ValueError('mode must be REAL or DEMO')
+        required(data, *REQUIRED_FIELDS['init'])
+        if data['mode'] not in ENUM_FIELDS['mode']:
+            raise ValueError('mode must be one of ' + _choices(ENUM_FIELDS['mode']))
         guard_target(directory, data['target_repo'])
     with locked(directory, timeout):
         exists = (directory / 'progress.json').exists()
@@ -758,7 +1316,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
         elif state is None:
             raise ValueError('initialize this run first')
         elif command == 'task':
-            required(data, 'id')
+            required(data, *REQUIRED_FIELDS['task'])
             task = state['tasks'].setdefault(data['id'], {
                 'id': data['id'], 'title': data['id'], 'dependencies': [], 'status': 'unknown',
                 'blocked_reason': '', 'pending_decision': '', 'provisional': False,
@@ -770,9 +1328,9 @@ def mutate(directory, command, data, event_id, source, effective=False,
             state['deliveries'].setdefault(data['id'], {
                 'task_id': data['id'], **{key: None for key in DELIVERY}})
         elif command == 'worker':
-            required(data, 'id')
+            required(data, *REQUIRED_FIELDS['worker'])
             if data['id'] not in state['workers']:
-                required(data, 'task_id', 'dispatch_id', 'attempt')
+                required(data, *WORKER_IDENTITY)
                 if source != 'coordinator' or data['task_id'] not in state['tasks']:
                     raise ValueError('coordinator must register worker against an existing task')
                 state['workers'][data['id']] = {
@@ -781,7 +1339,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
                     'parent_worker_id': data.get('parent_worker_id')}
             worker = state['workers'][data['id']]
             if source == 'worker':
-                required(data, 'task_id', 'dispatch_id', 'attempt')
+                required(data, *WORKER_IDENTITY)
             for field in ('task_id', 'dispatch_id', 'attempt', 'parent_worker_id'):
                 if field in worker and field in data and worker[field] != data[field]:
                     raise ValueError('worker identity is immutable; register a new id for each attempt')
@@ -796,7 +1354,7 @@ def mutate(directory, command, data, event_id, source, effective=False,
             if effective:
                 worker['last_effective_progress'] = time
         elif command == 'delivery':
-            required(data, 'task_id')
+            required(data, *REQUIRED_FIELDS['delivery'])
             if data['task_id'] not in state['tasks']:
                 raise ValueError('delivery task must exist')
             item = state['deliveries'].setdefault(data['task_id'], {
@@ -804,14 +1362,14 @@ def mutate(directory, command, data, event_id, source, effective=False,
             item.update(data)
             item['verified_at'] = time
         elif command == 'artifact':
-            required(data, 'id', 'kind', 'label', 'reference')
+            required(data, *REQUIRED_FIELDS['artifact'])
             if 'task_id' in data and data['task_id'] not in state['tasks']:
                 raise ValueError('artifact task must exist')
             state['artifacts'][data['id']] = {**data, 'recorded_at': time}
         elif command == 'event':
-            required(data, 'type', 'summary')
+            required(data, *REQUIRED_FIELDS['event'])
             if source == 'worker':
-                required(data, 'worker_id', 'task_id', 'dispatch_id', 'attempt')
+                required(data, *EVENT_REPORT_FIELDS)
                 reported_worker = state['workers'].get(data['worker_id'], {})
                 if any(data[key] != reported_worker.get(key) for key in ('task_id', 'dispatch_id', 'attempt')):
                     raise ValueError('report identity does not match registered worker attempt')
@@ -826,9 +1384,10 @@ def mutate(directory, command, data, event_id, source, effective=False,
                     state['workers'][data['worker_id']]['last_effective_progress'] = time
         elif command in {'run', 'end'}:
             if command == 'end':
-                required(data, 'status')
-                if data['status'] not in {'completed', 'failed', 'paused', 'cancelled'}:
-                    raise ValueError('end status must be completed/failed/paused/cancelled')
+                required(data, *REQUIRED_FIELDS['end'])
+                if data['status'] not in SCHEMA_STATUS_ENUMS['end']:
+                    raise ValueError('end status must be one of '
+                                     + _choices(SCHEMA_STATUS_ENUMS['end']))
                 state['run']['ended_at'] = time
             state['run'].update(data)
         state['run']['updated_at'] = time
@@ -905,37 +1464,45 @@ def text_label(value):
     return value.strip() if isinstance(value, str) else ''
 
 
-def readable_run_labels(descriptors):
-    """Map each Run ID to a short readable label without exposing any state path.
+def readable_run_views(descriptors):
+    """Return ``(run_labels, run_states)`` from one state read per descriptor.
 
     A descriptor label wins. Historical Runs registered before labels were populated
-    fall back to the title of the Run's own state; any failure to read that state
-    silently omits the mapping, because /health must stay available and path-free.
+    fall back to the title of the Run's own state. ``run_states`` maps a Run to its
+    ``run.status`` only when that status belongs to ``RUN_STATES``. Any failure to read
+    a state silently omits the status, and omits the label too unless the descriptor
+    carries one, because /health must stay available and path-free. The label and the
+    status come from the same parsed snapshot; a Run is never parsed twice.
     """
-    labels = {}
+    labels, states = {}, {}
     for descriptor in descriptors:
         label = text_label(descriptor.get('label', ''))
-        if not label:
-            try:
-                title = read_state(state_path(descriptor['state_path']))['run'].get('title')
-            except Exception:  # a historical state may be missing, unreadable or malformed
-                continue
-            label = text_label(title)
+        try:
+            run = read_state(Path(descriptor['state_path']))['run']
+        except Exception:  # a historical state may be missing, unreadable or malformed
+            run = None
+        if run is not None:
+            if not label:
+                label = text_label(run.get('title'))
+            status = run.get('status')
+            if isinstance(status, str) and status in RUN_STATES:
+                states[descriptor['run_id']] = status
         if label:
             labels[descriptor['run_id']] = label[:RUN_LABEL_MAX_CHARS]
-    return labels
+    return labels, states
 
 
 def serve(directory, port, stale_seconds, registry=None):
     """Serve one Run (``serve --state``) or the registered Runs (``serve --registry``).
 
     The HTTP surface is read-only, IPv4-localhost-only and exposes three GET routes:
-    ``/health`` (service plus registered Run IDs), ``/?run=<id>`` (the page, which lists
-    every registered Run and renders the selected one) and ``/snapshot?run=<id>`` (that
-    Run's read-only snapshot). It renders ``progress.json`` and the local registry
-    descriptors only: it never reads or serves arbitrary files or file contents, never
-    writes, and never names a state path in a response. Unreadable descriptors are
-    reported as unavailable and are never deleted.
+    ``/health`` (service, registered Run IDs, readable labels and projected states),
+    ``/?run=<id>`` (the page, which lists every registered Run and renders the selected
+    one) and ``/snapshot?run=<id>`` (that Run's read-only snapshot). It renders
+    ``progress.json`` and the local registry descriptors only: it never reads or serves
+    arbitrary files or file contents, never writes, and never names a state path in a
+    response. The service and ``open`` never delete or repair a descriptor; only an
+    explicit ``registry prune`` archives an ended Run.
     """
     page = ASSET.read_bytes()
     started_at = now()
@@ -948,10 +1515,11 @@ def serve(directory, port, stale_seconds, registry=None):
                 descriptors = discover(registry)
             except (OSError, ValueError, Degraded):
                 descriptors = []
+        labels, states = readable_run_views(descriptors)
         return {'ok': True, 'protocol_version': PROTOCOL_VERSION, 'pid': os.getpid(),
                 'started_at': started_at,
                 'runs': [descriptor['run_id'] for descriptor in descriptors],
-                'run_labels': readable_run_labels(descriptors)}
+                'run_labels': labels, 'run_states': states}
 
     class Handler(BaseHTTPRequestHandler):
         def host_allowed(self):
@@ -1041,7 +1609,9 @@ def _state_required(value):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, epilog=SCHEMA_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--state', help='external audit directory, separate per run')
     parser.add_argument('--registry', help='the singleton progress home (overrides $ORCA_PROGRESS_HOME)')
     parser.add_argument('--label', default='', help='optional human label for this Run descriptor')
@@ -1053,7 +1623,11 @@ def main():
                         help='seconds to wait for the snapshot lock (default 2)')
     parser.add_argument('--bookkeeping', action='store_true',
                         help='reconciliation/backfill write; do not refresh freshness')
-    sub = parser.add_subparsers(dest='command', required=True)
+    # A mutation needs a command; printing the schema does not, so this flag is parsed before
+    # the required subcommand and is pure static output.
+    parser.add_argument('--print-schema', action='store_true',
+                        help='print this script\'s JSON field schema and exit')
+    sub = parser.add_subparsers(dest='command', required=False)
     for command in FIELDS:
         item = sub.add_parser(command)
         item.add_argument('--data', required=True, help='JSON object, or - to read JSON from stdin')
@@ -1062,12 +1636,31 @@ def main():
         item.add_argument('--effective', action='store_true', help='coordinator observed meaningful progress')
     sub.add_parser('show')
     sub.add_parser('open', help='start or adopt the per-user localhost viewer and open it in the browser')
+    registry = sub.add_parser(
+        'registry', help='explicit registry maintenance; never run automatically')
+    registry_commands = registry.add_subparsers(dest='registry_command', required=True)
+    prune_parser = registry_commands.add_parser(
+        'prune', help='archive ended Runs and remove their descriptors')
+    prune_parser.add_argument('--older-than-days',
+                              default=str(PRUNE_DEFAULT_OLDER_THAN_DAYS),
+                              help='archive ended Runs whose age basis is older (default 7)')
+    prune_parser.add_argument('--keep', default=str(PRUNE_DEFAULT_KEEP),
+                              help='always retain the newest N descriptors (default 10)')
+    prune_parser.add_argument('--dry-run', action='store_true',
+                              help='report the decision without changing any file')
+    prune_parser.add_argument('--json', action='store_true', default=argparse.SUPPRESS,
+                              help='machine-readable prune report')
     viewer = sub.add_parser('serve')
     viewer.add_argument('--registry', dest='serve_registry',
                         help='serve every registered Run from this progress home')
     viewer.add_argument('--port', type=int, default=8765)
     viewer.add_argument('--stale-seconds', type=int, default=300)
     args = parser.parse_args()
+    if args.print_schema:
+        print(json.dumps(schema(), ensure_ascii=False, indent=2))
+        return 0
+    if args.command is None:
+        parser.error('a command is required (or --print-schema)')
     # ``serve --registry DIR`` is the documented spelling; the global flag is equivalent.
     if getattr(args, 'serve_registry', None):
         if args.registry and args.registry != args.serve_registry:
@@ -1078,6 +1671,8 @@ def main():
             raise ValueError('lock-timeout must be nonnegative')
         if args.startup_timeout < 0:
             raise ValueError('startup-timeout must be nonnegative')
+        if args.command == 'registry':
+            return _prune_command(args)
         if args.command == 'serve' and args.registry and args.state:
             raise ValueError('serve takes either --state or --registry, not both')
         if args.command == 'serve' and args.registry:

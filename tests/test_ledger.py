@@ -654,6 +654,236 @@ class RetentionTests(LedgerTestCase):
                                                       separators=(",", ":")) + "\n")
 
 
+class RetentionRecoveryTests(LedgerTestCase):
+    """A recovery path reads the whole history, not only what retention left active.
+
+    Setup appends use a window so wide that the 2000-dated records stay active, so the
+    "before" reading is taken over the active file. One later append under a 30-day window
+    makes retention move that history into ``archive/``. Nothing sleeps and no assertion
+    depends on the wall clock: the record timestamps are fixed literals.
+    """
+
+    OLD = "2000-01-01T00:00:00Z"
+    FRESH = "2999-01-01T00:00:00Z"
+    LEVELS = ("implemented", "integrated", "merged", "tracker_closed")
+    PASSED_CHECKS = [{"name": "tests", "command": "python3 -m unittest",
+                      "result": "pass", "evidence_ref": "evidence/tests.log"}]
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = load_ledger(SKILL_DIRS[0])
+        spec = importlib.util.spec_from_file_location(
+            "closeout_under_test", SKILL_DIRS[0] / "scripts" / "closeout.py")
+        assert spec is not None and spec.loader is not None
+        self.closeout = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.closeout)
+        self.keep_env = {
+            **self.env,
+            "ORCA_LEDGER_RETENTION_DAYS": "300000",
+            "ORCA_LEDGER_RETENTION_BYTES": str(1024 * 1024 * 1024),
+        }
+        self.retain_env = {
+            **self.env,
+            "ORCA_LEDGER_RETENTION_DAYS": "30",
+            "ORCA_LEDGER_RETENTION_BYTES": str(1024 * 1024),
+        }
+
+    def acceptance_record(self, gate, observed_at=None):
+        levels = {
+            name: {"value": True, "evidence_ref": "evidence/" + name + ".json",
+                   "at": self.OLD}
+            for name in self.LEVELS
+        }
+        return make_record(
+            kind="acceptance", action="acceptance", state="completed",
+            idempotency="none", request_id="",
+            subject={"ticket": "39", "pr": 12, "attempt": 1},
+            observed_at=observed_at or self.OLD,
+            detail={
+                "ticket": "39", "gate": [gate], "attempt": 1,
+                "pr": {"number": 12, "head_at_acceptance": "a" * 40, "base": "main"},
+                "accepted_sha": "a" * 40,
+                "checks": self.PASSED_CHECKS,
+                "review": {"axis": ["standards", "spec"], "result": "pass",
+                           "evidence_ref": "evidence/review.md"},
+                "levels": levels,
+                "decided_by": "coordinator",
+                "decided_at": self.OLD,
+                "answer_location": "tickets/task-39-answer.md",
+            })
+
+    def append_with(self, record, env):
+        result = self.run_cli("append", "--run-id", RUN_ID,
+                              "--record", json.dumps(record), env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def archive_the_history(self):
+        """Append one fresh record under the 30-day window, moving OLD records out."""
+        trigger = make_record(
+            kind="health", action="health", state="observed", idempotency="none",
+            request_id="", observed_at=self.FRESH, detail={})
+        self.append_with(trigger, self.retain_env)
+        return trigger
+
+    def archived_records(self):
+        records = []
+        directory = self.ledger_file().parent / "archive"
+        for path in sorted(directory.glob("*.jsonl")):
+            records.extend(json.loads(line) for line in path.read_text().splitlines()
+                           if line.strip())
+        return records
+
+    def acceptance_show(self, env=None):
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "acceptance.py"),
+             "show", "--run-id", RUN_ID, "--ticket", "39"],
+            env=env or self.env, cwd=str(self.root), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def chain_resume(self, env=None):
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / "scripts" / "chain.py"),
+             "resume", "--run-id", RUN_ID, "--ledger-home", str(self.home)],
+            env=env or self.env, cwd=str(self.root), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_chain_resume_is_identical_across_archival(self):
+        for gate in ("G-docs", "G-spec", "G-tickets", "G-impl"):
+            self.append_with(self.acceptance_record(gate), self.keep_env)
+
+        before = self.chain_resume()
+        self.assertEqual(before["landed"], ["grill", "spec", "tickets", "build"])
+        self.assertEqual(before["next"]["position"], "review")
+
+        self.archive_the_history()
+
+        after = self.chain_resume()
+        self.assertEqual(after["landed"], before["landed"])
+        self.assertEqual(after["next"], before["next"])
+        self.assertEqual(after["problems"], [])
+
+    def test_effective_records_merge_archive_and_active_in_write_order(self):
+        first = make_record(observed_at=self.OLD, detail={"n": 1})
+        second = make_record(observed_at=self.OLD, detail={"n": 2})
+        self.append_with(first, self.keep_env)
+        self.append_with(second, self.keep_env)
+        trigger = self.archive_the_history()
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertIsNone(unknown)
+        self.assertEqual([record["record_id"] for record in records],
+                         [first["record_id"], second["record_id"],
+                          trigger["record_id"]])
+
+        # A crash between the archive write and the active rewrite can leave one record in
+        # two archive files; the effective history must still hold it once.
+        archive = sorted((self.ledger_file().parent / "archive").glob("ledger-*.jsonl"))[0]
+        archive.with_name("duplicate.jsonl").write_bytes(archive.read_bytes())
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertIsNone(unknown)
+        self.assertEqual([record["record_id"] for record in records],
+                         [first["record_id"], second["record_id"],
+                          trigger["record_id"]])
+
+    def test_an_unreadable_archive_path_degrades_to_unknown(self):
+        self.append_with(self.acceptance_record("G-merge"), self.keep_env)
+        # A regular file where ``archive/`` belongs cannot be listed; it must not read as
+        # "no archived history".
+        archive = self.ledger_file().parent / "archive"
+        archive.write_text("", encoding="utf-8")
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertTrue(records)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertIn("archive", unknown["reason"])
+
+    def test_a_corrupt_archive_degrades_to_unknown(self):
+        self.append_with(self.acceptance_record("G-merge"), self.keep_env)
+        self.archive_the_history()
+        archive = sorted((self.ledger_file().parent / "archive").glob("ledger-*.jsonl"))[0]
+        with archive.open("a", encoding="utf-8") as stream:
+            stream.write("{not json}\n")
+
+        records, unknown = self.ledger.effective_records(RUN_ID, home=str(self.home))
+        self.assertTrue(records)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertIn(archive.name, unknown["reason"])
+
+        shown = self.acceptance_show()
+        self.assertEqual(shown["tickets"]["39"]["history"]["state"], "unknown")
+        for level in self.LEVELS:
+            self.assertIsNone(shown["tickets"]["39"]["levels"][level]["value"], level)
+
+        resumed = self.chain_resume()
+        self.assertEqual(resumed["state"], "unknown")
+        self.assertIsNone(resumed["next"])
+        self.assertIn(archive.name, resumed["reason"])
+
+    def test_closeout_reads_an_archived_acceptance_record(self):
+        record = self.acceptance_record("G-merge")
+        self.append_with(record, self.keep_env)
+        self.archive_the_history()
+
+        result = self.closeout.reconcile(
+            RUN_ID, {}, home=str(self.home),
+            answer_location="tickets/task-39-answer.md")
+        self.assertTrue(result["recorded"], result)
+        entries = result["checklist"]["rows"][0]["detail"]["entries"]
+        self.assertEqual([entry["record_id"] for entry in entries],
+                         [record["record_id"]])
+
+    def test_ledger_reconcile_reads_archived_intents_and_results(self):
+        intent = make_record(
+            kind="intent", action="worker-start", state="intent",
+            subject={"task_id": "task-1", "attempt": 1}, idempotency="joinable",
+            request_id=str(uuid.uuid4()), observed_at=self.OLD,
+            detail={"expected_effect": "dispatch"})
+        result = make_record(
+            kind="result", action="worker-start", state="completed",
+            subject=dict(intent["subject"]), idempotency="joinable",
+            request_id=intent["request_id"], observed_at=self.OLD, detail={})
+        self.append_with(intent, self.keep_env)
+        self.append_with(result, self.keep_env)
+        self.archive_the_history()
+
+        orca = orca_section(workers={
+            "state": "ok", "reason": "",
+            "rows": [{"task_id": "task-1", "dispatch_id": "d1", "attempt": 1,
+                      "worktree": "/tmp/worktree"}],
+        })
+        report = self.ledger.reconcile(RUN_ID, authority(orca=orca),
+                                       home=str(self.home), replay=False)
+        self.assertGreaterEqual(report["counts"]["matched"], 1)
+        self.assertEqual(report["counts"]["orphan_intent"], 0)
+
+    def test_acceptance_levels_are_identical_across_archival(self):
+        record = self.acceptance_record("G-merge")
+        self.append_with(record, self.keep_env)
+
+        before = self.acceptance_show()
+        before_ticket = before["tickets"]["39"]
+        for level in self.LEVELS:
+            self.assertTrue(before_ticket["levels"][level]["value"], level)
+
+        self.archive_the_history()
+        self.assertIn(record["record_id"],
+                      [item["record_id"] for item in self.archived_records()])
+        self.assertNotIn(record["record_id"],
+                         [item["record_id"] for item in self.records_on_disk()])
+        # ``ledger show`` keeps its documented active view; only the recovery paths
+        # read the whole history.
+        self.assertNotIn(record["record_id"],
+                         [item["record_id"] for item in self.read()])
+
+        after = self.acceptance_show()
+        self.assertEqual(after["tickets"], before["tickets"])
+        for level in self.LEVELS:
+            self.assertTrue(after["tickets"]["39"]["levels"][level]["value"], level)
+
+
 class PathSafetyTests(LedgerTestCase):
     """The ledger lives outside every repository, never through a symlink."""
 
@@ -982,6 +1212,19 @@ class ClassifierTests(LedgerTestCase):
         self.assertEqual(found[0]["intent_record_id"], intent["record_id"])
         self.assertIn("orca.request-show", [item["source"] for item in found[0]["evidence"]])
         self.assertEqual(found[0]["repairs"], [], "W1 never replays by itself")
+        self.assertEqual(found[0]["decision"]["class"], "orphan_intent")
+
+    def test_a_real_task_row_never_matches_an_unrelated_intent(self):
+        """The id alias must not turn a true orphan into a false effect."""
+        task = self.ledger._normalized_task_row(
+            {"id": "task_other", "status": "ready", "title": "another ticket"})
+        intent = intent_record(subject={"task_id": "task_missing", "attempt": 1})
+        report = self.classify([intent], authority(orca=orca_section(
+            request_show={intent["request_id"]: {"state": "absent"}},
+            tasks={"state": "ok", "reason": "", "rows": [task]})))
+
+        found = self.outcomes(report, "orphan_intent")
+        self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["decision"]["class"], "orphan_intent")
 
     def test_absent_without_an_intent_is_not_a_judgment(self):
@@ -1813,6 +2056,125 @@ class LiveAuthorityTests(LedgerTestCase):
             [call[call.index("--dispatch") + 1] for call in calls
              if call[1] == "worker-show"],
             ["dispatch-2", "dispatch-1"])
+
+    def test_flat_next_cursor_pagination_reads_every_worker_page(self):
+        """The live CLI publishes the cursor flat on the result, not under ``page``."""
+        fake = self.fake(
+            worker_pages=[
+                {"workers": [worker_row(task_id="task-1", dispatch_id="dispatch-1")]},
+                {"workers": [worker_row(task_id="task-2", dispatch_id="dispatch-2")]},
+            ],
+            worker_show={
+                "dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"},
+                "dispatch-2": {"dispatchId": "dispatch-2", "state": "ready"},
+            },
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "ok")
+        self.assertEqual([row["dispatch_id"] for row in workers["rows"]],
+                         ["dispatch-1", "dispatch-2"])
+        calls = [call for call in fake.call_argv() if call[1] == "worker-list"]
+        self.assertEqual(len(calls), 2, "the second page was never requested")
+        self.assertEqual(calls[1][calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_the_legacy_page_object_pagination_shape_is_still_followed(self):
+        """Older CLIs nest ``hasMore`` and ``nextCursor`` under ``result.page``."""
+        fake = self.fake(
+            worker_pages=[
+                {"workers": [worker_row(task_id="task-1", dispatch_id="dispatch-1")],
+                 "page": {"hasMore": True, "nextCursor": "cursor-1"}},
+                {"workers": [worker_row(task_id="task-2", dispatch_id="dispatch-2")],
+                 "page": {"hasMore": False, "nextCursor": None}},
+            ],
+            worker_show={
+                "dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"},
+                "dispatch-2": {"dispatchId": "dispatch-2", "state": "ready"},
+            },
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "ok")
+        self.assertEqual([row["dispatch_id"] for row in workers["rows"]],
+                         ["dispatch-1", "dispatch-2"])
+        calls = [call for call in fake.call_argv() if call[1] == "worker-list"]
+        self.assertEqual(len(calls), 2, "the legacy cursor was not followed")
+        self.assertEqual(calls[1][calls[1].index("--cursor") + 1], "cursor-1")
+
+    def test_a_malformed_page_object_without_a_flat_cursor_is_unknown_not_ok(self):
+        """Neither shape is readable: a non-object ``page`` is not the final page."""
+        fake = self.fake(
+            worker_pages=[{"workers": [worker_row()], "page": None}],
+            task_pages=[{"tasks": []}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        workers = self.ledger.validated_authority(
+            adapter.snapshot(RUN_ID, []))["orca"]["workers"]
+
+        self.assertEqual(workers["state"], "unknown")
+        self.assertEqual(workers["rows"], [])
+        self.assertIn("neither result.page nor result.nextCursor", workers["reason"])
+        self.assertIn("saw: page, workers", workers["reason"])
+
+    def test_a_real_task_row_joins_by_its_id_when_normalized(self):
+        """The live task row carries ``id``; it is the Orca join key."""
+        task_id = "task_live1"
+        fake = self.fake(
+            worker_pages=[{"workers": [worker_row(task_id=task_id,
+                                                  dispatch_id="dispatch-1")]}],
+            worker_show={"dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"}},
+            task_pages=[{"tasks": [{"id": task_id, "status": "ready",
+                                    "title": "issue-59"}]}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        snapshot = self.ledger.validated_authority(adapter.snapshot(RUN_ID, []))
+        task = snapshot["orca"]["tasks"]["rows"][0]
+
+        self.assertEqual(task["orca_task_id"], task_id)
+        self.assertEqual(self.ledger._task_join_key(task), task_id)
+        self.assertTrue(self.ledger._row_matches_task(task, {"task_id": task_id}),
+                        "the task must join to the worker row's task id")
+
+        tasks_only = json.loads(json.dumps(snapshot))
+        tasks_only["orca"]["workers"]["rows"] = []
+        probe = self.ledger._probe(
+            tasks_only, intent_record(subject={"task_id": task_id, "attempt": 1}))
+        self.assertTrue(probe["observable"])
+        self.assertTrue(probe["effect"], "the real task row is the only proof here")
+
+    def test_an_explicit_orca_task_id_is_never_overwritten_by_the_id_alias(self):
+        row = self.ledger._normalized_task_row(
+            {"id": "task_live", "orcaTaskId": "task_explicit", "status": "ready"})
+        self.assertEqual(row["task_id"], "task_live")
+        self.assertEqual(row["orca_task_id"], "task_explicit")
+
+    def test_the_live_reads_request_json_and_task_list_carries_no_limit(self):
+        intent = intent_record()
+        fake = self.fake(
+            request_show={intent["request_id"]: {"state": "completed"}},
+            worker_pages=[{"workers": [worker_row()]}],
+            worker_show={"dispatch-1": {"dispatchId": "dispatch-1", "state": "ready"}},
+            task_pages=[{"tasks": [task_row()]}],
+        )
+        adapter = self.ledger.LiveAuthority(orca_cli=str(fake.path), **self.hosts())
+        adapter.snapshot(RUN_ID, [intent])
+
+        by_kind = {}
+        for call in fake.call_argv():
+            by_kind.setdefault(call[1], []).append(call)
+        for kind in ("request-show", "worker-list", "task-list", "worker-show"):
+            with self.subTest(kind=kind):
+                self.assertTrue(by_kind.get(kind), kind + " was never issued")
+                for call in by_kind[kind]:
+                    self.assertIn("--json", call)
+        for call in by_kind["task-list"]:
+            self.assertNotIn("--limit", call)
 
     def test_a_failed_request_show_is_unknown_not_absent(self):
         intent = intent_record()

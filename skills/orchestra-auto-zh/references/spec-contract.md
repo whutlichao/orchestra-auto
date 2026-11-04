@@ -53,7 +53,7 @@ Target：<文件/模块>
 Change：<要产出的具体结果>
 Constraints：<不许碰的边界；术语用 codebase-design 词汇>
 Ownership：<本票可编辑范围；票据正本在 worktree 内，你负责 Status 流转与 Answer 追加>
-Observable acceptance：<适用的测试命令与可观察结果；修复类红→绿证据；需要时含 code-review 双轴。项目文件有改动时：解析并使用本机 pr skill 编写 PR body，推分支，以 --body-file 创建或更新 PR，再把 PR 号、body 路径与 CI 读数记入 GitHub 与仓库外台账，不为它们追加项目提交（用户或仓库明确要求把该事实写进仓库时，以该规则为准）。最后发送并核实 worker_done 回执>
+Observable acceptance：<适用的测试命令与可观察结果；修复类红→绿证据；需要时含 code-review 双轴。项目文件有改动时：解析并使用本机 pr skill 编写 PR body，推分支，以 --body-file 创建或更新 PR，再把 PR 号、body 路径与 CI 读数记入 GitHub 与仓库外台账，不为它们追加项目提交（用户或仓库明确要求把该事实写进仓库时，以该规则为准）。PR 的目标仓库与 base 要写进 spec，这也是本行的一部分：写明 PR 落到哪个仓库、那边的 base 是哪个分支——fork 时是 upstream 仓库的默认分支，绝不是 fork 自己的 main——不得留给 gh 默认解析；形态是 `gh pr create --repo <upstream-owner/repo> --base <默认分支> --head <fork-owner>:<branch>`。最后发送并核实 worker_done 回执>
 提问通道：orchestration ask（禁 AskUserQuestion）。
 ```
 
