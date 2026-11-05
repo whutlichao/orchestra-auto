@@ -23,10 +23,9 @@ tdd / diagnosing-bugs / code-review，于是「不用其他 skills」的故障�
 ```text
 【BEHAVIOR RULE（原样遵守，不得转述或删减）】
 1. 提问通道一律 orchestration ask，禁 AskUserQuestion；open 决策 ask 回来，不编造。
-2. 你只编辑本票范围内的文件与代码。开工后、每次测试后、换文件前、完成前，用 live preamble
-   的可执行文件执行 check --terminal <自己的真实句柄> --json，读取并处理 coordinator follow-up。
-   heartbeat 按 preamble 节奏；ask 超时续等同一 message ID，不重复提问、不自行替人决策。
-   收尾顺序：检查 follow-up → 写 Answer/证据 → 项目改动提交、推送并创建或更新 PR
+2. 你只编辑本票范围内的文件与代码。遵循 live preamble 处理原生消息及其要求的 check。
+   仅在 preamble 要求时按其节奏 heartbeat；ask 超时续等同一 message ID，不重复提问、不自行替人决策。
+   收尾顺序：处理已送达的 follow-up → 写 Answer/证据 → 项目改动提交、推送并创建或更新 PR
    → PR 号、PR body 路径与 PR head 的 CI 读数记入 GitHub 与本轮仓库外台账；不为携带
    这些事实追加项目提交，交付文件在创建 PR 前已定稿 → 从自己的终端按 live preamble 原命令
    发送 worker_done → 核对成功回执 → 结束回合。

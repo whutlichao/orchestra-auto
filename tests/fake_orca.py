@@ -176,25 +176,39 @@ def page_for(pages, cursor, rows_key):
                 "Showing a page of rows, newest first; more are on later pages."]
     emit(result)
 
-if kind == "check":
-    if "--ack" in argv:
-        delivery_id = flag("--ack")
-        with open(ACKS, "a") as out:
-            out.write(delivery_id + "\\n")
-        emit({"acknowledged": delivery_id})
+if kind in ("check", "inbox"):
+    # Model the documented 1.4.248 semantics, not older unverified servers.
     responses = CONFIG.get("check") or [{"messages": [], "deliveryId": "delivery_empty"}]
     index = counter(CHECK_COUNTER)
-    if "--wait" not in argv:
-        bump(CHECK_COUNTER, index + 1)
-    if CONFIG.get("check_keepalive") and "--wait" in argv:
-        sys.stderr.write(json.dumps({"_keepalive": True}) + "\\n")
-    index = min(index, len(responses) - 1)
-    response = responses[index]
+    if kind == "inbox" or "--all" in argv:
+        emit({"messages": [m for batch in responses for m in batch.get("messages", [])]})
+    if "--ack" in argv:
+        emit({"acknowledged": flag("--ack")})  # optional legacy no-op here
+    requests_path = CHECK_COUNTER + ".requests"
+    try:
+        requests = json.loads(open(requests_path).read())
+    except (OSError, ValueError):
+        requests = {}
+    retry = flag("--retry-request")
+    if retry:
+        if retry not in requests:
+            fail("unknown request")
+        emit(requests[retry])
+    response = responses[index] if index < len(responses) else {"messages": []}
     if isinstance(response, dict) and "fail" in response:
         fail(response["fail"])
     if isinstance(response, str):
         sys.stdout.write(response)
         sys.exit(0)
+    if CONFIG.get("check_keepalive") and "--wait" in argv:
+        sys.stderr.write(json.dumps({"_keepalive": True}) + "\\n")
+    if "--peek" not in argv:
+        bump(CHECK_COUNTER, index + 1)
+        request_id = "request-" + str(index)
+        response = dict(response, requestId=request_id)
+        requests[request_id] = response
+        with open(requests_path, "w") as out:
+            json.dump(requests, out)
     emit(response)
 
 if kind == "worker-list":

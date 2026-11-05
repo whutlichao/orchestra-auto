@@ -24,9 +24,9 @@ not a test hook: ``health evaluate`` reads a signals snapshot (or one inbox obse
 ``--observation``), writes the ``kind: health`` ledger record through the ledger module's
 append interface, and prints the machine result.
 
-The inbox loop mounts this: it writes one lightweight observation per wake, and
-``observation_signals`` turns that observation into the snapshot the evaluator reads — copying
-only what the consumer actually observed, so everything else aggregates as ``unknown``.
+``observation_signals`` translates historical inbox observations for audit. The old
+consumer is retired; current signals must come from independently verified evidence,
+and missing evidence aggregates as ``unknown``.
 
 Defaults are configurable, never product constants. In particular the heartbeat window is
 the live preamble cadence × 2 plus a grace; without a cadence the heartbeat signal is
@@ -69,7 +69,7 @@ REQUIRED_INPUTS = SIGNALS + ("watch",)
 OPTIONAL_INPUTS = ("pending", "binding")
 
 #: What counts as **effective** progress: a non-heartbeat message, an artifact change, a
-#: commit or a stage change. A heartbeat is liveness, never progress. The inbox loop and this
+#: commit or a stage change. A heartbeat is liveness, never progress. The historical inbox loop and this
 #: module share the vocabulary so the observation it writes means the same thing here.
 PROGRESS_MARKERS = ("message", "artifact", "commit", "stage")
 
@@ -933,12 +933,8 @@ def evaluate(signals, config=None):
 # The inbox observation → signals snapshot seam
 # ---------------------------------------------------------------------------
 #
-# The consumer writes one lightweight observation per wake into its own ``state.json`` and
-# publishes it in the wake payload; the coordinator transcribes it into the ledger and runs
-# one evaluation. ``observation_signals`` is that translation and nothing else: it copies the
-# facts the loop actually observed and omits the signals it cannot see, so they read as
-# ``unknown`` — the aggregate then says "this consumer alone cannot prove the Run healthy",
-# which is the truth. It never invents a field.
+# Translate historical consumer observations for audit. The retired loop no longer emits
+# them; absent signals remain ``unknown`` and historical state is not current evidence.
 
 
 def observation_signals(observation):

@@ -4,7 +4,7 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml/badge.svg)](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges without you. You interrupt for a decision or a one-way door — not between steps.
+An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges when you authorize it; a PR-only request stays open. You interrupt for a decision or a one-way door — not between steps.
 
 The chain is his, unchanged. What this repository adds is what a chain needs to run unattended on Orca: which step runs next, where the worker lands, what an artifact must carry before the next step consumes it, when a merge is automatic, and where a human has to interrupt. Two commands answer the first and third from the record instead of from memory: `scripts/chain.py resume` and `scripts/chain.py exit-check`.
 
@@ -37,7 +37,7 @@ Orca wraps one loop around a step of the chain:
 1. You say what you want.
 2. The coordinator picks one step and dispatches one worker, which runs it in a new top-level worktree.
 3. The ticket passes the gate for its type.
-4. A decision or a one-way door comes back to you; otherwise the coordinator merges the PR and syncs main.
+4. A decision or a one-way door comes back to you; otherwise the coordinator merges and syncs main when authorized; a PR-only request stays open.
 
 The next step is another lap: another worker, another new worktree. The spec names the skill's absolute path on disk; if the spec does not say it, the worker does not do it.
 
@@ -60,7 +60,7 @@ Neither is a verdict. They catch a missing section, never a wrong decision; the 
 | Who advances the next step | You invoke them one by one | The coordinator dispatches one worker per round; the worker runs that one skill |
 | Where the edit lands | The checkout the session is already in | Each task gets a new top-level worktree; an `implement-spec` implementer gets its own worktree and branch too |
 | When a human appears | You stay in the session and keep moving | Decision-class questions come back to you: deliverable shape, approach forks, scope, credentials, third parties, payment, manual approval, irreversible live-data operations. You also merge a one-way Merge Danger door |
-| How the work lands | However the target repo's tracker already does it | A project change opens a PR by default; once the gates pass and the door is two-way, the coordinator merges and syncs main |
+| How the work lands | However the target repo's tracker already does it | A project change opens a PR by default; when merge is authorized, the gates pass and the door is two-way, the coordinator merges and syncs main; a PR-only request stays open |
 
 Bug fixes, research, triage, terminology and process errors still use his skills — `diagnosing-bugs`, `research`, `triage`, `domain-modeling` and `retro`. A retro's candidates are written outside the target repository, and a human selects one before a worker lands it. Dispatch flags, the inbox, send-backs and the breakers live in [SKILL.md](skills/orchestra-auto/SKILL.md).
 
@@ -103,10 +103,10 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 | Node.js and `npx` | The community `skills` CLI runs through `npx`. Nothing else here needs Node. |
 | Orca | The [Orca](https://www.onorca.dev/) app with a reachable CLI. The skills call `orca orchestration worker-start`, `check`, `send`, `reply`, `worker-release` and friends. |
 | Matt Pocock's engineering skills | The worker reads his skills, not a copy from this repository: `grill-with-docs`, `to-spec`, `to-tickets`, `implement`, `implement-spec`, plus the `tdd` and `code-review` they call. The spec names the absolute path. |
-| Orca CLI executable | Resolved as Orca documents: `ORCA_CLI_COMMAND`, then the platform binary name, then `orca`. |
+| Orca CLI executable | Use `ORCA_CLI_COMMAND` if set; otherwise `orca-dev` in a dev session, `orca-ide` on Linux outside an Orca-managed session, or `orca` elsewhere. Never fall back after failure. |
 | The Orca `orchestration` guide | The skills fetch it with `orca skills get orchestration` and treat the live guide as authoritative over their own prose. |
 | Worker agents | Whatever TUI agents your Orca profile has enabled. The skills read the current default and disabled list rather than naming one. |
-| Python 3 | Used by the bundled inbox loop and the progress recorder/viewer (standard library only: POSIX file locks and `select`, so macOS/Linux/WSL). |
+| Python 3 | Used by the progress recorder/viewer (standard library only: POSIX file locks and `select`, so macOS/Linux/WSL). |
 
 **Capability boundary.** The planning chain is Matt Pocock's; this repository does not redefine what those skills do. The orchestration verbs are Orca's. The judgements — channel selection, gate choice, decision classification — are transferable, but the *commands* are not portable, and the skill does not pretend they are. If your CLI does not expose `orca orchestration`, this skill is not for you.
 
@@ -120,7 +120,7 @@ python3 -m unittest discover -s tests -v
 
 The exit status is the answer. The suite needs no network, credentials or particular machine, and it runs every module under `tests/`:
 
-- `tests/test_inbox_loop.py` drives the real inbox script against a stub CLI and asserts atomic persistence, duplicate-delivery handling, heartbeat-only acknowledgement, loud CLI failures, the single-consumer lock, the wake contract and child-process lifetime.
+- `tests/test_inbox_loop.py` models the 1.4.248 message contract and checks that retired entrypoints preserve old state and do not consume mail, plus retry, deduplication and inbox recovery.
 - `tests/test_progress_dashboard.py` covers the progress CLI and the localhost dashboard: snapshot and registry contracts, the singleton startup lock, protocol compatibility, fallbacks, Run isolation, the read-only HTTP surface and the `serve --state` DEMO path.
 - `tests/test_chain.py` covers chain-level resume and the two artifact floors: which acceptance records land a position, why a gap earlier in the chain wins, and what an exit check refuses to judge.
 - `tests/test_ledger.py`, `test_preflight.py`, `test_health.py`, `test_acceptance.py` and `test_closeout.py` cover the stability modules through their declared seams.
@@ -128,7 +128,7 @@ The exit status is the answer. The suite needs no network, credentials or partic
 
 ### Scenario checks
 
-Each language variant ships `evals/evals.json` with **38 prompt-level scenarios** covering channel routing, worker-slot resolution, start verification, gate choice, review arrangement, send-back judgement, decision classification, escalation, merge exceptions and the wake-then-reinstall contract. The last seven cover the stability workstreams; crash-window reconciliation is one scenario naming W1/W2/W3, so the total is 31 + 7 = 38. These are scenario checks, not end-to-end proof: they show whether an agent reasons the way the skill intends, not whether orchestration works against a live Orca host.
+Each language variant ships `evals/evals.json` with **38 prompt-level scenarios** covering channel routing, worker-slot resolution, start verification, gate choice, review arrangement, send-back judgement, decision classification, escalation, merge exceptions and the native wake and recovery contract. The last seven cover the stability workstreams; crash-window reconciliation is one scenario naming W1/W2/W3, so the total is 31 + 7 = 38. These are scenario checks, not end-to-end proof: they show whether an agent reasons the way the skill intends, not whether orchestration works against a live Orca host.
 
 ### Entrypoint size and activation cost
 
@@ -136,8 +136,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 23,129 (−23.4%) | 7,552 → 5,782 |
-| Chinese | 24,359 → 20,066 (−17.6%) | 6,089 → 5,016 |
+| English | 30,208 → 22,624 (−25.1%) | 7,552 → 5,656 |
+| Chinese | 24,359 → 19,649 (−19.3%) | 6,089 → 4,912 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 
@@ -149,7 +149,7 @@ A test recomputes the right-hand values from the bundle, so the table cannot dri
 
 The dashboard is a non-blocking, read-only sidecar: Python 3 standard library, no database, external service or credentials. The coordinator records sanitized Run/task/worker facts; it does not poll Orca or consume inbox messages. Worker self-reports stay separate from verification, and implemented, integrated, merged and tracker_closed are independent, initially unverified facts.
 
-**When it starts**: before the first dispatch of every real orchestration Run, the coordinator initializes a progress record in a new directory outside the repository and runs `open`. One read-only service runs per user under `$ORCA_PROGRESS_HOME` (default `~/.orca/progress`): `open` registers the Run, starts the service only when none is running or the recorded one is refused, tries the default browser, and prints `{url, pid, degraded, reason, browser_opened}` as JSON. If the browser cannot open, the URL must be opened manually; a degraded result also warns and never blocks dispatch. If startup or recording fails, it warns and the Run continues — the dashboard never blocks dispatch, questions, acceptance or the single inbox receiver.
+**When it starts**: before the first dispatch of every real orchestration Run, the coordinator initializes a progress record in a new directory outside the repository and runs `open`. One read-only service runs per user under `$ORCA_PROGRESS_HOME` (default `~/.orca/progress`): `open` registers the Run, starts the service only when none is running or the recorded one is refused, tries the default browser, and prints `{url, pid, degraded, reason, browser_opened}` as JSON. If the browser cannot open, the URL must be opened manually; a degraded result also warns and never blocks dispatch. If startup or recording fails, it warns and the Run continues — the dashboard never blocks dispatch, questions, acceptance or the native message channel.
 
 The page shows a Run overview, attention items, task-count donut charts, the reference workflow, the dependency graph, tasks and workers, delivery evidence and events. Delivery booleans stay independent; no predecessor success is inferred. Chinese/English switching, filters, expanded details and graph scroll survive refresh.
 

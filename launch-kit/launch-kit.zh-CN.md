@@ -33,7 +33,7 @@
 - 上万行的 diff 其实是格式化重排，真实工作跟着被一起丢掉。
 
 **这个 skill 是什么。** 一份把上述失败形态逐一点名、并给每条配上具体对策的流程文档，外加
-一个小脚本，让消息收件箱真正可以依赖。
+使用 Orca 原生唤醒，并按消息 ID 与证据恢复。
 
 **它不是什么。** 不是通用编排框架，不能移植到别的 CLI，也不做决策。它明确写着：范围、方案
 分叉，以及一切涉及凭证、第三方、付费、审批、不可逆数据的问题，都由人来定。
@@ -116,9 +116,8 @@ Orca 前提：已安装 Orca 且 CLI 可达。用 `orca skills get orchestration
  skill 说先留证据、再判断——绝不是『看着像噪声，还原吧』。」
 
 [1:20 — 收尾。]
-「两个可安装 skill，中文和英文，MIT，安全规则本身就是产品。只有一个脚本：
- 它让消息收件箱原子化、去重、并且如实报告失败——真有消息到来时它会结束自己来
- 唤醒我，因为落盘的文件开不了一次 turn。链接在下面。」
+「两个可安装 skill，中文和英文，MIT，安全规则本身就是产品。Orca 原生唤醒 agent，
+ agent 记录消息 ID 与证据。链接在下面。」
 
 [1:30 — 结束]
 ```
@@ -152,16 +151,11 @@ PR、或合并会改变你设定的范围时，它会停下并问你。这些例
 不会。范围、方案分叉与 escalation 五类都交给你。只有细节类问题——命名、目录位置、实现手法、
 测试写法——才代答。
 
-**唯一那个脚本是干什么的？**
-`inbox-loop.py`：一个只用标准库的收件器，按 delivery ID 原子保存每一批投递、按 message ID 去重、
-只 ack 全是心跳的批次，遇到 CLI 报错就显式退出而不是假装队列为空。它同时就是唤醒本体，而唤醒就是
-一次结束：落盘的文件无法开启 coordinator 的 turn，而一条长命令的结束正是 harness 会呈现为新消息的
-东西。所以收件器会在下列时刻结束进程、并在 stdout 打印恰好一行机器可读的 JSON——新落盘的非心跳批次
-（`reason=delivery`）、这个 Run 的 worker 签名变化（`reason=worker_state`）、或循环自身失败
-（`reason=error`，非零退出）。也正因为如此，每次唤醒之后都要重新安装它。
+**通信如何工作？**
+Orca 原生唤醒 agent，由 agent 处理自己的消息、记录 ID 与证据，并从 inbox 恢复丢失的上下文。旧 inbox-loop 入口已停用，因为后台消费式 check 会抢走消息。
 
 **能安全运行吗？**
-它安装的是 Markdown 加一个只用标准库的 Python 脚本；安装本身不执行任何东西。其余部分由 skill 自己
+它安装 Markdown 与标准库脚本；安装本身不执行任何东西。其余部分由 skill 自己
 的安全规则覆盖，包括不读取、不回显凭证，以及遇到 escalation 类问题时停下而不是自答。
 
 **它在 skills.sh 上吗？**
@@ -188,8 +182,7 @@ MIT。欢迎贡献。
 > coordinator 规划与验收，worker 编辑并创建 PR，门禁通过后 coordinator 合并。
 >
 > 有意思的是安全规则而不是顺风路径：隔离的 worktree、worker turn 真的开始的证据、
-> 读实时 worker 设置而不是写死 agent、由收件器负责的原子且去重的消息处理（真批次到达时它结束
-> 进程来唤醒 coordinator）、决策升级给人、按票型的门禁、
+> 读实时 worker 设置而不是写死 agent、原生唤醒与按消息 ID 对账、决策升级给人、按票型的门禁、
 > 任何还原之前先留证据、有界重试与停止阈值。
 >
 > 检查：`python3 -m unittest discover` — 对着桩 CLI 测脚本行为、双语一致性、
@@ -222,12 +215,10 @@ MIT。欢迎贡献。
 > ```
 >
 > 它是 Orca 专用的——驱动 `orca orchestration` 的动词——并且一开头就说清楚。有意思的部分是
-> 安全规则：每票独立 worktree、真实的启动证据、读实时 worker 设置而不是写死、原子化的消息处理
-> （一个小脚本，真批次到达时它会结束进程来唤醒 coordinator）、决策升级给人、按票型的门禁、
+> 安全规则：每票独立 worktree、真实的启动证据、读实时 worker 设置而不是写死、原生唤醒与消息 ID 对账、决策升级给人、按票型的门禁、
 > 还原前先留证、有界重试。
 >
-> 每种语言 `evals/` 里有 38 个场景，另有收件脚本的真实行为测试（原子写入、重放安全、ack 纪律、
-> 唤醒行、显式失败）。MIT。欢迎反馈。
+> 每种语言 `evals/` 里有 38 个场景，另有模拟消息契约的回归测试。MIT。欢迎反馈。
 
 ### 6.4 X / Twitter
 
@@ -271,9 +262,7 @@ diff，以及为什么先留证再还原；(5) 一个 Python 脚本，让 agent 
 > ```
 >
 > Most of it is prose: when to isolate, what counts as evidence, which questions go to the human,
-> when to stop retrying. There's one small stdlib script that saves message batches atomically,
-> only auto-acks batches that are entirely heartbeats, and ends the process when a real batch lands
-> — that exit is what wakes the coordinator.
+> when to stop retrying. Orca wakes the coordinator natively; the agent handles its own messages and reconciles evidence.
 >
 > Repo: https://github.com/whutlichao/orchestra-auto — happy to hear where the rules are wrong;
 > I'd rather be corrected than keep guessing.
@@ -293,13 +282,12 @@ diff，以及为什么先留证再还原；(5) 一个 Python 脚本，让 agent 
 >
 > The content is mostly judgement calls: isolate every ticket into its own top-level worktree; don't
 > treat a `ready` receipt as proof a turn began; read the live agent setting instead of hardcoding
-> one; persist every message batch atomically and only auto-ack heartbeats; classify a worker's
+> one; handle native messages and reconcile evidence by message ID; classify a worker's
 > question before answering it, and send scope changes to the human; run gates by ticket type; keep
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
-> One small standard-library Python script handles the inbox and ends the process to wake the
-> coordinator when a real batch lands. The rest is Markdown plus 38 prompt-level scenarios per
-> language so the reasoning is testable, and real behaviour tests for the script.
+> Orca wakes the coordinator natively. The packages include 38 prompt-level scenarios per
+> language and simulated message-contract regression tests.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether
 > others hit the same failures or different ones.
@@ -325,8 +313,7 @@ diff，以及为什么先留证再还原；(5) 一个 Python 脚本，让 agent 
 > ```
 >
 > 内容大部分是判断规则：什么时候隔离、什么算证据、哪些问题必须问人、什么时候该停止重试。
-> 只带一个小脚本（仅标准库），负责把消息批次原子落盘、只自动 ack 全是心跳的批次，并在真批次
-> 到达时结束进程——那次退出就是唤醒 coordinator 的信号，所以每次唤醒之后都要重新安装。
+> Orca 原生唤醒 coordinator；agent 处理自己的消息并按消息 ID 对账证据。
 >
 > 仓库：https://github.com/whutlichao/orchestra-auto
 > 欢迎指出规则里的错误——我宁愿被纠正，也不想继续猜。

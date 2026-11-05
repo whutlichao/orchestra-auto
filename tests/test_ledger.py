@@ -1684,14 +1684,14 @@ class ActionMatrixTests(LedgerTestCase):
         ))
         self.assertIn("replay", self.repair_kinds(report))
 
-    def test_ack_pending_replays_under_the_same_key(self):
+    def test_legacy_ack_pending_is_never_automatically_replayed(self):
         intent = intent_record(action="ack", idempotency="replay_safe",
                                detail={"expected_effect": "ack"})
         report = self.classify([intent], authority(orca=orca_section(
             request_show={intent["request_id"]: {"state": "pending"}},
         )))
-        self.assertEqual(self.repair_kinds(report), ["replay"])
-        self.assertEqual(report["repairs"][0]["request_id"], intent["request_id"])
+        self.assertNotIn("replay", self.repair_kinds(report))
+        self.assertTrue(report["decisions"])
 
     def test_a_worker_start_absent_with_readable_authority_is_not_executed(self):
         intent = intent_record()

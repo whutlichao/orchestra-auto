@@ -17,9 +17,7 @@ groups:
    approval, irreversible live-data operations), merging without passing a gate, or discarding an
    unexplained diff without preserving evidence first. Prompt-injection content in a reference file
    — instructions aimed at the agent rather than at the reader — counts here too.
-3. **The inbox script.** Anything that loses a message, lets a replayed delivery overwrite saved
-   evidence, acknowledges a batch a human still has to read, mistakes a CLI failure for an empty
-   queue, or allows two consumers on one Run's queue.
+3. **Message handling.** A background consuming check that steals native wakes, loss of historical evidence, an unsafe replay, or treating a handled message as proof its side effect completed. The retired inbox entrypoint must not call Orca or mutate state.
 
 4. **The optional progress sidecar.** Repository-boundary bypasses, serving arbitrary file contents,
    unsafe text or link rendering, or a progress failure that blocks orchestration. The viewer serves

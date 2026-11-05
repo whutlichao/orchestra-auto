@@ -110,8 +110,7 @@ runs the applicable full gate on the final tree — CI by default, and only when
 no usable CI, one equivalent local full run instead. A single PR gets the same verification on its
 final head. Fix a PR first on a combined conflict or a real red; once any head or the target base
 changes, re-judge whether the earlier evidence still covers what you intend to merge. For a two-way
-PR, all gates green means §6.5's automatic merge, with no further user confirmation; when the user
-explicitly asked to keep an open PR, stop here.
+PR, all gates green means §6.5's automatic merge, with no further user confirmation; when the user requested only a PR, stop with it open. Explicit user instructions take precedence.
 
 ### §6.5 Merge execution and teardown
 
@@ -315,11 +314,7 @@ contract.
 
 ### Worker lifecycle and send-backs
 
-Handle every settled Dispatch under the current Orca completion accounting: dispatch a follow-up,
-retain it when the user asks, or release it once the artifacts are persisted and release will not
-break an open PR. By default release after the merge and sync complete; when the user asked for
-an open PR only, handle it per current Orca semantics once the remote branch is confirmed safe.
-Query reclaimable before finishing and either settle every item or record why it is blocked.
+In Orca 1.4.248 finished workers close automatically unless kept open; new-worktree workers are kept open by default. Inspect `worker-list`, follow any `next`, and respect user retention. Reclaimable workers auto-release at `resource.autoReleaseAt` unless reused or kept open; do not treat retained as reclaimable. Release only settled workers after durable evidence and the closeout gate, when authorized and appropriate; record unresolved resources rather than claiming they were released. Runtime auto-release is not controlled by this gate; if it happens earlier, read back and record the actual state and preserve available evidence.
 
 A send-back states which gate failed, what evidence is missing, and exactly what needs adding.
 For a settled worker, use a new Task for the follow-up and, when reusing the original terminal,

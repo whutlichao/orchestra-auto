@@ -114,7 +114,7 @@ when a long spec is half written, an already-confirmed constraint is the thing t
 falls off. The parenthesised section is where it belongs.
 
 - [ ] **The CLI is alive** (`cli-app-up`, `cli-command-surface`; mechanical): `<ORCA>` resolves
-      (`ORCA_CLI_COMMAND` or `orca`) and `orca status --json` reports the app up. Record both
+      (the executable resolved in SKILL.md) and `orca status --json` reports the app up. Record both
       evidence items: the app reply and a minimal command-surface probe (`worker-list`). If it
       will not start → report the exact error per §9 and stop; do not swap the executable and do
       not guess commands.
@@ -226,9 +226,7 @@ implementers must never share one worktree.
 - **The dashboard record was backfilled or a gap was recorded** (`dashboard-backfill`). This is
   a ledger observation: a failed dashboard write records a gap, never blocks dispatch, and never
   changes the preflight result.
-- **The inbox consumer is installed and healthy** (`inbox-health`, §4.5): one consumer for this
-  Run, bound to the real coordinator handle, installed as a call the harness surfaces rather
-  than `nohup`. This is a ledger observation too, never a pre-dispatch gate.
+- **The native wake contract is confirmed** (`inbox-health`, §4.5): record whether this session supports native wake and any evidence gap. This observation never blocks dispatch; it does not install a consumer. Set `context.inbox.native_wake: true` and `healthy: true` only with current evidence; otherwise record the reason. Legacy `installed` does not establish native wake.
 
 Record these three observations after the receipt:
 

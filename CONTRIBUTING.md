@@ -63,52 +63,9 @@ budget does not survive a shared runner (the workflow says so where it excludes 
 check is required to merge into `main`. A red check is not a separate CI-only gate: if it passes
 locally and fails there, the difference is the platform, and that is worth a line in the issue.
 
-### If you change the inbox script
+### If you change messaging
 
-`scripts/inbox-loop.py` owns inbox consumption; the optional `progress.py` recorder/viewer and
-`progress-demo.py` fixture generator never consume inbox messages. Its safety properties are the reason
-the tests exist, and a change that weakens one needs a very good argument:
-
-- a delivery batch is written atomically and its parent directory is fsynced after the rename,
-  and a re-read never sees a partial file;
-- a replayed `deliveryId` does not overwrite the evidence of the first read;
-- every ack appends a `pending`/`success`/`failed` receipt to `receipts.jsonl`; a refused Orca ack
-  is recorded as `failed`, stays unacked, and is never written as a success;
-- only a batch whose **every** message is a heartbeat is auto-acknowledged — normal and mixed
-  batches are left for the coordinator;
-- a CLI error exits non-zero and is reported, and is never reinterpreted as an empty queue;
-- a fresh install reconciles saved deliveries with successful receipts: the oldest unacknowledged
-  batch produces exactly one replay wake, deduplicated by delivery id, and persists the pending
-  intent with `reconciled_delivery_id`; only the coordinator's `success` receipt makes a delivery
-  announced, so an unacknowledged wake stays replayable until it is acked, and the local
-  observation in `state.json` is for the coordinator to transcribe into the ledger;
-- one consumer per state directory, enforced by a file lock;
-- a CLI child never outlives the call that owns it: an exception, a wake or a signal reaps every
-  process the loop started. A survivor keeps its CLI waiter slot, so the next install fails while
-  the Run still looks watched — which is why cleanup walks every child rather than only the
-  innermost one, and why nothing outside the loop's own children is ever signalled;
-- `--status --json` is a purely local read — delivery files, receipts, `state.json`, `watch.log`
-  and the directory lock — so it never calls `check` or `check --peek` and never consumes the
-  queue; its exit codes (`0` healthy/resting, `1` fatal, `2` no state directory, `3`
-  degraded/blocked) and the install command's separate `2` are different contracts;
-- the worker signature is compared as whole lines read to the end of `worker-list` pagination
-  with `--include-remote`, never as a count; a truncated page is an error, and a missing field
-  reads `unknown`, never healthy.
-
-The script also owns the wake contract, because a file on disk cannot start a coordinator turn:
-it **ends the process** and prints one machine-readable line on stdout when a newly persisted
-non-heartbeat batch arrives, when this Run's worker signature changes, or when the loop itself
-fails (a non-zero exit is the third leg). That line's fields and the exit codes are a published
-contract — `references/inbox-and-waiting.md` §1.1 and §3 define them and the tests assert
-them — so changing either is the same kind of change as weakening the list above. A batch that is already on
-disk **and has a successful ack receipt** is deliberately **not** a wake: it is the coordinator's
-outstanding duty, and waking for it on every install would spin instead of waiting for the next
-message. A batch without that receipt is still pending, because a line printed to stdout is not
-proof that the coordinator received it: the durable handoff is a `pending_wakes` send intent
-written before the wake line, and an install-time reconciliation replays the oldest pending batch
-exactly once per install, deduplicated by delivery id, until the coordinator's `--ack` leaves a
-`success` receipt. The wake is at-least-once, never silently dropped; `reconciled_delivery_id`
-records the replay but does not suppress it.
+Orca 1.4.248 handles consuming `check` batches immediately and delivers native wakes to the agent. The retired `inbox-loop` entrypoints must fail before calling Orca or changing historical state. Tests model peek, consuming checks, retry, duplicate delivery and inbox recovery; the model is not live end-to-end evidence. Preserve message IDs and historical files for audit, reconcile real effects before replay, and use the selected Orca version's guide and help. No automatic replay of historical ack is supported without verified older-runtime evidence.
 
 ### If you change a SKILL.md or a reference
 

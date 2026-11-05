@@ -48,6 +48,19 @@ CLI_TIMEOUT_SECONDS = 30
 CLI_ENV = "ORCA_CLI_COMMAND"
 DEFAULT_CLI = "orca"
 
+
+def resolve_orca_cli():
+    """Follow the version-matched Orca discovery stub without fallback."""
+    if CLI_ENV in os.environ:
+        return os.environ[CLI_ENV]
+    if os.environ.get("ORCA_DEV_REPO_ROOT"):
+        return "orca-dev"
+    if sys.platform.startswith("linux") and not (
+            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
+        return "orca-ide"
+    return DEFAULT_CLI
+
+
 #: The twelve §4.0.1 tick-sheet lines, in order. ``items`` are the receipt items each line
 #: produces; the CLI-liveness line is deliberately split into two evidence items. The
 #: ``live-settings`` lookup is an independent blocking item, not a thirteenth line.
@@ -204,7 +217,7 @@ class LocalRunner:
     """
 
     def __init__(self, orca=None):
-        self.orca = orca or os.environ.get(CLI_ENV) or DEFAULT_CLI
+        self.orca = orca or resolve_orca_cli()
 
     def run(self, argv, timeout=CLI_TIMEOUT_SECONDS):
         command = list(argv)
@@ -948,18 +961,13 @@ def _inbox_observation(context):
     if not isinstance(inbox, dict):
         _invalid("context.inbox must be an object recording the inbox state")
     installed = bool(inbox.get("installed"))
-    healthy = bool(inbox.get("healthy"))
+    healthy = inbox.get("healthy") is True
     reason = inbox.get("reason") if isinstance(inbox.get("reason"), str) else ""
-    healthy_now = installed and healthy
-    note = (
-        "the inbox consumer is installed and healthy"
-        if healthy_now else "the inbox consumer is not installed and healthy"
-    )
-    if reason:
-        note += ": " + reason
+    healthy_now = inbox.get("native_wake") is True and healthy
     detail = {
         "observation": "inbox-health",
         "installed": installed,
+        "native_wake": inbox.get("native_wake") is True,
         "healthy": healthy,
         "outcome": "healthy" if healthy_now else "unhealthy",
         "reason": reason,
@@ -1055,9 +1063,9 @@ def post_dispatch(ticket, context, runner=None):
         "id": "inbox-health",
         "outcome": inbox_detail["outcome"],
         "note": (
-            "inbox installed and healthy"
+            "native wake confirmed and healthy"
             if inbox_detail["outcome"] == "healthy"
-            else "inbox not installed and healthy: " + inbox_detail["reason"]
+            else "native wake not confirmed and healthy: " + inbox_detail["reason"]
         ),
         "detail": inbox_detail,
         "record": inbox_record,
@@ -1108,7 +1116,7 @@ def main(argv=None):
         command_parser.add_argument(
             "--context", required=True, help="preflight context JSON file")
         command_parser.add_argument(
-            "--orca", help="Orca executable; defaults to ORCA_CLI_COMMAND or 'orca'")
+            "--orca", help="Orca executable; defaults to the resolved Orca executable")
     args = parser.parse_args(argv)
 
     try:

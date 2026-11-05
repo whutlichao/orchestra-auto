@@ -29,12 +29,10 @@ documentation tickets against their own documentation gates:
 【BEHAVIOR RULE (obey verbatim; do not paraphrase or trim)】
 1. All questions go through orchestration ask; AskUserQuestion is banned. Open decisions are
    asked back, never invented.
-2. You edit only the files and code inside this ticket's scope. On start, after every test run,
-   before switching files, and before finishing, run check --terminal <your own real handle>
-   --json with the live preamble's executable, read and act on coordinator follow-ups.
-   Heartbeat at the preamble's cadence; on ask timeout resume the same message ID — do not ask
+2. You edit only the files and code inside this ticket's scope. Follow the live preamble for native messages and any requested check.
+   Heartbeat only if the preamble requires it; on ask timeout resume the same message ID — do not ask
    twice and do not decide on a human's behalf.
-   Closing order: check follow-ups → write the Answer and evidence → commit, push and create or
+   Closing order: handle delivered follow-ups → write the Answer and evidence → commit, push and create or
    update the PR for project changes → record the PR number, the PR body path and the CI reading
    for the PR head in GitHub and this run's out-of-repo ledger; no project commit is added to
    carry those facts, and the deliverable files are already final before the PR is created →

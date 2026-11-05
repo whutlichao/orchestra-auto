@@ -4,7 +4,7 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml/badge.svg)](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-这是一套把 [Matt Pocock 的工程 skill 链](https://github.com/mattpocock/skills) 放到 [Orca](https://www.onorca.dev/) 上**整条跑完**的 Agent Skill：你说一句要什么，coordinator 按格派 worker、每格落独立 worktree、产物过门禁，PR 自己合并。你只在需要决定和单向门上被打断，不是在格与格之间。
+这是一套把 [Matt Pocock 的工程 skill 链](https://github.com/mattpocock/skills) 放到 [Orca](https://www.onorca.dev/) 上**整条跑完**的 Agent Skill：你说一句要什么，coordinator 按格派 worker、每格落独立 worktree、产物过门禁，在获授权时合并 PR；只要求开 PR 时保留开放状态。你只在需要决定和单向门上被打断，不是在格与格之间。
 
 链是他的，一格没改。这个仓库补的是「一条链要在 Orca 上无人值守跑下去」所需的那些东西：下一格是哪格、worker 落在哪、产物进入下一格前必须带什么、什么时候合并是自动的、人必须在哪里插进来。其中两件事现在由命令回答，而不靠记忆：`scripts/chain.py resume` 和 `scripts/chain.py exit-check`。
 
@@ -37,7 +37,7 @@ Orca 在链的每一格外包一圈循环：
 1. 你说清要做什么。
 2. coordinator 选一格，派一个 worker；worker 在新的顶层 worktree 里执行它。
 3. 票按类型过门禁。
-4. 决策或单向门回到你这里；否则 coordinator 合并 PR 并同步 main。
+4. 决策或单向门回到你这里；否则在用户授权合并时 coordinator 合并 PR 并同步 main；只要求开 PR 时止于开放 PR。
 
 下一格是下一次同样的循环：再派一个 worker，再开一个新 worktree。spec 里写这个 skill 在本机的绝对路径；spec 里没写的，worker 不会做。
 
@@ -60,7 +60,7 @@ python3 scripts/chain.py exit-check --step to-tickets --artifact tickets.md
 | 谁推进下一格 | 你逐条调用 | coordinator 每轮派一个 worker，worker 执行那一个 skill |
 | 改动落在哪 | 当前会话所在的检出 | 每个任务一个新的顶层 worktree；`implement-spec` 的 implementer 也各有自己的 worktree 和分支 |
 | 人什么时候出面 | 你留在会话里往下推进 | 决策类问题要问你：交付形态、方案分叉、范围，以及凭证、第三方、付费、人工审批、不可逆的 live 数据操作。单向 Merge Danger 门也由你合并 |
-| 怎么落地 | 按目标仓库的 tracker 习惯 | 项目改动默认开 PR；门禁通过并且是双向门，coordinator 合并并同步 main |
+| 怎么落地 | 按目标仓库的 tracker 习惯 | 项目改动默认开 PR；用户授权合并且门禁通过并为双向门时，coordinator 合并并同步 main；只要求开 PR 则保持开放 |
 
 修 bug、研究、外部 issue 分流、术语对齐和流程出错仍用他的 skill——`diagnosing-bugs`、`research`、`triage`、`domain-modeling` 和 `retro`。retro 的候选写在目标仓库外，人选定之后才由 worker 落地。派活参数、收件、打回和熔断写在 [SKILL.md](skills/orchestra-auto-zh/SKILL.md)。
 
@@ -103,10 +103,10 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 | Node.js 与 `npx` | 社区 `skills` CLI 通过 `npx` 运行。除此之外本仓库不需要 Node。 |
 | Orca | 已安装 [Orca](https://www.onorca.dev/) 且 CLI 可达。skill 会调用 `orca orchestration worker-start`、`check`、`send`、`reply`、`worker-release` 等。 |
 | Matt Pocock 的工程 skill | worker 要读到的是他的 skill，不是本仓库的副本：`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`implement-spec`，以及它们调用的 `tdd` 和 `code-review`。spec 里写绝对路径。 |
-| Orca CLI 可执行文件 | 按 Orca 文档的方式解析：`ORCA_CLI_COMMAND` → 平台二进制名 → `orca`。 |
+| Orca CLI 可执行文件 | `ORCA_CLI_COMMAND` 优先；否则开发会话用 `orca-dev`，Linux 非 Orca 管理会话用 `orca-ide`，其余用 `orca`；失败不回退。 |
 | Orca 的 `orchestration` 指南 | skill 用 `orca skills get orchestration` 取回它，并以**实时**指南为准，而不是以 skill 自己的叙述为准。 |
 | worker agent | 你的 Orca profile 已启用的那些 TUI agent。skill 读取当前默认值与当前禁用列表，而不是写死某一个。 |
-| Python 3 | 内置收件循环与进度记录/看板会用到（只用标准库：POSIX 文件锁与 `select`，故限 macOS/Linux/WSL）。 |
+| Python 3 | 进度记录/看板会用到（只用标准库：POSIX 文件锁与 `select`，故限 macOS/Linux/WSL）。 |
 
 **能力边界。** 规划链是 Matt Pocock 的，本仓库不重新定义那些 skill 做什么。编排动词是 Orca 的。其中的判断——通道选择、门禁选择、决策分类——可以迁移，但*命令*不可移植，skill 也不会假装它可以。如果你的 CLI 不提供 `orca orchestration`，这个 skill 不适合你。
 
@@ -120,7 +120,7 @@ python3 -m unittest discover -s tests -v
 
 退出码即结论。套件不联网、不需要凭证、不依赖任何特定机器，会跑 `tests/` 下的每个模块：
 
-- `tests/test_inbox_loop.py` 用桩 CLI 驱动真实收件脚本，断言原子落盘、重复 delivery 处理、只有 heartbeat 的批次才 ack、CLI 错误显式失败、单消费者锁、唤醒契约与子进程生命周期。
+- `tests/test_inbox_loop.py` 使用模拟的 1.4.248 消息契约，验证已退役入口不消费消息或修改历史状态，以及 retry、去重和 inbox 恢复。
 - `tests/test_progress_dashboard.py` 覆盖进度 CLI 与 localhost 看板：snapshot 与注册表契约、单例启动锁、协议兼容、回退、Run 隔离、只读 HTTP 表面与 `serve --state` 的 DEMO 路径。
 - `tests/test_chain.py` 覆盖链级续跑与两道产物地板：哪些验收记录能让一个位置落地、为什么链条更早的缺口优先、以及出口检查拒绝判断什么。
 - `tests/test_ledger.py`、`test_preflight.py`、`test_health.py`、`test_acceptance.py` 与 `test_closeout.py` 通过各自声明的缝覆盖稳定性模块。
@@ -128,7 +128,7 @@ python3 -m unittest discover -s tests -v
 
 ### 场景检查
 
-每个语言变体都带 `evals/evals.json`，**38 个提示词层面的场景**，覆盖通道判定、worker 栏取值、启动确认、门禁选择、review 安排、打回判断、决策分类、升级、合并例外，以及「先唤醒、再重装」的契约。最后七个覆盖稳定性工作流；崩溃窗口对账是一个场景，同时点名 W1/W2/W3，因此总数是 31 + 7 = 38。这些是场景检查，不是端到端证明：它们看的是 agent 是否按 skill 的意图推理，不证明编排在真实 Orca 主机上能跑通。
+每个语言变体都带 `evals/evals.json`，**38 个提示词层面的场景**，覆盖通道判定、worker 栏取值、启动确认、门禁选择、review 安排、打回判断、决策分类、升级、合并例外，以及原生唤醒与恢复契约。最后七个覆盖稳定性工作流；崩溃窗口对账是一个场景，同时点名 W1/W2/W3，因此总数是 31 + 7 = 38。这些是场景检查，不是端到端证明：它们看的是 agent 是否按 skill 的意图推理，不证明编排在真实 Orca 主机上能跑通。
 
 ### 入口体积与激活成本
 
@@ -136,8 +136,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 23,129（−23.4%） | 7,552 → 5,782 |
-| 中文 | 24,359 → 20,066（−17.6%） | 6,089 → 5,016 |
+| 英文 | 30,208 → 22,624（−25.1%） | 7,552 → 5,656 |
+| 中文 | 24,359 → 19,649（−19.3%） | 6,089 → 4,912 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
@@ -149,7 +149,7 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 看板是不阻塞编排的只读旁路：仅依赖 Python 3 标准库，无数据库、外部服务或凭证。coordinator 显式记录去敏 Run/task/worker 事实，不查询 Orca，不消费 inbox 消息。worker 自报与验证分开，implemented、integrated、merged、tracker_closed 四项独立，初始为未确认。
 
-**何时启动**：每个实际编排 Run 首次派活前，coordinator 在仓库外的新目录初始化进度记录并执行 `open`。每用户只有一个只读服务，位于 `$ORCA_PROGRESS_HOME`（默认 `~/.orca/progress`）：`open` 注册 Run，仅在无服务或记录中的服务被拒绝时启动它，尝试打开默认浏览器，并以 JSON 输出 `{url, pid, degraded, reason, browser_opened}`。浏览器无法打开时，用户需按输出的 URL 手动访问；降级结果同样只警告，绝不阻断派发。启动或记录失败也只警告，Run 继续——看板从不阻断派活、问答、验收或唯一 inbox 接收器。
+**何时启动**：每个实际编排 Run 首次派活前，coordinator 在仓库外的新目录初始化进度记录并执行 `open`。每用户只有一个只读服务，位于 `$ORCA_PROGRESS_HOME`（默认 `~/.orca/progress`）：`open` 注册 Run，仅在无服务或记录中的服务被拒绝时启动它，尝试打开默认浏览器，并以 JSON 输出 `{url, pid, degraded, reason, browser_opened}`。浏览器无法打开时，用户需按输出的 URL 手动访问；降级结果同样只警告，绝不阻断派发。启动或记录失败也只警告，Run 继续——看板从不阻断派活、问答、验收或原生消息通道。
 
 页面展示运行概览、关注事项、任务数量环图、参考流程、依赖图、任务与 Worker、交付证据及事件。交付布尔值保持独立，不从后续步骤推断前序成功。中文/English、筛选、展开明细和依赖图滚动位置在刷新后保留。
 

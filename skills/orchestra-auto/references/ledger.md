@@ -139,7 +139,7 @@ during a rewrite is preserved in `archive/corrupt-<timestamp>-<n>.jsonl`.
 | ledger result | not applicable | retry; preserve the raw receipt in the evidence directory; record a gap; never replay the action | no block; reconcile later |
 | ledger acceptance / closeout | do not release or declare the gate passed | retry; release waits until the record is durable | blocks release and gate close |
 | progress write | not applicable | record a gap; retry the same `event_id` at the next checkpoint | no block |
-| ack receipt | not applicable | do not assume the ack landed; retry the ack with the same `request_id`; keep the delivery file | no block; status shows unacked |
+| historical legacy ack receipt | not applicable | preserve evidence; do not replay automatically; reconcile against the current version | unknown if unproven |
 | health record | not applicable | keep the in-memory evaluation and retry; the dashboard projection is not authority | no block |
 | preflight receipt | do not dispatch | not applicable | blocks dispatch |
 | registry descriptor / `server.json` | fall back to `serve --state`; record a gap | dashboard unavailable; record a gap | no block |
@@ -189,7 +189,7 @@ Every dispatch follows one order and never skips a durable predecessor:
 
 A lost `worker-start` response is reconciled from authority, never re-dispatched. A missing intent
 prevents a second dispatch; `absent` is not proof that nothing ran. The same request-id discipline
-applies to send, reply, ack, stop, abandon, retain and release.
+applies to send, reply, stop, abandon, retain and release.
 
 ## Action matrix
 
@@ -200,7 +200,7 @@ applies to send, reply, ack, stop, abandon, retain and release.
 | --- | --- | --- | --- | --- |
 | dispatch / `worker-start` | `joinable` | `request_id` | receipt `state`/`stage`/`turnStart`/`dispatchId`; worker list by task/spec/worktree | `request-show`; `completed` → adopt the recorded outcome; `pending` → replay with the same key; `absent` → inventory Orca and git worktrees first, never dispatch again |
 | `send`, `reply` | `joinable` | `request_id` | message id/state and thread visibility | `request-show`; never auto-resend merely because no reply arrived |
-| `ack` | `replay_safe` | `request_id` | ack receipt | replay with the same key |
+| `ack` (historical) | original class retained | `request_id` | historical ack receipt | never auto-replay; older semantics unverified |
 | `stop`, `abandon` | `joinable` | `request_id` | `worker-show`/`worker-list` terminal state | `request-show` plus inventory; never retry without proof |
 | `retain`, `release` | `replay_safe` after settlement | `request_id` | receipt plus `worker-show` | `release_unknown` follows the receipt; never release an unsettled worker |
 | `merge` | `readback_only` | none | PR host `MERGED`, merge SHA, ancestry | read only; never auto-replay |
@@ -270,7 +270,7 @@ rows, or `unknown` with a reason — a missing adapter is never an empty success
 
 Unknown top-level or per-source fields are rejected, so a typo cannot silently drop
 authority. `LiveAuthority` builds the snapshot: Orca read commands resolve through
-`ORCA_CLI_COMMAND`; `worker-list` is called with `--include-remote` and both it and
+the SKILL.md executable resolution (`ORCA_CLI_COMMAND` has priority); `worker-list` is called with `--include-remote` and both it and
 `task-list` follow `page.hasMore` / `page.nextCursor`. A missing or repeated cursor, a
 non-zero exit or a non-JSON reply is `unknown` with the reason, never an empty result.
 

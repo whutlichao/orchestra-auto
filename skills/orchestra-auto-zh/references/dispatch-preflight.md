@@ -92,7 +92,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
 已经确认过的约束最容易悄悄掉队。括号里是它的归属小节。
 
 - [ ] **CLI 活着**（`cli-app-up`、`cli-command-surface`；mechanical）：`<ORCA>` 可解析
-      （`ORCA_CLI_COMMAND` / `orca`），`orca status --json` 报 app up。两项证据都记录：
+      （按 SKILL.md 解析的可执行文件），`orca status --json` 报 app up。两项证据都记录：
       app 回复与最小命令面探针（`worker-list`）。起不来 → 按 §9 报告精确错误并停，不换可
       执行文件、不猜命令。
 - [ ] **指南是本轮抓取的**（`guide-freshness`；mechanical）：只有时间戳落在本轮内的
@@ -168,8 +168,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
   复核是派活后的 observation，不是派活前 gate，也绝不改写回执。豁免理由要同时写进 spec 与 Answer。
 - **看板记录已回填，或已记录 gap**（`dashboard-backfill`）。这是 ledger observation：看板写失败
   记录 gap，不阻断派活，也不改变预检结果。
-- **收件器已装上且健康**（`inbox-health`，§4.5）：本 Run 只有一个收件器，绑定真实 coordinator
-  句柄，以 harness 能呈现的调用装上，而不是 `nohup`。这也是一条 ledger observation，绝不是派活前 gate。
+- **原生唤醒契约已确认**（`inbox-health`，§4.5）：记录当前会话是否支持原生唤醒及证据缺口。这是 observation，不阻止派活，也不安装收件器。 仅有当前证据时设置 `context.inbox.native_wake: true` 和 `healthy: true`；否则记录原因。旧 `installed` 不证明原生唤醒。
 
 拿到回执后记录这三项观察：
 

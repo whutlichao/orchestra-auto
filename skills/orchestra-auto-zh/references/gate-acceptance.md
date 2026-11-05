@@ -84,7 +84,7 @@ coordinator 自行核验可观察结果与证据，失败就列明缺项打回�
 CI；仓库没有可用 CI 时，才在本地跑一次等价的全量门禁作为替代。
 单 PR 在最终 head 上完成同等验证。组合冲突或真红时先修 PR；任一 head 或目标 base 变化后
 重新判断原证据是否仍覆盖拟合并内容。双向门且门禁全绿即进入 §6.5 自动合并，
-无需另请用户确认；用户明确要求保留开放 PR 时停止于此。
+无需另请用户确认；用户只要求开 PR 时停止于开放 PR；用户明确指令优先。
 
 ### §6.5 合并执行与收尾
 
@@ -252,10 +252,7 @@ pending 项（例如四级状态的开放问题）仍在台账可见，但不阻
 
 ### Worker 生命周期与打回
 
-每张结算的 Dispatch 按当前 Orca completion accounting 处理：继续派 follow-up、用户要求
-保留时 retain，或在产物已持久化且 release 不会破坏开放 PR 后 release。默认在合并及同步
-完成后再 release；明确只交开放 PR 时，确认远端分支安全后按当前 Orca 语义处理。
-结束前查询 reclaimable，逐项结清或记录受阻原因。
+Orca 1.4.248 中完成的 worker 自动关闭，kept-open 除外；新 worktree 默认 kept-open。检查 `worker-list` 并遵循任何 `next`，尊重用户保留意愿。reclaimable worker 在 `resource.autoReleaseAt` 自动释放，除非复用或保留；retained 不是 reclaimable。仅在证据持久化、收尾门禁通过且获授权时适当释放已结算 worker；未解决资源如实记录，不冒称已释放。 运行时自动释放不由此门禁控制；若提前发生，读回并记录真实状态，保留现有证据。
 
 打回写明哪条门禁、缺什么证据、只需补哪些内容。已结算 worker 的 follow-up 使用新 Task，
 复用原终端时显式指定原 worktree selector；新 turn 重走 §4.3.1。连续两次不过同一门禁时

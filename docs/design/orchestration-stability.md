@@ -1,5 +1,7 @@
 # Orca 编排稳定性设计
 
+> 历史设计记录：其中的收件循环、ack 与生命周期假设已被 Orca 1.4.248 兼容迁移取代；当前契约见 `skills/orchestra-auto-zh/references/inbox-and-waiting.md`。
+
 Ticket: the spec ticket in the tracker · Run: recorded in the out-of-repo ledger · Dispatch: recorded in the out-of-repo ledger
 Base: main bf96405
 状态：设计定稿；决策记录见 §6；本票 Answer 在仓库外台账（A4=C），工作树只放本设计文档。

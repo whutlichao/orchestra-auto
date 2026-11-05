@@ -125,7 +125,7 @@ fsync，之后才替换活动文件，因此绝不会删除未归档的记录。
 | 台账 result | 不适用 | 重试；在证据目录保留原始回执；记录 gap；绝不重放动作 | 不阻塞；稍后对账 |
 | 台账 acceptance / closeout | 不 release，不宣称门禁通过 | 重试；release 等待记录持久 | 阻止 release 与门禁关闭 |
 | progress 写入 | 不适用 | 记录 gap；下一个检查点用同一 `event_id` 重试 | 不阻塞 |
-| ack 回执 | 不适用 | 不假设 ack 已落地；用同一 `request_id` 重试 ack；保留 delivery 文件 | 不阻塞；状态显示未 ack |
+| 历史旧版 ack 回执 | 不适用 | 保留历史证据；不自动重放，查当前版本并对账 | 未证实为 unknown |
 | health 记录 | 不适用 | 保留内存中的评估并重试；看板投影不是权威 | 不阻塞 |
 | preflight 回执 | 不派发 | 不适用 | 阻止派发 |
 | registry 描述符 / `server.json` | 回退到 `serve --state`；记录 gap | 看板不可用；记录 gap | 不阻塞 |
@@ -167,7 +167,7 @@ Task ID 可以作 join key：临时进度任务（`orca_task_id: null`）永远�
    再次派发的理由。
 
 丢失的 `worker-start` 响应从权威对账，绝不重新派发。缺少 intent 阻止第二次派发；`absent`
-不是“没发生”的证明。send、reply、ack、stop、abandon、retain、release 遵循同样的 request-id
+不是“没发生”的证明。send、reply、stop、abandon、retain、release 遵循同样的 request-id
 纪律。
 
 ## 动作矩阵
@@ -178,7 +178,7 @@ Task ID 可以作 join key：临时进度任务（`orca_task_id: null`）永远�
 | --- | --- | --- | --- | --- |
 | dispatch / `worker-start` | `joinable` | `request_id` | 回执 `state`/`stage`/`turnStart`/`dispatchId`；按 task/spec/worktree 查 worker 列表 | `request-show`；`completed` → 采纳已记录结果；`pending` → 同键重放；`absent` → 先盘点 Orca 与 git worktree，绝不再次派发 |
 | `send`、`reply` | `joinable` | `request_id` | 消息 id/state 与线程可见性 | `request-show`；绝不因为没收到回复就自动重发 |
-| `ack` | `replay_safe` | `request_id` | ack 回执 | 同键重放 |
+| `ack`（历史） | 原记录保留 | `request_id` | 历史证据 | 不自动重放；旧版语义未经验证 |
 | `stop`、`abandon` | `joinable` | `request_id` | `worker-show`/`worker-list` 终态 | `request-show` 加盘点；没有证明绝不重试 |
 | `retain`、`release` | 结算后 `replay_safe` | `request_id` | 回执加 `worker-show` | `release_unknown` 以回执为准；绝不 release 未结算 worker |
 | `merge` | `readback_only` | 无 | PR host `MERGED`、merge SHA、ancestry | 只读；绝不自动重放 |
@@ -241,7 +241,7 @@ snake_case，并在 `detail.raw_receipt` 保留原始回执；设计未验证的
 | `progress` | 可选 `{state, reason, orca_run_id}`；缺失表示 progress Run 绑定未知 |
 
 顶层或来源内出现未知字段即非法，打字错误不会静默丢掉权威。`LiveAuthority` 负责构建快照：
-Orca 读命令经 `ORCA_CLI_COMMAND` 解析；`worker-list` 带 `--include-remote`，它与 `task-list`
+Orca 读命令按 SKILL.md 的规则解析可执行文件（`ORCA_CLI_COMMAND` 优先）；`worker-list` 带 `--include-remote`，它与 `task-list`
 都跟随 `page.hasMore` / `page.nextCursor`。cursor 缺失或重复、非零退出、非 JSON 回复都记
 `unknown` 并附原因，绝不当作空结果。
 

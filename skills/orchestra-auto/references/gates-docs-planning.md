@@ -35,7 +35,7 @@ G-wayfinder.
 
 A full implementation request normally runs `grill-with-docs → to-spec → to-tickets →
 implement-spec`. G-docs accepts only the design stage; once the design file's PR passes G-merge and
-merges automatically, record the follow-up entry point and stop if this round asked only for design,
+reaches the authorized endpoint, record the follow-up entry point and stop if this round asked only for design,
 or continue into to-spec and to-tickets if this round includes implementation. See SKILL.md §7.
 
 ---

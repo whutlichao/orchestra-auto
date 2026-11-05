@@ -671,7 +671,7 @@ class ReviewExemptionTests(PreflightTestCase):
         context.update({
             "worktree": str(self.root / "worktree"),
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         context.update(overrides)
         runner = FakeRunner([
@@ -780,7 +780,7 @@ class ReviewExemptionTests(PreflightTestCase):
         context.update({
             "worktree": str(self.root / "worktree"),
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         runner = self.runner()
         report = self.preflight.post_dispatch(make_ticket(), context, runner=runner)
@@ -1038,7 +1038,7 @@ class CommandLineTests(PreflightTestCase):
                 "max_changed_lines": 10,
             },
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         context_path = self.write_json("context-post.json", context)
         result = self.run_cli(
