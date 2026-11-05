@@ -161,8 +161,8 @@ class RuntimeMigrationContractTests(unittest.TestCase):
 
     def test_message_probe_documents_wording_compatibility_limit(self):
         required = {
-            'orchestra-auto': 'equivalent wording can still fail',
-            'orchestra-auto-zh': '语义相同但措辞不同也可能失败',
+            'orchestra-auto': 'explicit human may review',
+            'orchestra-auto-zh': '由人类明确审阅',
         }
         for name, phrase in required.items():
             with self.subTest(bundle=name):

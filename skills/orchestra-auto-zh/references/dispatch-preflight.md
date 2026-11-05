@@ -50,7 +50,11 @@ item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断�
 
 ### 消息投递与恢复门禁
 
-任何 worker 启动前，`message-capability` 是独立的阻断型 **mechanical** 项。预检读取所选可执行文件的 `skills get orchestration`、`orchestration check --help` 和 `orchestration inbox --help`，检查 1.4.248 原生唤醒、check 标记处理、retry 和 inbox 恢复标记。协调者还须在 `context.messaging` 提供 `native_wake_confirmed: true`、`source: "live_preamble"` 或 `"verified_session"`，以及指向当前会话实际投递证据的非空 `evidence_ref`。还须在证明不存在旧消费者或已完成迁移和对账后，才设置 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。仅有 guide 文本不能证明当前会话能被唤醒。探针按不区分大小写的精确文本片段匹配 1.4.248，因此其他版本语义相同但措辞不同也可能失败。缺失、不支持、不可读或措辞不匹配均安全失败；`message-capability` 不可豁免或自动绕过。修改探针前须重新核验该版本。记录真实证据，不能编造；先核验当前 guide 和会话，否则停止。这里没有验证旧版本。派活前还须按[通信与恢复](inbox-and-waiting.md)完成适用的旧收件器迁移。
+首次派活前，`message-capability` 是独立且不可豁免的 **mechanical** 门禁。预检用所选 CLI 检查 `--version`、同版本 `skills get orchestration`、`check --help` 和 `inbox --help`，回执记录各命令退出码与实际 stdout 的 SHA-256。四条命令必须成功且有输出，相应帮助必须提供 `--retry-request`、`--terminal` 和 `--full`；这些参数本身不能证明语义。
+
+对于**首次会话**，无需先派 worker 或已有投递。可使用明确适用于当前会话、说明 Orca 会唤醒它的实时 runtime preamble 或其他权威证据，在 `context.messaging` 记录 `native_wake_confirmed: true`、`source: "live_preamble"` 和指向该证据的非空 `evidence_ref`。通用 guide 本身不证明本会话能唤醒。也可用 `source: "verified_session"`，但必须有本会话实际唤醒的验证证据；不得编造投递。两者都无法证明时停止。仅在有证据证明没有旧消费者会竞争，或[旧版迁移](inbox-and-waiting.md)及对账完成后，才记录 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。
+
+语义自动核验路径**仅**识别已验证的 Orca 1.4.248 及其 guide/help 文本片段；版本或措辞变化时安全失败，不推断兼容。其他版本或兼容但措辞不同的输出，可由人类明确审阅当前版本的权威 guide、help 和会话证据。在 `context.messaging.human_verification` 中记录非空 `reviewed_by`、`evidence_ref`、精确 `version`、从失败回执的 `observed.probes` 复制的 `probe_sha256` 映射（键为命令参数以 `/` 连接，包括 `--version`），并分别对 `native_wake`、`handled_check`、`retry_recovery`、`inbox_recovery` 填 `true`。四项都必须有证据；语义未知或不支持仍阻断。预检将版本与每个哈希和新探针输出比对，输出变化则核验失效。脚本记录声明，但不能认证审阅者或证明语义；人类须实际核实。不得用普通 override 或编造证据通过门禁。重检成功不等于真实端到端测试。
 
 ### 实时 worker 设置查找
 

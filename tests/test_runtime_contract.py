@@ -84,6 +84,7 @@ class MessagingCapabilityTests(unittest.TestCase):
                 def run(self, argv, timeout=None):
                     key = tuple(argv[1:])
                     outputs = {
+                        ('--version',): '1.4.248\n',
                         ('skills', 'get', 'orchestration'): 'Orca wakes you.\nWhen Orca wakes you',
                         ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request",
                         ('orchestration', 'inbox', '--help'): '--terminal --full',
@@ -118,3 +119,47 @@ class MessagingCapabilityTests(unittest.TestCase):
                 overrides = module._apply_overrides([item], [{'item': 'message-capability', 'by': 'human', 'reason': 'skip'}])
                 self.assertFalse(overrides[0]['applied'])
                 self.assertTrue(module._blocking_decision([item], overrides)['blocked'])
+
+class MessagingVersionAdaptationTests(unittest.TestCase):
+    def test_first_session_and_evidence_bound_human_review(self):
+        import hashlib
+        import importlib.util
+        outputs = {
+            ('--version',): '2.0.0\n',
+            ('skills', 'get', 'orchestration'): 'Messages wake the coordinator in this session.',
+            ('orchestration', 'check', '--help'): 'A read handles the batch. --retry-request',
+            ('orchestration', 'inbox', '--help'): '--terminal --full',
+        }
+        class Runner:
+            def __init__(self, data): self.data = data
+            def run(self, argv, timeout=None):
+                value = self.data.get(tuple(argv[1:]))
+                return {'returncode': 0 if value is not None else 1,
+                        'stdout': value or '', 'stderr': ''}
+        hashes = {'/'.join(key): hashlib.sha256(value.encode()).hexdigest()
+                  for key, value in outputs.items()}
+        messaging = {'native_wake_confirmed': True, 'source': 'live_preamble',
+                     'evidence_ref': 'live preamble promises wake for this session',
+                     'legacy_migration_complete': True, 'migration_evidence_ref': 'first session inventory',
+                     'human_verification': {'reviewed_by': 'human', 'evidence_ref': 'review evidence',
+                                            'version': '2.0.0', 'probe_sha256': hashes,
+                                            'native_wake': True, 'handled_check': True,
+                                            'retry_recovery': True, 'inbox_recovery': True}}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location('version_probe', ROOT / 'skills' / package / 'scripts/preflight.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(package=package):
+                self.assertEqual(module._check_messaging({'messaging': messaging}, Runner(outputs))['result'], 'pass')
+                incomplete_review = dict(messaging)
+                incomplete_review['human_verification'] = dict(messaging['human_verification'], handled_check=False)
+                self.assertEqual(module._check_messaging({'messaging': incomplete_review}, Runner(outputs))['result'], 'fail')
+                wrong_version = dict(messaging)
+                wrong_version['human_verification'] = dict(messaging['human_verification'], version='1.0.0')
+                self.assertEqual(module._check_messaging({'messaging': wrong_version}, Runner(outputs))['result'], 'fail')
+                no_review = dict(messaging); no_review.pop('human_verification')
+                self.assertEqual(module._check_messaging({'messaging': no_review}, Runner(outputs))['result'], 'fail')
+                changed = dict(outputs); changed[('orchestration', 'check', '--help')] = 'unsupported --retry-request'
+                self.assertEqual(module._check_messaging({'messaging': messaging}, Runner(changed))['result'], 'fail')
+                unsupported = dict(outputs); unsupported.pop(('orchestration', 'inbox', '--help'))
+                self.assertEqual(module._check_messaging({'messaging': messaging}, Runner(unsupported))['result'], 'fail')

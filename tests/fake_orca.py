@@ -114,6 +114,8 @@ def flag(name, default=None):
             return argv[index + 1]
     return default
 
+if argv == ["--version"]:
+    text_only("1.4.248\\n")
 if argv == ["skills", "get", "orchestration"]:
     text_only("Orca wakes you.")
 if argv == ["orchestration", "check", "--help"]:

@@ -353,26 +353,54 @@ def _check_messaging(context, runner):
     migration_ready = (messaging.get("legacy_migration_complete") is True
                        and isinstance(migration_ref, str) and bool(migration_ref.strip()))
     probes = (
-        (["orca", "skills", "get", "orchestration"], ("orca wakes you.",)),
-        (["orca", "orchestration", "check", "--help"],
-         ("default: return the bound run's oldest unread fifo batch and mark it handled.", "--retry-request")),
+        (["orca", "--version"], ()),
+        (["orca", "skills", "get", "orchestration"], ()),
+        (["orca", "orchestration", "check", "--help"], ("--retry-request",)),
         (["orca", "orchestration", "inbox", "--help"], ("--terminal", "--full")),
     )
     observations = []
+    outputs = {}
     for argv, required in probes:
         result = _run(runner, argv)
-        output = result["stdout"].lower()
-        found = all(token in output for token in required)
+        output = result["stdout"]
+        key = "/".join(argv[1:])
+        digest = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        outputs[key] = output
         observations.append({"command": " ".join(argv), "returncode": result["returncode"],
-                             "markers_present": found})
-    passed = confirmed and migration_ready and all(row["returncode"] == 0 and row["markers_present"]
-                               for row in observations)
+                             "markers_present": all(token in output.lower() for token in required),
+                             "sha256": digest})
+    version = outputs["--version"].strip()
+    available = bool(version) and all(outputs["/".join(argv[1:])].strip()
+                                      for argv, _required in probes) and all(
+                                      row["returncode"] == 0 and row["markers_present"]
+                                      for row in observations)
+    # Only this exact verified version and wording can pass without a human review.
+    known = (version == "1.4.248"
+             and "orca wakes you." in outputs["skills/get/orchestration"].lower()
+             and "default: return the bound run's oldest unread fifo batch and mark it handled."
+             in outputs["orchestration/check/--help"].lower())
+    review = messaging.get("human_verification")
+    review = review if isinstance(review, dict) else {}
+    hashes = {"/".join(argv[1:]): row["sha256"]
+              for (argv, _required), row in zip(probes, observations)}
+    reviewer = review.get("reviewed_by")
+    review_ref = review.get("evidence_ref")
+    reviewed = (isinstance(reviewer, str) and bool(reviewer.strip())
+                and isinstance(review_ref, str) and bool(review_ref.strip())
+                and review.get("version") == version
+                and review.get("probe_sha256") == hashes
+                and all(review.get(key) is True for key in
+                        ("native_wake", "handled_check", "retry_recovery", "inbox_recovery")))
+    passed = confirmed and migration_ready and available and (known or reviewed)
     return _item("message-capability", "pass" if passed else "fail",
-                 "read version-matched orchestration guide and check/inbox help",
+                 "read selected CLI version, orchestration guide and check/inbox help",
                  {"session_confirmed": confirmed, "session_source": messaging.get("source"),
                   "migration_confirmed": migration_ready,
                   "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
-                  "probes": observations},
+                  "version": version, "probes": observations,
+                  "semantic_basis": "known_version" if known else "human_review" if reviewed else "unknown",
+                  "reviewed_by": reviewer if reviewed else "",
+                  "review_evidence_ref": review_ref if reviewed else ""},
                  "native delivery and recovery confirmed" if passed else
                  "native delivery or recovery unverified; do not dispatch",
                  evidence if isinstance(evidence, str) else "")

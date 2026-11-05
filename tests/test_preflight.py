@@ -173,6 +173,8 @@ def make_state_database(profile_dir, rows=None, create_table=True, name="state.d
 def settings_runner(profile_dir, status=None, command_surface=None):
     """The happy-path runner for the three mechanical probes."""
     return FakeRunner([
+        (lambda argv: argv[1:] == ["--version"],
+         {"returncode": 0, "stdout": "1.4.248\n", "stderr": ""}),
         (lambda argv: argv[1:] == ["skills", "get", "orchestration"],
          {"returncode": 0, "stdout": "Orca wakes you.", "stderr": ""}),
         (lambda argv: argv[1:] == ["orchestration", "check", "--help"],
@@ -477,6 +479,7 @@ class MechanicalItemTests(PreflightTestCase):
             runner.calls,
             [
                 ["orca", "agent", "hooks", "status", "--json"],
+                ["orca", "--version"],
                 ["orca", "skills", "get", "orchestration"],
                 ["orca", "orchestration", "check", "--help"],
                 ["orca", "orchestration", "inbox", "--help"],
