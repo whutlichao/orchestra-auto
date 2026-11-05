@@ -32,22 +32,29 @@ python3 "$SKILLS_ROOT/orchestra-auto-zh/scripts/preflight.py" check \
 `version`、`command`）、`judgments`（每个判断项一条 `pass` 或 `fail`，带 `note` 与
 `evidence_ref`）、`baselines`（`label`、`source_commit`，可选 `order_of_magnitude` 或
 `used: false`）、`overrides`、`review_exemption`；`post-dispatch` 另需 `worktree`、
-`dashboard` 与 `inbox`。判断项没有记录结果即失败；机械项由 CLI 观察，协调者不提供其值。
+`dashboard` 与 `inbox`。判断项没有记录结果即失败；机械探针由 CLI 观察。`message-capability` 还要求协调者提供可独立核验的会话与迁移证据；脚本记录该声明，但不能验证其真实性。
 
 回执记录工单身份（`id`、`type`、`gate`、`origin`）、`checked_at`、`items`、`blocking`、
 `overrides` 与 `post_dispatch`。每个 item 都带 `id`、`class`、`result`、`command`、`observed`、
 `note` 与 `evidence_ref`。`class` 为 `mechanical`（由 CLI 观察）或 `judgment`（由协调者记录）；
 `result` 为 `pass`、`fail` 或 `waived`。§4.0.1 的十二条保留原有身份，并在每条里写明自己的
-item id 与 class。`live-settings` 是一个显式独立的阻断型预检项（blocking），不是第十三条
-tick 行：它在 tick sheet 之前执行，因为 worker 的 agent 选择依赖它。
+item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断型预检项，在 tick sheet 前执行，不增加 tick 行。
 
-所有派活前 item 都是阻断项。某个阻断项失败即拒绝派活；只有带 `item`、`by`、`reason` 的
+所有派活前 item 都是阻断项。某个阻断项失败即拒绝派活；除不可豁免的 `message-capability` 外，只有带 `item`、`by`、`reason` 的
 `overrides` 条目才能把它变成 `waived`，不完整的 override 不豁免任何东西。退出码 `0` 表示
 回执已持久化且没有阻断；`1` 表示有阻断失败、输入非法，或回执无法持久写入；`2` 是用法错误。
 **任何非零退出都不得派活，回执写入失败时同样不得派活**——写失败的记录不等于没有记录。
 预检命令从不运行 `worker-start`；协调者只在退出 `0` 之后才启动 worker。
 
 看板写入永远不参与这个决定。看板写失败是在回执之后记录的 gap，它不能把通过的预检变成失败。
+
+### 消息投递与恢复门禁
+
+首次派活前，`message-capability` 是独立且不可豁免的 **mechanical** 门禁。预检用所选 CLI 检查 `--version`、同版本 `skills get orchestration`、`check --help` 和 `inbox --help`，回执记录各命令退出码与实际 stdout 的 SHA-256。四条命令必须成功且有输出，相应帮助必须提供 `--retry-request`、`--terminal` 和 `--full`；这些参数本身不能证明语义。
+
+对于**首次会话**，无需先派 worker 或已有投递。可使用明确适用于当前会话、说明 Orca 会唤醒它的实时 runtime preamble 或其他权威证据，在 `context.messaging` 记录 `native_wake_confirmed: true`、`source: "live_preamble"` 和指向该证据的非空 `evidence_ref`。通用 guide 本身不证明本会话能唤醒。也可用 `source: "verified_session"`，但必须有本会话实际唤醒的验证证据；不得编造投递。两者都无法证明时停止。仅在有证据证明没有旧消费者会竞争，或[旧版迁移](inbox-and-waiting.md)及对账完成后，才记录 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。
+
+语义自动核验路径**仅**识别已验证的 Orca 1.4.248 及其 guide/help 文本片段；版本或措辞变化时安全失败，不推断兼容。其他版本或兼容但措辞不同的输出，可由人类明确审阅当前版本的权威 guide、help 和会话证据。在 `context.messaging.human_verification` 中记录非空 `reviewed_by`、`evidence_ref`、精确 `version`、从失败回执的 `observed.probes` 复制的 `probe_sha256` 映射（键为命令参数以 `/` 连接，包括 `--version`），并分别对 `native_wake`、`handled_check`、`retry_recovery`、`inbox_recovery` 填 `true`。四项都必须有证据；语义未知或不支持仍阻断。预检将版本与每个哈希和新探针输出比对，输出变化则核验失效。脚本记录声明，但不能认证审阅者或证明语义；人类须实际核实。不得用普通 override 或编造证据通过门禁。重检成功不等于真实端到端测试。
 
 ### 实时 worker 设置查找
 
@@ -92,7 +99,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
 已经确认过的约束最容易悄悄掉队。括号里是它的归属小节。
 
 - [ ] **CLI 活着**（`cli-app-up`、`cli-command-surface`；mechanical）：`<ORCA>` 可解析
-      （`ORCA_CLI_COMMAND` / `orca`），`orca status --json` 报 app up。两项证据都记录：
+      （按 SKILL.md 解析的可执行文件），`orca status --json` 报 app up。两项证据都记录：
       app 回复与最小命令面探针（`worker-list`）。起不来 → 按 §9 报告精确错误并停，不换可
       执行文件、不猜命令。
 - [ ] **指南是本轮抓取的**（`guide-freshness`；mechanical）：只有时间戳落在本轮内的
@@ -168,8 +175,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
   复核是派活后的 observation，不是派活前 gate，也绝不改写回执。豁免理由要同时写进 spec 与 Answer。
 - **看板记录已回填，或已记录 gap**（`dashboard-backfill`）。这是 ledger observation：看板写失败
   记录 gap，不阻断派活，也不改变预检结果。
-- **收件器已装上且健康**（`inbox-health`，§4.5）：本 Run 只有一个收件器，绑定真实 coordinator
-  句柄，以 harness 能呈现的调用装上，而不是 `nohup`。这也是一条 ledger observation，绝不是派活前 gate。
+- **消息通道持续健康**（`inbox-health`，§4.5）：记录派活后的 observation 或缺口；它不能替代或豁免派活前 `message-capability` 门禁。旧 `installed` 不证明原生唤醒。
 
 拿到回执后记录这三项观察：
 

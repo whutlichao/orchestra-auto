@@ -129,8 +129,8 @@
     {
       "id": 4,
       "name": "unverified-start",
-      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了三个 worker。三条回执都是 state=ready、stage=input_accepted：\n\n    回执 A: turnStart=unsupported\n    回执 B: turnStart 字段缺失\n    回执 C: turnStart=unsupported\n\n你现在能拿到的证据（都不需要再派一次活）：\n- A 的终端标题仍是该 agent 的空闲横幅；terminal read 显示完整约 6KB 的 preamble 停在输入框里未发送，当前没有正在跑的 turn。\n- B 的终端标题也是空闲横幅；屏幕还没读过，而 B 是 10 分钟前派的，至今没有任何消息。\n- C 的 worker-show 显示该 worker 没有 agent 终端句柄；worker-read 能看到子任务进展，worker-list 的 stage detail 也有内容。\n\n（供你判断的背景事实：Orca 只对部分 agent CLI 观察 turn 是否真的开始；这些 agent 在写完文本与一个回车后立刻返回，所以回执里 turnStart=unsupported 或干脆没有这个字段。）\n\n请只输出你的处置，不要真的跑命令。严格用这 4 个标签：\n\n1. VERDICT: state=ready 是否足以认为 worker 已开始？哪一条回执算已开始，为什么\n2. START_CHECK: 对 A、B、C 各自具体做什么来确认开始（写清命令与你看的字段或观察），以及它相对于 check --wait 的位置\n3. RECOVERY: 对没开始的 worker 具体怎么补救、补几次、补裸 Enter 必须在什么条件下才允许\n4. FAILURE_MODE: 哪种补救做法是错的，会造成什么后果\n\n请严格按这 4 个标签输出，每条都给具体值，不要写「视情况而定」。",
-      "expected_output": "不把 state=ready 当证据：turnStart=unsupported 或字段缺失只说明字节写入成功。进 check --wait 之前，按每个 worker 自己支持的证据确认：A 走 worker-show -> terminal show --json -> .terminal.title 再看屏幕；C 没有终端句柄，只能看 worker-read、状态投影与产物进展，绝不对无句柄 worker 调终端命令。A 允许对原终端补一次裸 Enter，是因为屏幕显示完整 preamble 停在输入框且没有正在跑的 turn——空闲标题没变化本身既不是这个确认，也不构成「没开始」的结论。B 必须先读屏幕再决定是否补 Enter；重发整份 spec 是错的，会造成重复回合。",
+      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了三个 worker。三条回执都是 state=ready、stage=input_accepted：\n\n    回执 A: turnStart=unsupported\n    回执 B: turnStart 字段缺失\n    回执 C: turnStart=unsupported\n\n你现在能拿到的证据（都不需要再派一次活）：\n- A 的终端标题仍是该 agent 的空闲横幅；terminal read 显示完整约 6KB 的 preamble 停在输入框里未发送，当前没有正在跑的 turn。\n- B 的终端标题也是空闲横幅；屏幕还没读过，而 B 是 10 分钟前派的，至今没有任何消息。\n- C 的 worker-show 显示该 worker 没有 agent 终端句柄；worker-read 能看到子任务进展，worker-list 的 stage detail 也有内容。\n\n（供你判断的背景事实：Orca 只对部分 agent CLI 观察 turn 是否真的开始；这些 agent 在写完文本与一个回车后立刻返回，所以回执里 turnStart=unsupported 或干脆没有这个字段。）\n\n请只输出你的处置，不要真的跑命令。严格用这 4 个标签：\n\n1. VERDICT: state=ready 是否足以认为 worker 已开始？哪一条回执算已开始，为什么\n2. START_CHECK: 对 A、B、C 各自具体做什么来确认开始（写清命令与你看的字段或观察），以及它相对于结束 turn 等待原生唤醒的位置\n3. RECOVERY: 对没开始的 worker 具体怎么补救、补几次、补裸 Enter 必须在什么条件下才允许\n4. FAILURE_MODE: 哪种补救做法是错的，会造成什么后果\n\n请严格按这 4 个标签输出，每条都给具体值，不要写「视情况而定」。",
+      "expected_output": "不把 state=ready 当证据：turnStart=unsupported 或字段缺失只说明字节写入成功。结束 turn 等待原生唤醒之前，按每个 worker 自己支持的证据确认：A 走 worker-show -> terminal show --json -> .terminal.title 再看屏幕；C 没有终端句柄，只能看 worker-read、状态投影与产物进展，绝不对无句柄 worker 调终端命令。A 允许对原终端补一次裸 Enter，是因为屏幕显示完整 preamble 停在输入框且没有正在跑的 turn——空闲标题没变化本身既不是这个确认，也不构成「没开始」的结论。B 必须先读屏幕再决定是否补 Enter；重发整份 spec 是错的，会造成重复回合。",
       "files": [],
       "assertions": [
         {
@@ -162,7 +162,7 @@
           "name": "start_one_nudge"
         },
         {
-          "text": "START_CHECK 的位置在 check --wait 循环之前，而不是等超时之后",
+          "text": "START_CHECK 的位置在结束 turn 等待原生唤醒之前，而不是等超时之后",
           "name": "start_check_before_wait"
         },
         {
@@ -174,7 +174,7 @@
     {
       "id": 5,
       "name": "worker-named-by-user",
-      "prompt": "你正在跑 orchestra-auto。用户这次的原话是：\n\n「用 pi 跑：把 src/queue/retry.ts 里那个退避算法改成指数退避，加个上限，顺手补两个测试。跑完给我 PR。」\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\n请只输出你在这个回合会产出的东西，不要真的跑任何命令、不要派 worker。用这个结构：\n\n1. MODE_DECL: 你的模式声明（照 skill 要求的格式，一栏不缺）\n2. WORKER_START: 你给 worker 的那条 worker-start 命令全文（占位符保留尖括号，但 --agent 一栏要写成最终值）\n3. START_CHECK: 派出去之后、进 check --wait 之前，你靠什么判断这个 worker 真的开始干活了（写清命令与你要比的字符串）\n4. DEFAULTS: 如果用户这一句里没有「用 pi」三个字，你的第 1、3 条会怎么变\n\n请严格按这 4 个标签输出，每条都要有具体内容（具体到字符串与字段名）。",
+      "prompt": "你正在跑 orchestra-auto。用户这次的原话是：\n\n「用 pi 跑：把 src/queue/retry.ts 里那个退避算法改成指数退避，加个上限，顺手补两个测试。跑完给我 PR。」\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\n请只输出你在这个回合会产出的东西，不要真的跑任何命令、不要派 worker。用这个结构：\n\n1. MODE_DECL: 你的模式声明（照 skill 要求的格式，一栏不缺）\n2. WORKER_START: 你给 worker 的那条 worker-start 命令全文（占位符保留尖括号，但 --agent 一栏要写成最终值）\n3. START_CHECK: 派出去之后、结束 turn 等待原生唤醒之前，你靠什么判断这个 worker 真的开始干活了（写清命令与你要比的字符串）\n4. DEFAULTS: 如果用户这一句里没有「用 pi」三个字，你的第 1、3 条会怎么变\n\n请严格按这 4 个标签输出，每条都要有具体内容（具体到字符串与字段名）。",
       "expected_output": "MODE_DECL 带 worker=pi 且六栏都是具体值，前置 skill 取自夹具 PRE_SKILL 的路径；WORKER_START 含 --agent pi 与 --worktree new-top-level；START_CHECK 是 worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title，与该 agent 的空闲横幅对比，并且只有在确认完整 preamble 停在输入框、没有正在跑的 turn 之后，才把补一次裸 Enter 写成补救；DEFAULTS 是去读 Orca 的实时默认 TUI agent，并把读到的值写成具体值。",
       "files": [],
       "assertions": [
@@ -257,7 +257,7 @@
       "id": 7,
       "name": "channel-routing",
       "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「settings 页那个开关的文案改一下，改成「自动同步」。改完开 PR。」\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n请只输出你的模式声明那六栏（格式照 skill 要求，一栏不缺），然后额外用一行注释说明你为什么走这条通道。不要真的跑命令、不要派 worker。\n\n写完之后，再回答这个追加问题：假如你把这句话改成「就改个按钮颜色，一行的事，别搞那么重」，你的通道判定会变吗？为什么？",
-      "expected_output": "通道 B、前置 skill 用夹具 PRE_SKILL 的路径、worker 是夹具 LIVE_DEFAULT_TUI_AGENT=fixture-agent（用户没有点名 agent），交付终点为项目改动合并。单文件小改仍在隔离 worktree 中完成，worker 创建 PR；门禁通过后 coordinator 自动合并，不再逐张请用户确认。",
+      "expected_output": "通道 B，前置 skill 和 worker 使用夹具，交付终点为开放 PR；用户只要求开 PR，不授权合并。小改仍由 worker 在隔离 worktree 完成。",
       "files": [],
       "assertions": [
         {
@@ -286,11 +286,11 @@
         },
         {
           "name": "decl_endpoint_merge",
-          "text": "声明里把「项目改动合并」写成交付终点，符合用户的常设自动合并偏好"
+          "text": "交付终点是开放 PR"
         },
         {
           "name": "auto_merge_after_gate",
-          "text": "计划在合并门禁通过后自动合并 PR，不再单独请用户确认"
+          "text": "不自动合并只有开 PR 授权的请求"
         }
       ]
     },
@@ -389,7 +389,7 @@
       "id": 11,
       "name": "worker-slot-follows-setting-not-habit",
       "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「src/lib/queue.ts 里那个重试退避还是写死的 1000ms，改成指数退避加个 30s 上限，顺手补两个测试。跑完给我 PR。」\n\n（这句里没有提到任何 agent / worker / harness 的名字。）\n\n评估设置夹具（这是本题的权威实时值，请直接按夹具回答，不依赖本机设置，也无需跑命令）：\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent（已过期且不可用，不要使用）。\n\n路径夹具（权威值，逐字照抄，不需要查文件系统）：\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n两个背景事实：\n- 上一轮编排用了 `habit-agent`，这个仓库里也确实有一堆它的痕迹（本地插件忽略文件之类）。\n- 你自己没有点名 agent。\n\n请只输出你这一回合会产出的东西，不要真的派 worker、不要建 worktree：\n1. DECL: 你的完整模式声明（六栏齐全，格式照 skill 要求）\n2. JUSTIFY: worker 那一栏的值是怎么来的？写清你依据的是什么\n3. DISCONFIRM: 如果你第一反应想填上轮那个 agent，请说明你凭什么改掉它\n\n请严格按这 3 个标签输出，每条都要有具体值，不许写「待定」「读设置确定」这类占位符。",
-      "expected_output": "交付终点为项目改动合并，门禁通过后自动合并 PR；worker 栏必须等于夹具 `LIVE_DEFAULT_TUI_AGENT=fixture-agent`，JUSTIFY 明确以该夹具为依据，而不是本机设置、skill、仓库痕迹或 `habit-agent`。DISCONFIRM 否掉这些拉力，并指出值即使碰巧相同也不改变依据。`STALE_EXPORT_DEFAULT=old-agent` 已明确过期且不可用。",
+      "expected_output": "交付终点是开放 PR；worker 栏等于夹具 `LIVE_DEFAULT_TUI_AGENT=fixture-agent`。依据当前夹具，不沿用旧 agent 或过期导出。",
       "files": [],
       "assertions": [
         {
@@ -418,7 +418,7 @@
         },
         {
           "name": "pr_auto_merge",
-          "text": "计划门禁通过后自动合并 PR；不因为用户说了「给我 PR」就额外要求一次确认"
+          "text": "只交开放 PR，不自动合并"
         }
       ]
     },
@@ -568,21 +568,21 @@
     {
       "id": 19,
       "name": "wake_then_reinstall",
-      "prompt": "本 Run 的 worker 正在跑，收件箱安静了一阵。你在用 orchestra-auto。不执行任何命令，说明你下一次唤醒从哪来、收件器触发时会打印什么，以及触发后你立刻做什么。",
-      "expected_output": "把收件器自身的结束（harness 会呈现为一条消息的命令结束）当作唤醒；说明新落盘的非心跳批次会让它在 stdout 打印一行可解析的唤醒行；并说明处理完批次后要装回下一次等待——不装回就是静默停摆，而已经落盘的批次不应再次唤醒。",
+      "prompt": "worker 正在运行，说明下一次唤醒来自哪里、消息如何处理以及后台消费式 check 的风险。不要执行。",
+      "expected_output": "结束 turn，Orca 原生唤醒并发送完整消息；记录消息 ID、处理状态及证据，按 ID 去重。后台消费式 check 会抢走消息，不能运行。",
       "files": [],
       "assertions": [
         {
           "name": "wake_is_the_process_end",
-          "text": "把收件器结束（连同它那一行 stdout）当作唤醒，而不是文件出现"
+          "text": "说明 Orca 原生唤醒"
         },
         {
           "name": "reinstalls_the_next_wait",
-          "text": "说明处理完批次后要装回下一次等待，不装回会让该 Run 无人监听"
+          "text": "按消息 ID 去重并记录处理证据"
         },
         {
           "name": "already_saved_head_stays_quiet",
-          "text": "不把已经落盘的批次当成新的唤醒"
+          "text": "禁止后台消费式 check"
         }
       ]
     },
@@ -744,7 +744,7 @@
     {
       "id": 27,
       "name": "additive_api_is_two_way",
-      "prompt": "你正在跑 orchestra-auto。集成 PR 给现有库新增一个导出函数 `formatDate`。没有改既有签名、存储格式、部署或外部副作用。PR 正文写 Door: two-way。只输出：\n1. DOOR\n2. MERGE\n3. WHY\n不执行。",
+      "prompt": "你正在跑 orchestra-auto。集成 PR 给现有库新增一个导出函数 `formatDate`。没有改既有签名、存储格式、部署或外部副作用。PR 正文写 Door: two-way。只输出：\n1. DOOR\n2. MERGE\n3. WHY\n不执行。 用户此前已授权本轮自动合并。",
       "expected_output": "把 PR 判为双向门：纯增量、向后兼容的 API 新增可低成本回滚，不构成单向门触发项。G-merge 全绿且仓库允许时自动合并；单向门仍要停下来交给人类。",
       "files": [],
       "assertions": [
@@ -765,8 +765,8 @@
     {
       "id": 28,
       "name": "observed-start-is-evidence",
-      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了一个 worker。回执是 state=ready、stage=input_accepted、turnStart=observed。\n\n请只输出：\n1. STARTED: turn 是否已确认开始\n2. NEXT_CHECK: 进 check --wait 循环之前你还会做什么\n3. WHY: 一两句话\n不要跑命令。",
-      "expected_output": "`turnStart: observed` 就是回执给出的开始证据，turn 已确认，不需要再叠标题取证或补 Enter。下一步是装好 inbox 消费者并进入 check --wait 循环；WHY 引用规则：`state: ready` 单独不是 `turnStart`，而 `turnStart: observed` 是首选的回执证据。",
+      "prompt": "你正在跑 orchestra-auto，刚用 `--worktree new-top-level` 派了一个 worker。回执是 state=ready、stage=input_accepted、turnStart=observed。\n\n请只输出：\n1. STARTED: turn 是否已确认开始\n2. NEXT_CHECK: 结束 turn 等待原生唤醒之前你还会做什么\n3. WHY: 一两句话\n不要跑命令。",
+      "expected_output": "`turnStart: observed` 证明已开始，不需标题取证或补 Enter；结束 turn 等待原生唤醒。",
       "files": [],
       "assertions": [
         {
@@ -778,7 +778,7 @@
           "name": "no_enter_nudge"
         },
         {
-          "text": "直接去装 check --wait / inbox 消费者，而不是重新验证开始",
+          "text": "结束 turn 等待原生唤醒，不安装收件器",
           "name": "enters_wait"
         },
         {
@@ -790,8 +790,8 @@
     {
       "id": 29,
       "name": "interrupted-action-needs-evidence",
-      "prompt": "你在跑 orchestra-auto。一个批次已落盘并唤醒过你，台账里消息 `m-8842` 停在 `processing`：一条 `worker_done`，它要求的动作是合并该票的 PR。进程在 turn 中途死掉了。重启后该批在服务端仍未 ack，其 delivery 文件仍在盘上。\n\n只输出：\n1. STATE：从这条台账记录你能得出什么、不能得出什么\n2. RECOVERY：在重放该动作之前你做什么\n3. IF_UNVERIFIABLE：当效果无法从证据确立时你做什么\n4. WHY：一到两句\n不要执行命令。",
-      "expected_output": "台账这条记录只证明动作被尝试过，不证明它完成、也不证明它失败：一条停在 `processing` 的记录分不清「动作已生效、记录丢了」和「动作根本没跑」——因为 ack 要等整批处理完才发，而效果可能已经落地。收件器给的是 at-least-once 投递加不重复唤醒，不是 exactly-once 效果。所以恢复的办法是先确立事实再决定是否重放：读真实状态（合并查 `pr view`、回复查回执、文件就读文件本身），据证据判断而不是据台账判断。效果无法从证据确立时交给人类，不要盲目重跑；只有效果可验证且动作幂等时，用同一个 delivery ID 重放才安全。WHY 要引用「台账写在动作之前」这条顺序规则，或说明收件器是 at-least-once 而非 exactly-once。",
+      "prompt": "台账消息停在 processing，要求合并 PR，进程中途退出。当前 check 可能已标记消息已处理。重启后如何判定、恢复？不要执行。",
+      "expected_output": "processing 不证明副作用结果；从 inbox 恢复消息，查询 PR 状态和合并 SHA，无法确立时升级，不盲目重复合并。",
       "files": [],
       "assertions": [
         {
@@ -807,7 +807,7 @@
           "name": "unverifiable_goes_to_human"
         },
         {
-          "text": "WHY cites the write-before-action ordering or that the consumer is at-least-once and not exactly-once",
+          "text": "消息标记已处理不证明副作用完成",
           "name": "why_cites_rule"
         }
       ]
@@ -869,25 +869,25 @@
     {
       "id": 32,
       "name": "reinstall-with-unacked-batches",
-      "prompt": "某个 Run 的收件循环超时后被卸载。磁盘上留着两个已保存的批次：较旧的一个普通批次，其 ack 回执是 `failed`；较新的一个纯心跳批次。你重新安装收件循环。\n\n请只输出：\n1. WAKE: 安装会不会唤醒你，为哪个批次唤醒\n2. ACK: 每个批次如何 ack（如果有）\n3. SECOND_INSTALL: 之后再安装一次会怎样\n4. WHY: 一两句话\n不要跑命令。",
-      "expected_output": "安装会把已保存的投递与成功回执对账，只唤醒一次——对象是最旧的那个从未宣告过的批次，打印一行带 `reason=delivery` 的机器可读输出，并持久化 `reconciled_delivery_id`。ack 回执为 failed 的批次仍未 ack：用同一 request id 重试 ack 并保留投递文件，绝不记为成功。只有每条消息都是心跳的批次才自动 ack，所以纯心跳批次在本地 ack、不产生唤醒。第二次安装不再唤醒，因为 `reconciled_delivery_id` 记录过这次对账。",
+      "prompt": "旧收件循环留下已保存批次和失败 ack 回执；你运行 Orca 1.4.248。如何恢复及处理旧文件？不要执行。",
+      "expected_output": "保留旧文件作审计，不运行旧循环或自动重放 ack；用 inbox 查已处理消息，按 ID 去重并对账真实效果。旧版本语义未验证。",
       "files": [],
       "assertions": [
         {
           "name": "one_wake_for_oldest_unannounced",
-          "text": "只唤醒一次，对象是最旧的从未宣告过的已保存批次"
+          "text": "保留历史文件"
         },
         {
           "name": "reconciled_id_persisted",
-          "text": "持久化 reconciled_delivery_id，避免重复对账"
+          "text": "从 inbox 恢复已处理消息"
         },
         {
           "name": "failed_ack_stays_unacked",
-          "text": "ack 回执为 failed 的批次保持未 ack，并用同一 request id 重试"
+          "text": "不自动重放 ack"
         },
         {
           "name": "second_install_quiet",
-          "text": "对已对账的批次，下一次安装不再唤醒"
+          "text": "按 ID 去重并对账效果"
         }
       ]
     },
@@ -994,7 +994,7 @@
     {
       "id": 37,
       "name": "binding-loss",
-      "prompt": "一个 worker 报告 `outcome: run_binding_lost`。`worker-show` 对这个 Run 返回不到已确认的 owner，收件循环报告 `consumer_fenced`。\n\n请只输出：\n1. HEALTH: 你记录的健康状态与原因\n2. NEXT: 下一步做什么\n3. NEW_RUN: 是否新建 Run\n4. WHY: 一两句话\n不要跑命令。",
+      "prompt": "一个 worker 报告 `outcome: run_binding_lost`。`worker-show` 对这个 Run 返回不到已确认的 owner，当前 Orca 命令报告 `consumer_fenced`。\n\n请只输出：\n1. HEALTH: 你记录的健康状态与原因\n2. NEXT: 下一步做什么\n3. NEW_RUN: 是否新建 Run\n4. WHY: 一两句话\n不要跑命令。",
       "expected_output": "`consumer_fenced` 是 `blocked`、`reason: binding_loss`，在 ownership 尚未证实（`unproven`）时升级给人。没有已确认 owner 的 `run_binding_lost` 是 `unknown`、`reason: ownership_unobserved`，应升级而不是重试。绑定丢失绝不是重试触发器，任何 block 都只是一条关于该 Run 的 observation。你要重建绑定，而不是重建 Run：绝不无条件新建 Run，先读已有句柄。",
       "files": [],
       "assertions": [

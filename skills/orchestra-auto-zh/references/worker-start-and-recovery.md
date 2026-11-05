@@ -6,7 +6,7 @@
 ## 确认 turn
 
 **回执完全没回来、Task 停在 `ready`？** 先排除 stale-base 守卫，再去看终端：coordinator 的
-worktree 相对任务 base 落后超过阈值时，Orca 直接拒绝派发，Dispatch 根本没建，收件器也不会有任何
+worktree 相对任务 base 落后超过阈值时，Orca 直接拒绝派发，Dispatch 根本没建，也不会有任何
 投递。按 §9 取证，同步或重建 worktree，**不要重派**——拒绝行为、阈值与 `allow-stale-base` 见
 [派活闭环](dispatch-loop.md) §4.3。
 

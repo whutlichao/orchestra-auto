@@ -47,7 +47,7 @@ cases:
     expectations:
       - "STARTED is yes: turnStart: observed is the receipt's start evidence."
       - "NEXT does not re-verify the start with title forensics and does not send a bare Enter."
-      - "NEXT goes on to install the check --wait / inbox consumer."
+      - "NEXT ends the turn for Orca native wake."
 
   - name: worker_without_terminal_start_check
     description: "A worker with no terminal is judged from worker-read and artifacts, never terminal commands."
@@ -88,7 +88,7 @@ cases:
       - "WHY treats this as an irreversible / live-data escalation even if the worker claims it is reversible."
 
   - name: wake_then_reinstall
-    description: "The wake is the consumer ending, and every wake is followed by a new wait."
+    description: "Orca wakes the agent natively after it ends the turn."
     prompt: |
       Workers are running for this Run and the inbox has been quiet for a while.
       Output ONLY:
@@ -96,9 +96,9 @@ cases:
       2. AFTER_WAKE — what you do the moment it fires
       3. STALL_RISK — one sentence
     expectations:
-      - "WAKE_SOURCE is the inbox consumer ending with its single stdout line, not a file appearing and not a live background process."
-      - "AFTER_WAKE handles the batch and then installs the next wait."
-      - "STALL_RISK says that a wake with no new wait behind it leaves the Run with no listener."
+      - "WAKE_SOURCE is an Orca native message."
+      - "AFTER_WAKE handles the whole message or batch and records evidence."
+      - "STALL_RISK identifies a background consuming check stealing mail."
 
   - name: channel_discussion_stops
     description: "Pure discussion stays on channel A and does not dispatch."

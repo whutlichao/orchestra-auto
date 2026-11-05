@@ -94,7 +94,7 @@ implementer 若是 Orca 嵌套 worker，必须遵守 `nested_worker_depth_exceed
    worktree 里。
 2. **集成已验收**：最终 tree 通过适用的全量门禁，且至少抽查两张票的证据证实摘要里的说法。
 3. **PR 已合并**：集成 PR 的 head 与最终验收 SHA 一致，标为 ready 前已把 integration branch
-   rebase 到当前默认 base；是否合并只看 §5 的门规则。
+   rebase 到当前默认 base；是否合并由用户授权及 §5 门规则共同决定。
 4. **票据按 tracker 关闭**：由 tracker 自己的规则关闭，通常是 PR 合并时 `Closes` 链接生效。
    所以关闭发生在合并**之后**，对账是合并后的步骤（见[门禁验收](gate-acceptance.md) §6.5），
    不是合并的前提。
@@ -140,7 +140,7 @@ worker 用 `pr` skill 写 PR 正文，包含 `Door`、`Blast Radius` 与证据�
 拿不准就按单向门处理。本节只补长程票图特有的部分：门决定的是**集成 PR** 能不能合并，
 下面的票据对账由它推出。
 
-- **双向门 + G-merge 全绿 + 仓库允许** → 自动合并、同步 main，然后按 tracker 对账：
+- **用户授权合并 + 双向门 + G-merge 全绿 + 仓库允许** → 自动合并、同步 main，然后按 tracker 对账：
   核对 `Closes` 链接真的关闭了它指向的票据，并把 tracker 没关的项（及原因）记入报告。
 - **单向门、拿不准、门禁红或规则阻止** → 停在开放 PR。报告门、证据、影响面与人类手动合并的
   确切动作。不合并、不同步 main、不再请求一次自动批准。这些票保持**开启**：PR 是开着的、

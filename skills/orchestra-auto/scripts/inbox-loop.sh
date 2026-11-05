@@ -1,5 +1,4 @@
 #!/bin/bash
-# Stable entry point; the implementation uses the standard library for file locking,
-# atomic writes and child-process reaping.
+# Retired entry point: the Python stub exits before touching Orca or state.
 set -euo pipefail
 exec python3 "$(dirname "$0")/inbox-loop.py" "$@"

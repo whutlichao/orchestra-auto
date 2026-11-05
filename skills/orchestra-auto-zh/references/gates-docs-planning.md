@@ -30,7 +30,7 @@
 ### 过了 G-docs 之后还没完
 
 完整实施请求通常经过 `grill-with-docs → to-spec → to-tickets → implement-spec`。
-G-docs 只验收设计阶段；设计文件的 PR 通过 G-merge 并自动合并后，若本轮只要求设计，
+G-docs 只验收设计阶段；设计文件的 PR 通过 G-merge 并到达用户授权的交付终点后，若本轮只要求设计，
 在报告里记录后续入口并停止；若本轮包含实施，继续 to-spec 与 to-tickets。见 SKILL.md §7。
 
 ---

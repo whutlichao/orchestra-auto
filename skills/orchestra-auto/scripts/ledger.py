@@ -78,9 +78,22 @@ RFC3339_UTC = re.compile(
 HOME_ENV = "ORCA_LEDGER_HOME"
 DEFAULT_HOME = "~/.orca/ledger"
 
-#: Orca CLI contract shared with the inbox loop: the variable names the executable.
+#: Orca CLI selection starts with this environment override.
 CLI_ENV = "ORCA_CLI_COMMAND"
 DEFAULT_CLI = "orca"
+
+
+def resolve_orca_cli():
+    """Follow the version-matched Orca discovery stub without fallback."""
+    if CLI_ENV in os.environ:
+        return os.environ[CLI_ENV]
+    if os.environ.get("ORCA_DEV_REPO_ROOT"):
+        return "orca-dev"
+    if sys.platform.startswith("linux") and not (
+            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
+        return "orca-ide"
+    return DEFAULT_CLI
+
 CLI_TIMEOUT_SECONDS = 30
 PAGE_LIMIT = 100
 MAX_PAGES = 1000
@@ -133,7 +146,7 @@ ACTION_POLICY = {
     "worker-start": {"probe": "workers", "replay": "joinable"},
     "send": {"probe": "messages", "replay": "joinable"},
     "reply": {"probe": "messages", "replay": "joinable"},
-    "ack": {"probe": "messages", "replay": "replay_safe"},
+    "ack": {"probe": "messages", "replay": "never"},
     "stop": {"probe": "workers", "replay": "joinable"},
     "abandon": {"probe": "workers", "replay": "joinable"},
     "retain": {"probe": "workers", "replay": "settled"},
@@ -2430,7 +2443,7 @@ class RecordedSource:
 
 
 def _orca_command(orca_cli=None):
-    return orca_cli or os.environ.get(CLI_ENV, DEFAULT_CLI)
+    return orca_cli or resolve_orca_cli()
 
 
 def _snake_aliases(raw, aliases):
@@ -2483,9 +2496,8 @@ def _normalized_task_row(raw):
 class LiveAuthority:
     """Gather a snapshot from the Orca CLI plus injected host/tracker/git adapters.
 
-    The Orca command is resolved from ``ORCA_CLI_COMMAND`` (the same contract the
-    inbox loop uses), so tests point it at the shared fake and nothing touches a
-    live Orca. Every read failure becomes ``unknown`` with a reason; an empty
+    The Orca command follows the discovery stub, beginning with ``ORCA_CLI_COMMAND``;
+    tests point that override at the shared fake and do not touch a live Orca. Every read failure becomes ``unknown`` with a reason; an empty
     success is never invented. Pagination reads either shape the CLI publishes
     for ``worker-list`` (with ``--include-remote``) and ``task-list``: the live
     CLI's flat ``result.nextCursor`` (absent on the final page) or the older

@@ -57,6 +57,7 @@ jobs:
             tests.test_acceptance \
             tests.test_closeout \
             tests.test_inbox_loop \
+            tests.test_runtime_contract \
             tests.test_ci_config \
             tests.test_doc_contract \
             tests.test_visual_evidence

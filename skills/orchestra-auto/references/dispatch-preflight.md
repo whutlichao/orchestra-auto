@@ -36,17 +36,16 @@ rest: `run_id`, `round_started_at`, `base_commit`, optional `checked_at`, `guide
 `evidence_ref` for each judgment item), `baselines` (`label`, `source_commit`, optional
 `order_of_magnitude` or `used: false`), `overrides` and `review_exemption`; `post-dispatch`
 also needs `worktree`, `dashboard` and `inbox`. A judgment item with no recorded result
-fails; a mechanical item is observed by the CLI, never supplied by the coordinator.
+fails; mechanical probes run through the CLI. `message-capability` also requires coordinator-supplied, independently verifiable session and migration evidence; the script records but cannot authenticate that attestation.
 
 The receipt records the ticket identity (`id`, `type`, `gate`, `origin`), `checked_at`, `items`,
 `blocking`, `overrides` and `post_dispatch`. Every item carries `id`, `class`, `result`,
 `command`, `observed`, `note` and `evidence_ref`. `class` is `mechanical` when the CLI observed
 the value or `judgment` when the coordinator recorded it; `result` is `pass`, `fail` or
 `waived`. The twelve §4.0.1 lines keep their identity and name their item id and class in the
-line itself. `live-settings` is an explicit independent blocking preflight item, not a
-thirteenth tick line: it runs before the sheet because the agent choice depends on it.
+line itself. `live-settings` and `message-capability` are explicit independent blocking preflight items, not additional tick lines: they run before the sheet.
 
-Every pre-dispatch item is blocking. A failed blocking item rejects the dispatch; an `overrides`
+Every pre-dispatch item is blocking. A failed blocking item rejects the dispatch; except for non-waivable `message-capability`, an `overrides`
 entry with `item`, `by` and `reason` is the only way to turn that item into `waived`, and an
 incomplete override waives nothing. Exit `0` means the receipt was written and nothing blocks;
 exit `1` means a blocking failure, invalid input, or a receipt that could not be written
@@ -56,6 +55,14 @@ command never runs `worker-start`; the coordinator starts the worker only after 
 
 A dashboard write is never part of this decision. A failed dashboard write is a gap recorded
 after the receipt, and it cannot turn a passing preflight into a failing one.
+
+### Message delivery and recovery gate
+
+Before the first dispatch, `message-capability` is an independent, non-waivable **mechanical** gate. The selected CLI is probed for `--version`, the version-matched `skills get orchestration`, `check --help`, and `inbox --help`. The receipt records each command's exit and SHA-256 of its actual stdout. All four commands must succeed, produce output, and advertise `--retry-request`, `--terminal` and `--full` where applicable. These flags alone do not establish semantics.
+
+For a **first session**, no worker message or prior delivery is required. Use a live runtime preamble or other authoritative evidence that explicitly applies to this exact session and says Orca will wake it; record its source and location in `context.messaging` as `native_wake_confirmed: true`, `source: "live_preamble"`, and a non-empty `evidence_ref`. A generic guide alone is not session evidence. Alternatively `source: "verified_session"` requires evidence of an actual verified session wake; do not invent a delivery. If neither proves this session's wake capability, stop. Record `legacy_migration_complete: true` and a non-empty `migration_evidence_ref` only after evidence establishes no old consumer can compete, or after [legacy migration](inbox-and-waiting.md) has completed.
+
+For semantics, the automatic known-version path recognizes **only** Orca 1.4.248 and its verified guide/help fragments; wording or version changes fail closed rather than being interpreted as support. For another version or reworded compatible output, an explicit human may review the current version-matched authoritative guide, help and session evidence. In `context.messaging.human_verification`, record non-empty `reviewed_by` and `evidence_ref`, the exact `version`, `probe_sha256` mapping copied from the failed receipt's `observed.probes` (keys are the command arguments joined with `/`, including `--version`), and separate `true` attestations for `native_wake`, `handled_check`, `retry_recovery`, and `inbox_recovery`. All four must be established by that evidence; unknown or unsupported semantics remain blocked. The preflight compares the version and every hash against fresh probe output, so changed output invalidates the review. It records the attestation but cannot authenticate the reviewer or prove the semantics; the human must actually verify them. Never use an ordinary override or invent evidence to pass the gate. A successful recheck is not a live end-to-end test.
 
 ### Live worker settings lookup
 
@@ -114,7 +121,7 @@ when a long spec is half written, an already-confirmed constraint is the thing t
 falls off. The parenthesised section is where it belongs.
 
 - [ ] **The CLI is alive** (`cli-app-up`, `cli-command-surface`; mechanical): `<ORCA>` resolves
-      (`ORCA_CLI_COMMAND` or `orca`) and `orca status --json` reports the app up. Record both
+      (the executable resolved in SKILL.md) and `orca status --json` reports the app up. Record both
       evidence items: the app reply and a minimal command-surface probe (`worker-list`). If it
       will not start → report the exact error per §9 and stop; do not swap the executable and do
       not guess commands.
@@ -226,9 +233,7 @@ implementers must never share one worktree.
 - **The dashboard record was backfilled or a gap was recorded** (`dashboard-backfill`). This is
   a ledger observation: a failed dashboard write records a gap, never blocks dispatch, and never
   changes the preflight result.
-- **The inbox consumer is installed and healthy** (`inbox-health`, §4.5): one consumer for this
-  Run, bound to the real coordinator handle, installed as a call the harness surfaces rather
-  than `nohup`. This is a ledger observation too, never a pre-dispatch gate.
+- **The message channel remains healthy** (`inbox-health`, §4.5): record a post-dispatch observation or gap. It does not replace or waive the pre-dispatch `message-capability` gate. Legacy `installed` does not establish native wake.
 
 Record these three observations after the receipt:
 

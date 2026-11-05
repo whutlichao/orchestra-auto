@@ -1,11 +1,6 @@
 # 运行健康（Run health）
 
-**什么时候读**：每次唤醒后、向用户报告 Run 状态之前，以及 worker 失联时。每次唤醒跑一次
-`health evaluate`，输入就是那次唤醒携带的一条 observation；收件器结束就是唤醒，因此不需要常驻
-检查器，恢复轮次可以从未变的状态重建。
-
-健康检查只回答一个问题：**这个 Run 此刻能证明什么？** 它不回答「工作做得好不好」——那是验收，
-也从不授权 release。
+**什么时候读**：报告 Run 状态或 worker 静默时。`health.py` 保留历史信号格式以读取旧审计记录；旧收件器已停用，不再生成 observation。对本轮独立采集当前证据，缺失字段保持 `unknown`，不能用旧 `state.json` 冒充当前状态，也不能安装后台消费者。
 
 ## 目录
 
@@ -40,13 +35,13 @@ JSON 对象；写明数值是为了让人能推理，不是让测试依赖某个
 | 信号 | 来源 | 窗口 | 失效时 |
 | --- | --- | --- | --- |
 | heartbeat | worker 消息 / 台账（`last_heartbeat_at`） | preamble cadence × 2 + 60s grace | 有正向存活证据 → `degraded`，否则 `unknown` |
-| inbox phase / `updatedAt` | 收件器 `state.json` | waiting / checking / backoff 15 分钟；`error` 立即 | 陈旧 → `degraded`，出错 → `blocked` |
+| inbox phase / `updatedAt` | 历史收件器 `state.json`（当前无观测） | waiting / checking / backoff 15 分钟；`error` 立即 | 陈旧 → `degraded`，出错 → `blocked` |
 | unacked 批次 | delivery 文件 vs ack 回执 | 每个检查点 | `blocked` |
 | worker-list 快照 | Orca `worker-list` | 5 分钟，且仅在有活跃 worker 时 | `degraded` |
 | worker-show 观测 | Orca `worker-show` | 5 分钟 | `degraded` |
 | turnStart | 回执 / 观测 | 120s 窗口；10 分钟未证实则升级 | `unknown` → 升级 |
 | progress freshness | `progress.json` | 300s | 只记 observability gap |
-| last effective progress | 台账 / 消息，或收件器 observation | 连续 3 轮无进展 | `degraded` |
+| last effective progress | 台账 / 消息，或历史收件器 observation | 连续 3 轮无进展 | `degraded` |
 | reclaimable 终端 | worker list | 每次收尾；超过 10 分钟 | `degraded` |
 | waiter slot 泄漏 | 进程 / 锁 | 每次重装 | `degraded`；阻止安装时 `blocked` |
 | nested roster | worker 报告 | 长程票首次报告 | `unknown` → `degraded` |
@@ -68,33 +63,7 @@ JSON 对象；写明数值是为了让人能推理，不是让测试依赖某个
 
 ## 收件器挂载的 observation
 
-**接线**。收件器每次唤醒向自己的 `state.json` 写**恰好一条**轻量 observation（`wake_observation`），
-并把同一对象作为唤醒行的 `observation` 字段发出。coordinator 把它转录进台账作为 observation，
-并对它跑一次 `health evaluate`。没有常驻进程：收件器负责观测，coordinator 负责评估，恢复轮次
-仅凭台账就能重建同一状态。
-
-observation 的字段及其对健康的意义：
-
-| observation 字段 | 变成 | 含义 |
-| --- | --- | --- |
-| `observed_at` | 快照的 `observed_at` | 收件器查看的时刻；所有年龄都从它起算 |
-| `saved`、`unacked`、`unacked_delivery_ids`、`blocked` | `unacked` | 与 `--status --json` 同一套算术；非零即 `blocked` |
-| `watch` | `watch` | `off` 是 `degraded` + `watch_disabled`，绝不 healthy |
-| `phase`、`error` | `inbox` | `error` 立即 `blocked`；静止唤醒（`phase: wake`）不映射 inbox 块，因为它不是活跃 phase |
-| `binding` | `binding` | 下面的绑定丢失记录 |
-| `last_effective_progress` | `last_effective_progress` | 下面的停滞信号 |
-
-observation **没有**携带的信号——heartbeat、`worker-show`、`worker-list`、`turnStart`、投影、
-reclaimable 终端、waiter slot、nested roster——一律读作 `unknown`。这是刻意的：单个收件器无法
-证明 Run 健康，所以仅凭 observation 的评估只会说「继续取证」，coordinator 必须先用自己的读取
-补齐这些块才可能到 `healthy`。
-
-```bash
-python3 "$HEALTH" evaluate --run-id "$RUN" --observation observation.json
-```
-
-`--observation` 与 `--signals` 是同一条命令，只是先做上面的翻译；`--signals` 接收完整快照，仍是
-评估手工快照的方式。observation 里的 run id 与 `--run-id` 不一致时会被拒绝，而不是合并。
+这一节的旧格式仅用于历史记录。旧收件器不会再运行；当前 coordinator 使用 `--signals` 输入独立采集的证据，未观测字段保持 `unknown`。历史 `--observation` 可用于审计回放，不能证明当前健康。
 
 ## 停滞检测（stall detection）
 
@@ -106,14 +75,14 @@ python3 "$HEALTH" evaluate --run-id "$RUN" --observation observation.json
 - `markers` 记录上一轮推进了什么，使用共享词汇 `message`、`artifact`、`commit`、`stage`。
   收到的心跳列在 `ignored_markers`，不会被悄悄计入。
 - 三次空等待沿用既有规则，计入 `empty_waits`；有批次到达即清零。
-- **consumer 模式**（`mode: consumer`）下，该块还必须携带 `--status --json` 的 `unacked` 计数：
+- **历史 consumer 模式记录**（`mode: consumer`）下，该块还必须携带 `--status --json` 的 `unacked` 计数：
   收件器读文件看不到空等待，所以空等待对它不可见，而这个计数是同一信号的一部分。缺少该计数的
   consumer 块是 `unknown`（`consumer_unacked_missing`），绝不是通过。因此空等待从不被当作
   不可见：它被计数、被发布，并与未 ack 的队头一起评估。
 
 ## 绑定丢失（binding loss）
 
-`consumer_fenced` 或 Run 绑定丢失会停止该身份上的消费与生命周期操作。收件器把结果、错误文本与
+`consumer_fenced` 或 Run 绑定丢失会停止该身份上的消费与生命周期操作。历史收件器曾把结果、错误文本与
 两条拒绝——不冒充句柄、不无条件新建 Run——记为 state 里的 `binding` 以及 observation 的 `binding`
 块，评估器据此定级：
 
@@ -124,7 +93,7 @@ python3 "$HEALTH" evaluate --run-id "$RUN" --observation observation.json
 | `outcome: run_binding_lost` 但归属未证实 | `unknown`，`reason: ownership_unobserved` | `escalate` |
 | `outcome: none`（查过，无丢失） | 不贡献任何发现 | 继续 |
 
-收件器无法建立的归属一律升级，绝不猜测：它记 `ownership: unproven`，因为核验真实调用方是
+无法建立的归属一律升级，绝不猜测：历史记录可为 `ownership: unproven`，因为核验真实调用方是
 coordinator 的读取，不是收件器的职责。绑定丢失绝不是 retry 触发条件，没有 block 就是没有观测——
 Run 的其它信号继续决定聚合结果。
 

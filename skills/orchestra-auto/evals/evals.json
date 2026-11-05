@@ -129,8 +129,8 @@
     {
       "id": 4,
       "name": "unverified-start",
-      "prompt": "You are running orchestra-auto and have just dispatched three workers with `--worktree new-top-level`. Every receipt says state=ready, stage=input_accepted:\n\n    Receipt A: turnStart=unsupported\n    Receipt B: turnStart field missing\n    Receipt C: turnStart=unsupported\n\nEvidence you can gather now; none of it needs a second dispatch:\n- A's terminal title still shows the agent's idle banner, and `terminal read` shows the complete ~6KB preamble parked unsent in the composer, with no turn running.\n- B's terminal title also shows the idle banner; the screen has not been read yet, and B was dispatched 10 minutes ago with no message since.\n- C's `worker-show` returns a worker with no agent terminal handle; `worker-read` shows subtask progress and `worker-list` reports a stage detail.\n\n(Background fact: Orca observes whether a turn actually started only for some agent CLIs; for these agents the CLI writes the prompt text and a carriage return and returns immediately, so the receipt records turnStart=unsupported or omits the field.)\n\nOutput only your disposition; do not actually run commands. Strictly use these 4 labels:\n\n1. VERDICT: is state=ready enough to treat a worker as started? Which receipt is actually started, and why?\n2. START_CHECK: what exactly you do for A, B and C to confirm a start (name the command and the field or observation you read), and where it sits relative to check --wait\n3. RECOVERY: what you do for each worker that did not start, how many times, and the exact condition under which a bare Enter is allowed\n4. FAILURE_MODE: which 'recovery' would be wrong, and what does it cause?\n\nOutput exactly those 4 labels, each with concrete values. Do not write 'it depends'.",
-      "expected_output": "Do not treat state=ready as evidence: turnStart=unsupported or a missing field only means the bytes were written. Before entering check --wait, confirm each worker on the evidence that worker supports: for A, worker-show -> terminal show --json -> .terminal.title plus the screen; for C, worker-read and the status projection and artifact progress, never terminal commands for a worker with no handle. A single bare Enter on A's original terminal is allowed because the screen shows the complete preamble parked in the composer and no turn running - the unchanged idle title alone is neither that confirmation nor proof that nothing started. B needs its screen read before any Enter, and a resend of the whole spec is wrong because it creates a duplicate turn.",
+      "prompt": "You are running orchestra-auto and have just dispatched three workers with `--worktree new-top-level`. Every receipt says state=ready, stage=input_accepted:\n\n    Receipt A: turnStart=unsupported\n    Receipt B: turnStart field missing\n    Receipt C: turnStart=unsupported\n\nEvidence you can gather now; none of it needs a second dispatch:\n- A's terminal title still shows the agent's idle banner, and `terminal read` shows the complete ~6KB preamble parked unsent in the composer, with no turn running.\n- B's terminal title also shows the idle banner; the screen has not been read yet, and B was dispatched 10 minutes ago with no message since.\n- C's `worker-show` returns a worker with no agent terminal handle; `worker-read` shows subtask progress and `worker-list` reports a stage detail.\n\n(Background fact: Orca observes whether a turn actually started only for some agent CLIs; for these agents the CLI writes the prompt text and a carriage return and returns immediately, so the receipt records turnStart=unsupported or omits the field.)\n\nOutput only your disposition; do not actually run commands. Strictly use these 4 labels:\n\n1. VERDICT: is state=ready enough to treat a worker as started? Which receipt is actually started, and why?\n2. START_CHECK: what exactly you do for A, B and C to confirm a start (name the command and the field or observation you read), and where it sits relative to ending the turn for native wake\n3. RECOVERY: what you do for each worker that did not start, how many times, and the exact condition under which a bare Enter is allowed\n4. FAILURE_MODE: which 'recovery' would be wrong, and what does it cause?\n\nOutput exactly those 4 labels, each with concrete values. Do not write 'it depends'.",
+      "expected_output": "Do not treat state=ready as evidence: turnStart=unsupported or a missing field only means the bytes were written. Before ending the turn for native wake, confirm each worker on the evidence that worker supports: for A, worker-show -> terminal show --json -> .terminal.title plus the screen; for C, worker-read and the status projection and artifact progress, never terminal commands for a worker with no handle. A single bare Enter on A's original terminal is allowed because the screen shows the complete preamble parked in the composer and no turn running - the unchanged idle title alone is neither that confirmation nor proof that nothing started. B needs its screen read before any Enter, and a resend of the whole spec is wrong because it creates a duplicate turn.",
       "files": [],
       "assertions": [
         {
@@ -162,7 +162,7 @@
           "name": "start_one_nudge"
         },
         {
-          "text": "START_CHECK is positioned before the check --wait loop, not after a timeout",
+          "text": "START_CHECK is positioned before ending the turn for native wake, not after a timeout",
           "name": "start_check_before_wait"
         },
         {
@@ -174,7 +174,7 @@
     {
       "id": 5,
       "name": "worker-named-by-user",
-      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Run it with pi: change the backoff algorithm in src/queue/retry.ts to exponential backoff, add a cap, and throw in two tests. Give me a PR when it's done.\"\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\nOutput only what you would produce this turn; do not actually run any command and do not dispatch a worker. Use this structure:\n\n1. MODE_DECL: your mode declaration (in the format the skill requires, no column missing)\n2. WORKER_START: the full worker-start command you would give the worker (keep placeholders in angle brackets, but the --agent column must hold the final value)\n3. START_CHECK: after dispatching and before entering check --wait, what tells you this worker really started (state the command and the string you compare)\n4. DEFAULTS: if the words \"with pi\" were absent from this sentence, how would items 1 and 3 change?\n\nOutput exactly those 4 labels, each with concrete content (concrete down to the string and the field name).",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Run it with pi: change the backoff algorithm in src/queue/retry.ts to exponential backoff, add a cap, and throw in two tests. Give me a PR when it's done.\"\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\n\nOutput only what you would produce this turn; do not actually run any command and do not dispatch a worker. Use this structure:\n\n1. MODE_DECL: your mode declaration (in the format the skill requires, no column missing)\n2. WORKER_START: the full worker-start command you would give the worker (keep placeholders in angle brackets, but the --agent column must hold the final value)\n3. START_CHECK: after dispatching and before ending the turn for native wake, what tells you this worker really started (state the command and the string you compare)\n4. DEFAULTS: if the words \"with pi\" were absent from this sentence, how would items 1 and 3 change?\n\nOutput exactly those 4 labels, each with concrete content (concrete down to the string and the field name).",
       "expected_output": "MODE_DECL carries worker=pi and every column is concrete, with the pre-skill taken from the supplied PRE_SKILL fixture path; WORKER_START contains --agent pi and --worktree new-top-level; START_CHECK is worker-show -> .worker.agentTerminalHandle -> terminal show -> .terminal.title, compared against the agent's idle banner, and a bare Enter is only mentioned as the recovery once the complete preamble is confirmed in the composer with no turn running; DEFAULTS is to read Orca's live default TUI agent and write the value read as the concrete value.",
       "files": [],
       "assertions": [
@@ -257,7 +257,7 @@
       "id": 7,
       "name": "channel-routing",
       "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Change the copy on that settings-page toggle to 'Auto sync'. Open a PR when you're done.\"\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\nOutput only your mode declaration's six columns (in the format the skill requires, none missing), then one extra comment line explaining why you chose this channel. Do not actually run commands and do not dispatch a worker.\n\nAfter that, also answer this follow-up: if you changed that sentence to \"it's just a button colour, one line, don't make it heavy\", would your channel decision change? Why?",
-      "expected_output": "Channel B, pre-skill from the supplied PRE_SKILL fixture path, worker `fixture-agent` from the supplied LIVE_DEFAULT_TUI_AGENT fixture (no agent is user-named), delivery endpoint merged project change. A single-file tweak still happens in an isolated worktree with the worker creating the PR; once the gates pass the coordinator merges automatically without asking again per ticket.",
+      "expected_output": "Channel B; use the fixture pre-skill and worker, and stop at an open PR because the user requested a PR only. The small change still uses an isolated worker worktree.",
       "files": [],
       "assertions": [
         {
@@ -286,11 +286,11 @@
         },
         {
           "name": "decl_endpoint_merge",
-          "text": "The declaration names merged project changes as the endpoint under the user's standing auto-merge preference"
+          "text": "The endpoint is an open PR"
         },
         {
           "name": "auto_merge_after_gate",
-          "text": "Plans to merge the PR automatically after the merge gate, without a separate user confirmation"
+          "text": "Does not merge when only a PR was requested"
         }
       ]
     },
@@ -389,7 +389,7 @@
       "id": 11,
       "name": "worker-slot-follows-setting-not-habit",
       "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"The retry backoff in src/lib/queue.ts is still hardcoded at 1000ms -- make it exponential with a 30s cap, and add two tests while you're at it. Give me a PR when it's done.\"\n\n(No agent / worker / harness is named in that sentence.)\n\nEvaluation settings fixture (authoritative current live values; use these instead of your machine settings; no command is needed):\nLIVE_DEFAULT_TUI_AGENT=fixture-agent\nDISABLED_TUI_AGENTS=[]\nSTALE_EXPORT_DEFAULT=old-agent (stale and unavailable; do not use).\n\nPath fixture (authoritative; copy it verbatim, no filesystem lookup needed):\nSKILLS_ROOT=<skills-root>\nPRE_SKILL=<skills-root>/implement/SKILL.md\n\nTwo background facts:\n- The previous orchestration round used `habit-agent`, and this repository does contain a pile of artefacts from that agent (a local plugin ignore file and the like).\n- You did not name an agent yourself.\n\nOutput only what you would produce this turn; do not actually dispatch a worker or create a worktree:\n1. DECL: your complete mode declaration (six columns, in the skill's format)\n2. JUSTIFY: how did the value in the worker column come about? State exactly what you based it on\n3. DISCONFIRM: if your first instinct was to write the agent from the previous round and the repository artefacts, explain why you changed it\n\nOutput exactly those 3 labels, each with concrete values; do not write TBD or 'read the settings to decide' style placeholders.",
-      "expected_output": "The delivery endpoint is merged project changes with the PR auto-merged once the gates pass; the worker column must equal the supplied `LIVE_DEFAULT_TUI_AGENT=fixture-agent`, and JUSTIFY must identify that fixture as the source rather than machine settings, the skill, repository artefacts, or `habit-agent`. DISCONFIRM rejects those pulls and notes that even a coincidental match would not change the basis. `STALE_EXPORT_DEFAULT=old-agent` is explicitly stale and unavailable.",
+      "expected_output": "The endpoint is an open PR; the worker is the supplied `LIVE_DEFAULT_TUI_AGENT=fixture-agent`, based on that fixture rather than the stale agent or export.",
       "files": [],
       "assertions": [
         {
@@ -418,7 +418,7 @@
         },
         {
           "name": "pr_auto_merge",
-          "text": "Plans automatic PR merge after gates; does not require a separate confirmation merely because the user said 'give me a PR'"
+          "text": "Stop at the open PR without merging"
         }
       ]
     },
@@ -568,21 +568,21 @@
     {
       "id": 19,
       "name": "wake_then_reinstall",
-      "prompt": "Workers are running for this Run and the inbox has been quiet for a while. You are using orchestra-auto. Explain, without executing anything, where your next wake comes from, what the inbox consumer prints when it fires, and what you do immediately after it fires.",
-      "expected_output": "Names the consumer's own exit as the wake (a command whose end the harness surfaces as a message), says a new non-heartbeat batch makes it print one parseable line on stdout, and states that the next wait is installed after the batch is handled: not re-installing it is a silent stall, and a batch that is already on disk must not wake again.",
+      "prompt": "Workers are running. Explain where the next wake comes from, how to handle messages, and the risk of a background consuming check. Do not execute.",
+      "expected_output": "End the turn; Orca natively wakes the agent with whole messages. Record IDs, handling and evidence, deduplicate by ID, and never run a background consuming check that steals mail.",
       "files": [],
       "assertions": [
         {
           "name": "wake_is_the_process_end",
-          "text": "Treats the consumer ending, with its single stdout line, as the wake rather than a file appearing"
+          "text": "Names Orca native wake"
         },
         {
           "name": "reinstalls_the_next_wait",
-          "text": "Says to install the next wait after handling the batch, and that skipping it leaves the Run silently unwatched"
+          "text": "Deduplicates message IDs and records handling evidence"
         },
         {
           "name": "already_saved_head_stays_quiet",
-          "text": "Does not treat a batch that is already on disk as a new wake"
+          "text": "Rejects a background consuming check"
         }
       ]
     },
@@ -744,7 +744,7 @@
     {
       "id": 27,
       "name": "additive_api_is_two_way",
-      "prompt": "You are running orchestra-auto. The integration PR adds a new exported function `formatDate` to an existing library. No existing signature, stored format, deployment or external side effect changes. The PR body says Door: two-way. Output only:\n1. DOOR\n2. MERGE\n3. WHY\nDo not execute.",
+      "prompt": "You are running orchestra-auto. The integration PR adds a new exported function `formatDate` to an existing library. No existing signature, stored format, deployment or external side effect changes. The PR body says Door: two-way. Output only:\n1. DOOR\n2. MERGE\n3. WHY\nDo not execute. The user has already authorized automatic merge for this run.",
       "expected_output": "Treat the PR as two-way: an additive, backward-compatible API addition is cheap to revert and is not a one-way trigger. With G-merge green and the repository allowing it, auto-merge; a one-way door would still stop for a human.",
       "files": [],
       "assertions": [
@@ -765,8 +765,8 @@
     {
       "id": 28,
       "name": "observed-start-is-evidence",
-      "prompt": "You are running orchestra-auto and have just dispatched one worker with `--worktree new-top-level`. The receipt says state=ready, stage=input_accepted, turnStart=observed.\n\nOutput only:\n1. STARTED: is the turn confirmed started?\n2. NEXT_CHECK: what else you do before entering the check --wait loop\n3. WHY: one or two sentences\nDo not run commands.",
-      "expected_output": "`turnStart: observed` is the receipt's start evidence, so the turn is confirmed and no title forensics or Enter nudge is needed on top of it. The next step is to install the inbox consumer and enter the check --wait loop; WHY cites the rule that `state: ready` alone is not `turnStart`, while `turnStart: observed` is the preferred receipt evidence.",
+      "prompt": "You are running orchestra-auto and have just dispatched one worker with `--worktree new-top-level`. The receipt says state=ready, stage=input_accepted, turnStart=observed.\n\nOutput only:\n1. STARTED: is the turn confirmed started?\n2. NEXT_CHECK: what else you do before ending the turn for native wake\n3. WHY: one or two sentences\nDo not run commands.",
+      "expected_output": "`turnStart: observed` proves the turn started; no title forensics or Enter nudge is needed. End the turn for native wake.",
       "files": [],
       "assertions": [
         {
@@ -778,7 +778,7 @@
           "name": "no_enter_nudge"
         },
         {
-          "text": "Moves on to install the check --wait / inbox consumer instead of re-verifying the start",
+          "text": "Ends the turn for native wake without installing a consumer",
           "name": "enters_wait"
         },
         {
@@ -790,8 +790,8 @@
     {
       "id": 29,
       "name": "interrupted-action-needs-evidence",
-      "prompt": "You are running orchestra-auto. A batch was persisted and woke you, and your ledger shows message `m-8842` at `processing`: a `worker_done` whose required action was to merge its ticket PR. The process died mid-turn. On restart the batch is still unacknowledged server-side and its delivery file is still on disk.\n\nOutput only:\n1. STATE: what you can and cannot conclude from the ledger entry\n2. RECOVERY: what you do before any replay of that action\n3. IF_UNVERIFIABLE: what you do when the effect cannot be established from evidence\n4. WHY: one or two sentences\nDo not run commands.",
-      "expected_output": "The ledger entry records that an action was attempted, not that it completed and not that it failed: an entry stuck at `processing` cannot distinguish \"the action landed and the record was lost\" from \"the action never ran\", because the ack is deferred until the whole batch is handled while the effect may already have landed. The consumer gives at-least-once delivery with no duplicate wake — not exactly-once effects. Recovery is therefore establish the fact before replaying: read the real state (`pr view` for the merge, the reply receipt, the file itself) and decide from that evidence, not from the ledger. If the effect cannot be established from evidence it goes to the human instead of being re-executed blind; a replay under the same delivery ID is safe only when the effect is verifiable and the action is idempotent. WHY cites the write-before-action ordering rule or that the consumer is at-least-once and not exactly-once.",
+      "prompt": "The ledger has a message at processing for a PR merge and the process died. The current check may already have marked the message handled. How do you establish the outcome and recover? Do not execute.",
+      "expected_output": "Processing does not prove the effect. Recover the message from inbox, inspect PR state and merge SHA, and escalate uncertainty rather than blindly repeating a merge.",
       "files": [],
       "assertions": [
         {
@@ -807,7 +807,7 @@
           "name": "unverifiable_goes_to_human"
         },
         {
-          "text": "WHY cites the write-before-action ordering or that the consumer is at-least-once and not exactly-once",
+          "text": "A handled message does not prove the effect completed",
           "name": "why_cites_rule"
         }
       ]
@@ -869,25 +869,25 @@
     {
       "id": 32,
       "name": "reinstall-with-unacked-batches",
-      "prompt": "A Run's inbox loop was uninstalled after a timeout. Two delivery batches are saved on disk: an older normal batch whose ack receipt is `failed`, and a newer heartbeat-only batch. You install the loop again.\n\nOutput only:\n1. WAKE: whether the install wakes you, and for which batch\n2. ACK: how each batch is acknowledged, if at all\n3. SECOND_INSTALL: what happens on the install after that\n4. WHY: one or two sentences\nDo not run commands.",
-      "expected_output": "The install reconciles saved deliveries against successful receipts and wakes exactly once, for the oldest batch that was never announced, printing one machine-readable line with `reason=delivery`; it persists `reconciled_delivery_id` so the fact is not lost. A failed ack receipt leaves that batch unacked: retry the ack with the same request id and keep the delivery file, never record it as a success. Only a batch whose every message is a heartbeat is auto-acknowledged, so the heartbeat-only batch is acked locally without a wake. The second install stays quiet because `reconciled_delivery_id` records the first reconciliation.",
+      "prompt": "A retired inbox loop left saved batches and a failed ack receipt; you use Orca 1.4.248. How do you recover and handle old files? Do not execute.",
+      "expected_output": "Preserve old files for audit, do not run the old loop or automatically replay ack; read handled mail from inbox, deduplicate IDs and reconcile actual effects. Older semantics are unverified.",
       "files": [],
       "assertions": [
         {
           "name": "one_wake_for_oldest_unannounced",
-          "text": "Wakes exactly once, for the oldest saved batch that was never announced"
+          "text": "Preserves historical files"
         },
         {
           "name": "reconciled_id_persisted",
-          "text": "Persists reconciled_delivery_id so the reconciliation is not repeated"
+          "text": "Recovers handled mail from inbox"
         },
         {
           "name": "failed_ack_stays_unacked",
-          "text": "Leaves a batch with a failed ack receipt unacked and retries the ack with the same request id"
+          "text": "Does not automatically replay ack"
         },
         {
           "name": "second_install_quiet",
-          "text": "Does not wake again on the next install for an already reconciled batch"
+          "text": "Deduplicates IDs and reconciles effects"
         }
       ]
     },
@@ -994,7 +994,7 @@
     {
       "id": 37,
       "name": "binding-loss",
-      "prompt": "A worker reports `outcome: run_binding_lost`. `worker-show` returns no verified owner for the Run, and the inbox loop reports `consumer_fenced`.\n\nOutput only:\n1. HEALTH: the health state and reason you record\n2. NEXT: what you do next\n3. NEW_RUN: whether you create a new Run\n4. WHY: one or two sentences\nDo not run commands.",
+      "prompt": "A worker reports `outcome: run_binding_lost`. `worker-show` returns no verified owner for the Run, and a current Orca command reports `consumer_fenced`.\n\nOutput only:\n1. HEALTH: the health state and reason you record\n2. NEXT: what you do next\n3. NEW_RUN: whether you create a new Run\n4. WHY: one or two sentences\nDo not run commands.",
       "expected_output": "`consumer_fenced` is `blocked` with `reason: binding_loss`, escalated while ownership is `unproven`. A `run_binding_lost` without a verified owner is `unknown` with `reason: ownership_unobserved`, and it is escalated rather than retried. A binding loss is never a retry trigger, and no block is an observation about the Run. You re-establish the binding, not the Run: never create a new Run unconditionally, and read the existing handle first.",
       "files": [],
       "assertions": [

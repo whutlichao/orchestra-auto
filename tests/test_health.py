@@ -772,23 +772,10 @@ class StallAndBindingWiringTests(SnapshotMixin, unittest.TestCase):
                 return item
         return None
 
-    def test_the_consumer_marker_vocabulary_matches_the_inbox_loop(self):
-        """The loop and the evaluator must not drift on what progress means."""
-        loop = importlib.util.spec_from_file_location(
-            "inbox_loop_for_markers", SKILL_DIRS[0] / "scripts" / "inbox-loop.py")
-        module = importlib.util.module_from_spec(loop)
-        loop.loader.exec_module(module)
-        self.assertEqual(set(self.health.PROGRESS_MARKERS),
-                         set(module.PROGRESS_MARKERS),
-                         "health and the consumer disagree about effective progress")
-        self.assertNotIn("heartbeat", module.CONSUMER_MARKERS,
-                         "a heartbeat is liveness, never progress")
-        self.assertLessEqual(set(module.CONSUMER_MARKERS),
-                             set(self.health.CONSUMER_MARKERS),
-                             "the consumer may only report markers health knows")
-        self.assertEqual(set(self.health.BINDING_REFUSALS),
-                         set(module.BINDING_REFUSALS),
-                         "health and the consumer disagree about what binding loss refuses")
+    def test_heartbeat_is_not_effective_progress(self):
+        self.assertNotIn("heartbeat", self.health.PROGRESS_MARKERS)
+        self.assertNotIn("heartbeat", self.health.CONSUMER_MARKERS)
+
 
     def test_a_consumer_mode_stall_without_the_unacked_count_is_unknown(self):
         result = self.health.evaluate(self.healthy_signals(

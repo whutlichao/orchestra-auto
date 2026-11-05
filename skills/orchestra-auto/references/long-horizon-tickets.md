@@ -166,7 +166,7 @@ additive backward-compatible addition is not a trigger by itself, and an uncerta
 as one-way. This section adds only what is specific to a long-horizon map: the door decides whether
 the **integration PR** may merge at all, and the ticket reconciliation below follows from that.
 
-- **Two-way + G-merge green + repository allows** → auto-merge, sync main, then reconcile the
+- **Merge authorized + two-way + G-merge green + repository allows** → auto-merge, sync main, then reconcile the
   tickets against the tracker: confirm the `Closes` links actually closed what they named, and
   record anything the tracker left open (and why) in the report.
 - **One-way, uncertain, a gate red, or a rule blocks** → stop at the open PR. Report the door, the

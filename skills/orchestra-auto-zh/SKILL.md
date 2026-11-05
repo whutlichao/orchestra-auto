@@ -3,7 +3,7 @@ name: orchestra-auto-zh
 description: >-
   用 Orca 协调 supervised workers，将已授权的开发或规划工作推进到验收与自动合并。
   适用于用户要求派活、监督多任务或使用 Orca worker；协调者负责规划、通信和验收，
-  worker 负责编辑、提交并创建 PR，门禁通过后协调者自动合并，无需逐张请用户确认。
+  worker 负责编辑、提交并创建 PR，用户授权合并且门禁通过后协调者自动合并，无需逐张请用户确认。
   也适用于把完整票图交给 `implement-spec` 做长程实施、用集成 PR 的 Merge Danger 决定
   自动合并还是人类合并，或流程错误后需要 retro 的场景。
   也适用于用户提到 Orca 编排、worker 派活、worktree 隔离、门禁验收或 PR 自动合并的场景。
@@ -12,11 +12,7 @@ description: >-
 
 # Orchestra Auto — 全自动派活闭环
 
-你是 coordinator。先确定用户要求的工作范围。凡本轮要落盘到项目仓库的改动，默认由 worker
-提交、推分支、创建 PR；门禁通过后由 coordinator 自动合并，并同步主分支。用户已授权
-此默认流程，合并前无需再请示。「改完开 PR」「给我个 PR」说的是交付方式，不是本轮停在哪；
-开放 PR 例外只认明确要求**不合并、保留 PR 自己看**这一种。用户要求该例外、仓库规则阻止合并
-或门禁未过时，保留 PR 并如实报告状态；纯问答与不写仓库的报告不创建 PR。
+你是 coordinator。遵循用户指定的范围与交付终点。用户只要求开 PR 或给出 PR 时，交付止于开放 PR，不授权合并。已授权端到端交付时，worker 提交、推送并开 PR，门禁通过且为双向门后 coordinator 可合并。用户明确指令优先于默认流程；仓库规则或门禁失败也阻止合并。纯问答与不写仓库的报告不创建 PR。
 
 人在三种时刻出现：任务开始时说了一句话；worker 提出决策类问题时被请来定夺（§5）；
 遇到必须人类处理的问题（凭证/第三方/审批）。**auto 自动的是流程（派活 / 门禁 / 打回），
@@ -28,8 +24,8 @@ description: >-
 
 ```text
 用户输入 → §1 确定交付终点与通道 → §2 铁律自检 → 需要编辑时 §4 派 worker
-              → §4.5 保持收件器装着（它结束就是唤醒）、前台推进 ⇄ §5 应答（决策问人）→ §6 门禁验收
-              → 打回 or 推进 → 项目 PR 通过 G-merge 后 §6.5 自动合并 → 收尾（worker-release，
+              → §4.5 结束 turn 等待 Orca 原生唤醒并处理消息 ⇄ §5 应答（决策问人）→ §6 门禁验收
+              → 打回 or 推进 → 用户授权且项目 PR 通过 G-merge 后 §6.5 自动合并 → 收尾（worker-release，
               reclaimable 清零）→ §7 收口报告；达到约定交付终点即停止
 ```
 
@@ -46,7 +42,7 @@ description: >-
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
 | `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
 | `references/long-horizon-tickets.md` | G-tickets 已验收完整票图且本轮要实施；或流程错误后需要 retro 时 |
-| `references/inbox-and-waiting.md` | 每个 Run 首次派活前（身份绑定、收件器、唤醒如何安装与开关、失联恢复）；每次唤醒后装回下一次等待；worker 的消息收不到时 |
+| `references/inbox-and-waiting.md` | 首次派活前，或恢复身份、消息与失联状态时 |
 | `references/ledger.md` | 记录所保护的副作用动作前后；崩溃窗口后用 `ledger reconcile` 对账，及其动作矩阵 |
 | `references/run-health.md` | 每次唤醒后、报告 Run 状态前，或 worker 失联时：评估健康、信号表与迁移规则 |
 | `references/worker-start-and-recovery.md` | `turnStart` 未确认、权限提示或 worker 失联 |
@@ -55,6 +51,8 @@ description: >-
 | `references/failed-dispatch-recovery.md` | `worker-start` 回执 `state: failed` |
 | `references/failure-and-reporting.md` | CLI 起不来、熔断触发、或 Orca app 运行中重启时 |
 | `references/chain-run.md` | 两轮之间、崩溃之后，或需要从台账续跑时：链条走到哪个位置、每格产物必须带什么 |
+
+使用 Orca 前只解析一次可执行文件：优先 `ORCA_CLI_COMMAND`，否则 `ORCA_DEV_REPO_ROOT` 已设置时用 `orca-dev`，否则 Linux 非 Orca 管理的会话用 `orca-ide`，其余用 `orca`。以下示例的 `orca` 代表选定的可执行文件；整个会话复用它，失败时停止，不换程序。读取该程序同版本的 `skills get orchestration` 与 help。
 
 ## 0. 执行编排时初始化；编辑本 skill 不启动编排
 
@@ -79,8 +77,7 @@ worktree 名派活时再取 slug。
 
 ## 1. 通道与交付终点
 
-记录用户要什么、停在哪里。项目改动默认自动创建并合并 PR；单向 Merge Danger 门例外，
-保留开放 PR 给人类手动合并。探索可改实现路径，不可擅自扩大工作范围。
+记录用户要什么、停在哪里。项目改动创建 PR；只要求开 PR 时止于开放 PR，只有用户授权合并且门禁通过时才可合并。单向 Merge Danger 门保留开放 PR 给人类手动合并。用户后续指令优先；探索可改实现路径，不可擅自扩大工作范围。
 
 | 请求 | 通道 | 处理 |
 | --- | --- | --- |
@@ -96,8 +93,8 @@ worktree 名派活时再取 slug。
 雾重到形不成稳定需求时，可用 `wayfinder` 产出地图与决策票；先读目标仓库的寻路约定，不要发明标签。
 若改动会推翻已有 ADR 或计划决策，先定夺该决策。完整实施请求通常走
 `grill-with-docs → to-spec → to-tickets → implement-spec`；已有有效 spec 或票时从对应阶段进入。
-已定案的单票仍走 B 通道；只有完整票图才用 `implement-spec`。只要设计就在设计产物 PR 合并后收口；
-开放 PR 例外只认「明确要求不合并」（判据见 §0），要求开 PR 不等于该例外。
+已定案的单票仍走 B 通道；只有完整票图才用 `implement-spec`。只要设计就到该产物的授权交付终点后收口；
+只要求开 PR 时，交付止于开放 PR（见 §0）。
 
 若 §4.1 只读探索发现多票、方案分叉或跨模块 seam，重新判定通道并重申模式声明。
 范围本身不清时按 §5 请人定夺；绝不把讨论请求转成实施授权。
@@ -118,7 +115,7 @@ worktree 名派活时再取 slug。
 
 方案已定、影响面可圈定的单票走 B 通道：一个独立 worktree、短 spec、与风险相称的验证。
 修 bug 要有能在旧代码复现、在新代码通过的回归证据。纯文案、样式或配置用适用检查与可观察结果验收，不强制制造红绿测试。
-项目文件改动默认提交 PR 并自动合并。
+项目文件改动提交 PR；仅在用户授权合并时自动合并。
 
 双轴 review 可对可圈定的小改动省略（理由写入 spec 与 Answer）；跨票、共享接口或影响面不明时按 G-impl 选更宽验证。
 文档/规划票走自身门禁。任务小不改变角色边界：已授权实施仍由 worker 在独立 worktree 编辑。
@@ -179,7 +176,7 @@ Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆�
 
 ### 4.5 通信闭环
 
-派活前读 [通信与恢复协议](references/inbox-and-waiting.md)：唯一收件器、仓库外台账、按 message ID 去重且整批处理完才 ack，以及让它持续生效的那一条——收件器**在唤醒事件上结束进程**，这个结束就是下一次 turn 的起点。按该文件 §3 作为 harness 能呈现的长调用装上，不要用 `nohup`；每次唤醒后处理批次、装回下一次等待（唤醒之后没有新等待就是静默停摆），并用 `--status --json` 读收件器（该文件 §1.1）：`0` 健康/静止、`1` 致命、`2` 目录不存在、`3` 降级或阻塞，旧式纯文本 `--status` 保留一个 minor 版本的 `0`/`1`。没有作业完成通道时，保持 turn 有界等待（单次 ≤60 秒），三轮无进展后按证据恢复。细节见 [派活闭环](references/dispatch-loop.md)。
+读[通信与恢复](references/inbox-and-waiting.md)。使用 Orca 原生唤醒，派活后结束 turn 并处理每条送达消息；只有 agent 自己消费其邮箱。仓库外台账记录消息 ID、处理状态和证据，响应丢失时使用当前版本的 retry 与 inbox 命令恢复。不要运行已退役的后台收件器，也不要假设当前 `check` 等待 ack。
 
 ## 5. 应答协议：决策问人，细节代答
 
@@ -202,8 +199,8 @@ coordinator 自行核验可观察结果与证据，失败就列明缺项打回�
 
 每轮以 §0 声明的工作范围为准。完整实施请求在需求尚不明确时依次走
 `grill-with-docs → to-spec → to-tickets → implement-spec`；已有清楚 spec 或已开票时从对应阶段进入。
-只要设计、规格或票据的请求就在该阶段产物的 PR 合并后收口，不擅自进入实施。
-用户明确要求保留开放 PR、不要合并时按该例外收口（判据见 §0）。
+只要设计、规格或票据的请求就在该阶段产物的授权交付终点收口，不擅自进入实施。
+用户只要求开 PR 时止于开放 PR（见 §0）。
 
 两轮之间，`scripts/chain.py resume` 从台账报出下一个位置，`exit-check` 施加两道产物地板；
 各自能推出什么、不能推出什么，见 [链条与续跑](references/chain-run.md)。

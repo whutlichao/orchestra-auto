@@ -44,7 +44,7 @@ cases:
     expectations:
       - "STARTED 为 yes：turnStart: observed 就是回执给出的启动证据。"
       - "NEXT 不再用标题取证重复验证启动，也不补裸 Enter。"
-      - "NEXT 直接去装 check --wait / inbox 消费者。"
+      - "NEXT 结束 turn 等待 Orca 原生唤醒。"
 
   - name: worker_without_terminal_start_check
     description: "没有终端的 worker 用 worker-read 与产物判断，绝不调终端命令。"
@@ -85,7 +85,7 @@ cases:
       - "WHY 按不可逆/live 数据升级处理，即使 worker 声称可恢复。"
 
   - name: wake_then_reinstall
-    description: "唤醒是收件器结束，且每次唤醒后必须装回等待。"
+    description: "结束 turn 后由 Orca 原生唤醒。"
     prompt: |
       本 Run 的 worker 正在跑，收件箱安静了一阵。
       只输出：
@@ -93,9 +93,9 @@ cases:
       2. AFTER_WAKE — 触发那一刻你做什么
       3. STALL_RISK — 一句
     expectations:
-      - "WAKE_SOURCE 是收件器结束（连同它那一行 stdout），不是文件出现，也不是后台进程还活着。"
-      - "AFTER_WAKE 处理批次后装回下一次等待。"
-      - "STALL_RISK 说明唤醒之后没有新等待会让该 Run 无人监听。"
+      - "WAKE_SOURCE 是 Orca 原生消息。"
+      - "AFTER_WAKE 处理完整消息或批次并记录证据。"
+      - "STALL_RISK 指出后台消费式 check 会抢走消息。"
 
   - name: channel_discussion_stops
     description: "纯讨论走 A 通道，不派活。"

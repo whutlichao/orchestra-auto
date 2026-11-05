@@ -173,6 +173,14 @@ def make_state_database(profile_dir, rows=None, create_table=True, name="state.d
 def settings_runner(profile_dir, status=None, command_surface=None):
     """The happy-path runner for the three mechanical probes."""
     return FakeRunner([
+        (lambda argv: argv[1:] == ["--version"],
+         {"returncode": 0, "stdout": "1.4.248\n", "stderr": ""}),
+        (lambda argv: argv[1:] == ["skills", "get", "orchestration"],
+         {"returncode": 0, "stdout": "Orca wakes you.", "stderr": ""}),
+        (lambda argv: argv[1:] == ["orchestration", "check", "--help"],
+         {"returncode": 0, "stdout": "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request", "stderr": ""}),
+        (lambda argv: argv[1:] == ["orchestration", "inbox", "--help"],
+         {"returncode": 0, "stdout": "--terminal --full", "stderr": ""}),
         (lambda argv: argv[:2] == ["orca", "status"],
          status if status is not None else ok({"app": "up"})),
         (lambda argv: argv[:3] == ["orca", "agent", "hooks"],
@@ -244,6 +252,9 @@ class PreflightTestCase(unittest.TestCase):
                 for item_id in JUDGMENT_IDS
             },
             "overrides": [],
+            "messaging": {"native_wake_confirmed": True, "source": "live_preamble",
+                          "evidence_ref": "fixture preamble", "legacy_migration_complete": True,
+                          "migration_evidence_ref": "fixture inventory"},
             "baselines": [],
         }
         context.update(overrides)
@@ -290,7 +301,7 @@ class ChecklistTests(PreflightTestCase):
             self.assertIn(line["class"], ("mechanical", "judgment"))
         receipt = self.check()
         ids = [item["id"] for item in receipt["items"]]
-        expected = ["live-settings"]
+        expected = ["live-settings", "message-capability"]
         for line in checklist:
             expected.extend(line["items"])
         self.assertEqual(ids, expected)
@@ -448,16 +459,30 @@ class ReceiptTests(PreflightTestCase):
                     self.check(ticket=ticket)
 
 
+class MessageCapabilityGateTests(PreflightTestCase):
+    def test_missing_session_evidence_cannot_be_waived(self):
+        receipt = self.check(messaging={}, overrides=[
+            {"item": "message-capability", "by": "human", "reason": "skip"}])
+        self.assertFalse(receipt["blocking"]["allowed"])
+        self.assertIn("message-capability", receipt["blocking"]["failed_items"])
+        self.assertFalse(receipt["overrides"][0]["applied"])
+        self.assertTrue(receipt["record"]["written"])
+
+
 class MechanicalItemTests(PreflightTestCase):
     """The mechanical items and the command runner they use."""
 
-    def test_every_probe_asks_the_cli_for_json(self):
+    def test_mechanical_probes_use_json_or_the_documented_text_surface(self):
         runner = self.runner()
         self.check(runner=runner)
         self.assertEqual(
             runner.calls,
             [
                 ["orca", "agent", "hooks", "status", "--json"],
+                ["orca", "--version"],
+                ["orca", "skills", "get", "orchestration"],
+                ["orca", "orchestration", "check", "--help"],
+                ["orca", "orchestration", "inbox", "--help"],
                 ["orca", "status", "--json"],
                 ["orca", "orchestration", "worker-list", "--run", RUN_ID,
                  "--limit", "1", "--json"],
@@ -671,7 +696,7 @@ class ReviewExemptionTests(PreflightTestCase):
         context.update({
             "worktree": str(self.root / "worktree"),
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         context.update(overrides)
         runner = FakeRunner([
@@ -780,7 +805,7 @@ class ReviewExemptionTests(PreflightTestCase):
         context.update({
             "worktree": str(self.root / "worktree"),
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         runner = self.runner()
         report = self.preflight.post_dispatch(make_ticket(), context, runner=runner)
@@ -1038,7 +1063,7 @@ class CommandLineTests(PreflightTestCase):
                 "max_changed_lines": 10,
             },
             "dashboard": {"written": True, "reason": ""},
-            "inbox": {"installed": True, "healthy": True, "reason": ""},
+            "inbox": {"native_wake": True, "healthy": True, "reason": ""},
         })
         context_path = self.write_json("context-post.json", context)
         result = self.run_cli(

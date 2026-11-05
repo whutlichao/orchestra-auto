@@ -4,7 +4,7 @@ description: >-
   Coordinate supervised Orca workers and drive authorized development or planning work all the
   way to acceptance and auto-merge. Use whenever the user asks you to hand out work, supervise
   multi-ticket efforts, or run Orca workers: the coordinator plans, communicates and accepts,
-  workers edit, commit and open PRs, and the coordinator merges automatically once the gates
+  workers edit, commit and open PRs, and the coordinator merges automatically when authorized and once the gates
   pass without asking the user ticket by ticket. Also use it when a complete ticket map goes to
   `implement-spec` for a long-horizon run, when an integration PR's Merge Danger decides
   auto-merge versus a human merge, or when a process error calls for a retro. Also use it when
@@ -15,15 +15,7 @@ description: >-
 
 # Orchestra Auto — the fully automatic dispatch loop
 
-You are the coordinator. Start by pinning down the scope the user asked for. Any change that
-lands in a project repository this round is by default committed by a worker, pushed on a
-branch, and opened as a PR; once the gates pass, the coordinator merges it automatically and
-syncs the main branch. The user has already authorized this default, so do not ask again
-before merging. Asking for that PR — "open a PR when you're done", "give me a PR" — describes how
-the work lands, not where the round stops; only an explicit request to keep the PR unmerged
-("don't merge", "I want to look at it myself") is the open-PR exception. If the user asks for that
-exception, if repository rules block the merge, or if a gate has not passed, keep the PR and report
-the real state. Pure Q&A and reports that write no repository files create no PR.
+You are the coordinator. Follow the user's scope and delivery endpoint. A request only to open or provide a PR ends with the PR open; it does not authorize merging. For authorized end-to-end delivery, a worker commits, pushes and opens the PR, and the coordinator may merge after the gates pass and the door is two-way. The user's explicit instructions take precedence over this default; repository rules and failed gates also stop merging. Pure Q&A and reports that write no repository files create no PR.
 
 A human appears at three moments: they said one sentence when the task started; a worker asks
 a decision-class question and the human is invited to settle it (§5); or something genuinely
@@ -39,9 +31,9 @@ role boundaries §2, and dispatch parameters §4. It does **not** depend on the 
 
 ```text
 user input → §1 pin the delivery endpoint and channel → §2 hard-rule self-check → §4 dispatch a worker if edits are needed
-              → §4.5 keep the inbox consumer installed (its end is the wake); make progress in the foreground
+              → §4.5 end the turn for Orca native wake; handle delivered messages
               ⇄ §5 answer (decisions go to the human) → §6 gate acceptance
-              → send back or advance → after the project PR passes G-merge, §6.5 auto-merge → teardown
+              → send back or advance → when merge is authorized and the project PR passes G-merge, §6.5 auto-merge → teardown
               (worker-release, reclaimable drained) → §7 closing report; stop at the agreed delivery endpoint
 ```
 
@@ -57,7 +49,7 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
 | `references/gate-acceptance.md` | When a ticket closes and you pick a gate; when merging a project PR or settling a worker |
 | `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |
-| `references/inbox-and-waiting.md` | Before each Run's first dispatch (identity binding, inbox, installing the wake and its switches, lost-contact recovery); after every wake, to install the next wait; also when a worker's message never shows up |
+| `references/inbox-and-waiting.md` | Before the first dispatch or when recovering identity, messages or lost contact |
 | `references/ledger.md` | Before the action a record protects and after it; `ledger reconcile` after a crash window, and the action matrix it applies |
 | `references/run-health.md` | After every wake, before reporting a Run's state, or when a worker goes quiet: evaluate health, the signal table and the transition rules |
 | `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
@@ -66,6 +58,8 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | `references/failed-dispatch-recovery.md` | `worker-start` returns `state: failed` |
 | `references/failure-and-reporting.md` | The CLI will not start, a breaker trips, or the Orca app restarts mid-run |
 | `references/chain-run.md` | Between two laps, after a crash, or when resuming a Run from the ledger: where the chain continues and what each artifact must carry |
+
+Before using Orca, resolve the executable once: `ORCA_CLI_COMMAND` when set, else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set, else `orca-ide` on Linux outside an Orca-managed session, else `orca`. Reuse it for every example below; `orca` in examples denotes that selected executable. If it fails, stop without fallback. Read its version-matched `skills get orchestration` and help.
 
 ## 0. Initialize only when executing orchestration; editing this skill does not start a run
 
@@ -99,9 +93,7 @@ start/title criteria only, never defaults or disabled state.
 
 ## 1. Channel and delivery endpoint
 
-Record what the user asked for and where they want it to stop. Project changes become an
-automatically created and merged PR by default, except a one-way Merge Danger door, which
-stays open for a human. Exploration may change the implementation path; it may not widen the work.
+Record what the user asked for and where they want it to stop. Project changes open a PR; merge only within the user’s delivery authorization and after the gates pass. A one-way Merge Danger door stays open for a human. Exploration may change the implementation path; it may not widen the work.
 
 | Request | Channel | Handling |
 | --- | --- | --- |
@@ -116,9 +108,7 @@ decision tickets; read the target repo's wayfinding conventions first and do not
 settle an existing ADR or planned decision the change would overturn before going further. A
 full implementation request normally runs `grill-with-docs → to-spec → to-tickets →
 implement-spec`, but with a valid spec or ticket you enter at the matching stage. A single settled
-ticket stays on B; only a complete map uses `implement-spec`. If only design was asked for,
-stop once that artifact's PR is merged. The open-PR exception needs an explicit request to keep the
-PR unmerged (§0); asking you to open a PR is not one.
+ticket stays on B; only a complete map uses `implement-spec`. If only design was asked for, stop at that artifact’s authorized delivery endpoint. A PR-only request stops with the PR open (§0); an existing explicit merge authorization still applies unless the user overrides it.
 
 If §4.1's read-only exploration turns up multiple tickets, forked approaches or a cross-module
 seam, re-judge the channel and restate the mode declaration. If the scope itself is unclear, raise
@@ -159,7 +149,7 @@ channel B: one isolated worktree, a short spec, and verification proportionate t
 fixes need regression evidence that reproduces on the old code and passes on the new. Pure copy,
 style or configuration changes are accepted with an applicable check and an observable result; do
 not manufacture red-green tests for them. Project file changes are committed to a PR and
-auto-merged by default.
+merged only when the user authorized merge.
 
 A two-axis review may be omitted for a small bounded change when the reason is recorded in the
 spec and Answer; a cross-ticket or shared-interface change gets wider G-impl verification.
@@ -224,15 +214,7 @@ and the `Not run this ticket` line. A worker sees only the spec, so anything lef
 
 ### 4.5 Communication loop
 
-Read [communication and recovery](references/inbox-and-waiting.md) before dispatching: one inbox
-consumer per Run, a ledger outside the repository, dedupe by message ID with ack only after the
-whole batch, and the part that keeps it alive — the consumer **ends on a wake event**, so its end
-is what starts your next turn. Install it as a long call the harness surfaces (§3 there), never
-`nohup`; after every wake handle the batch, install the next wait (a wake with no new wait behind
-it is a silent stall), and read the inbox with `--status --json` (§1.1 there): `0` healthy/resting,
-`1` fatal, `2` missing, `3` degraded/blocked, while legacy plain `--status` keeps `0`/`1` for one
-minor version. Without a job-completion channel, keep the turn in ≤60-second waits and recover on
-evidence after three no-progress rounds. Detail: [dispatch loop](references/dispatch-loop.md).
+Read [communication and recovery](references/inbox-and-waiting.md). Use Orca's native wake; end the turn after dispatch and act on each delivered message. Only the agent consumes its own mailbox. Keep an out-of-repo ledger of message IDs, handling and evidence, and recover lost responses with the version-matched retry and inbox commands. Never run the retired background consumer or assume a current `check` waits for an ack.
 
 ## 5. Reply protocol: decisions go to the human, details are answered for them
 
@@ -265,8 +247,8 @@ claim is treated as one-way.
 Each round is bounded by the scope declared in §0. A full implementation request with unclear
 requirements runs `grill-with-docs → to-spec → to-tickets → implement-spec` in order; with a clear
 spec or existing tickets you enter at the matching stage. A design-only, spec-only or tickets-only
-request closes once that stage's artifact PR is merged, and you do not drift into implementation
-on your own. If the user explicitly asked to keep the PR unmerged, close at that exception (§0).
+request closes at that stage's authorized delivery endpoint, and you do not drift into implementation
+on your own. If the user asked only for a PR, stop with it open (§0).
 
 Between laps, `scripts/chain.py resume` names the next position from the ledger and `exit-check` applies
 the two artifact-shaped floors; [chain run](references/chain-run.md) says what each answer may conclude.

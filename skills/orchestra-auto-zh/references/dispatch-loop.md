@@ -43,7 +43,7 @@ Orca 的这条默认**。
   带日期的观察只用于解释已验证的启动行为，不能用来推断当前默认值或可用性。
 - `--spec` 一次成型（`worker-start --spec` 会同时建 Task 与 attempt）。只有在多票有依赖、
   需要计划式 fan-out 或重试已知 Task 时才用 `task-create` + `worker-start --task <id>`。
-- 回执拿到后**立刻**走 §4.3.1 确认 turn 真的开始，并核验 §4.5 的收件器与等待方式。
+- 回执拿到后**立刻**走 §4.3.1 确认 turn 真的开始，并核验 §4.5 的原生唤醒契约。
 
 **base ref：每个仓库只读一次 fork 状态，在首次向它派活之前。** 事实是现成的，skill 只是要读它：
 
@@ -69,7 +69,7 @@ PR，不要堆在 fork 的 main 上。在这个约定下 §6.5.1 的 `--ff-only`
 **协调者工作区落后会被拒绝派发。** 派发前先核对 coordinator worktree 相对目标 base 的落后量——
 fork 下它跟踪 `origin/main`，worker 却从 `upstream/main` 切，所以先 `git fetch upstream`。
 超过阈值时 Orca 拒绝派发，Task 留在 `ready` 且没有 Dispatch，表面像「worker 没起来」：
-按 §9 取证（`worker-list --run` 的 `stage`/`outcome`、收件器没有投递），拉取/rebase 或重建
+按 §9 取证（`worker-list --run` 的 `stage`/`outcome`、没有收到消息），拉取/rebase 或重建
 worktree，**不要重派**。`allow-stale-base: true` 只用于落后是预期状态，并在 spec 写明理由
 （Orca 1.4.245 测得阈值 20 个提交，属版本范围观察；以当前 CLI help 与 guide 为准）。
 
@@ -111,26 +111,9 @@ spec 以前置 skill `implement-spec` 开头，并带 `Tracker：` / `Spec：` /
 嵌套 worktree，再花整张图；不能证明就串行跑 implementer，或由 coordinator 回退到逐票 worker
 （默认并发 3）。coordinator 只验收唯一的集成 PR，不逐票验收嵌套分支，也不进入嵌套 worktree。
 
-### 4.5 通信闭环：入队、收件、处理、唤醒分别核验
+### 4.5 通信闭环
 
-派活前读 [通信与恢复协议](inbox-and-waiting.md)。每个 Run 维护一份 repo 外台账：
-Run/coordinator handle、Task/Dispatch/worker handle/worktree、最后进展、消息 ID、处理状态、
-完成回执、PR、下一次检查时间。上下文压缩或恢复后先读台账与真实 Orca 状态，不凭旧对话猜身份。
-
-- 首个 worker 启动前准备唯一收件器与等待方式；每次派活后核验 turn 已开始并检查收件器。
-- 每个 Run 一个收件器，绑定真实 coordinator handle；消息按 deliveryId 原子保存，
-  重启不覆盖、不轮转删除未处理证据。收件器同时就是唤醒：出现新的非心跳批次或 worker 状态变化时，
-  它结束进程并在 stdout 打印一行（见 [通信与唤醒](inbox-and-waiting.md) §3），因此要作为 harness
-  能呈现的调用装上，并在每次唤醒后重新装上。
-- 每条消息按 message ID 去重，验证 Run/Task/Dispatch。处理整批及所需终端归属决定后才 ack。
-  当前批次被人类决策阻塞时用只读 `check --all` 检查后续消息，及时处理其他 worker；
-  不能把 ack 当回复，也不能从另一次 check 抽取一个未审阅的 deliveryId 来 ack。
-- 长操作结束后与空闲时都收件。单次前台等待不超过 60 秒；连续三轮没有进展便查
-  worker-list/worker-show/worker-read、队列与本地台账，按证据恢复，不能无限盲等。
-- 除环境强制结束的例外外，主动结束仍有在途任务的 coordinator turn 前必须有**已确认能触发下一 turn 的通知机制**。未验证的后台进程、
-  消息文件或 send 成功不算。没有自动唤醒时保持当前 turn 有界轮询；环境必须交还控制权时，
-  明确说明尚在运行、不能自动唤醒和恢复入口，不声称会自动继续，不默认要求用户定期催促。
-- worker 缺 worker_done 或已 idle 的恢复、错误与停止条件，按 reference 执行。
+读[通信与恢复](inbox-and-waiting.md)。仓库外台账记录 Run、Task、Dispatch、worker、消息 ID、处理状态、证据和 PR。派活后核验 turn 开始，再结束 turn 等待 Orca 原生唤醒。处理完整消息或批次，按消息 ID 去重，重放前核对不确定的副作用。只有 agent 自己消费邮箱；不要启动旧收件器或后台消费式 check。按文档使用 inbox 和 retry 恢复上下文；静默时检查 worker-list、worker-show、worker-read 与成果，静默本身不能证明进程退出。
 
 进度看板：每个实际编排 Run 首次派活前初始化并自动打开；之后在正常动作完成后按
 [进度看板](progress-dashboard.md)节点责任表记录显式事实及结构化 task/dispatch/attempt 报告；

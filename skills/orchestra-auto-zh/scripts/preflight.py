@@ -48,6 +48,19 @@ CLI_TIMEOUT_SECONDS = 30
 CLI_ENV = "ORCA_CLI_COMMAND"
 DEFAULT_CLI = "orca"
 
+
+def resolve_orca_cli():
+    """Follow the version-matched Orca discovery stub without fallback."""
+    if CLI_ENV in os.environ:
+        return os.environ[CLI_ENV]
+    if os.environ.get("ORCA_DEV_REPO_ROOT"):
+        return "orca-dev"
+    if sys.platform.startswith("linux") and not (
+            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
+        return "orca-ide"
+    return DEFAULT_CLI
+
+
 #: The twelve §4.0.1 tick-sheet lines, in order. ``items`` are the receipt items each line
 #: produces; the CLI-liveness line is deliberately split into two evidence items. The
 #: ``live-settings`` lookup is an independent blocking item, not a thirteenth line.
@@ -92,12 +105,13 @@ CHECKLIST = (
 
 #: The independent blocking lookup that runs before the sheet: the agent choice depends
 #: on it, so it is not one of the twelve tick-sheet lines.
-INDEPENDENT_ITEMS = ("live-settings",)
+INDEPENDENT_ITEMS = ("live-settings", "message-capability")
 
 ITEM_CLASS = {
     item_id: line["class"] for line in CHECKLIST for item_id in line["items"]
 }
 ITEM_CLASS["live-settings"] = "mechanical"
+ITEM_CLASS["message-capability"] = "mechanical"
 
 JUDGMENT_ITEMS = tuple(
     item_id
@@ -200,11 +214,11 @@ class LocalRunner:
     """Run the mechanical probes through the resolved Orca CLI.
 
     The only Orca command this module ever runs is a read: ``status``, ``agent hooks
-    status`` or ``orchestration worker-list``. It never starts, stops or messages a worker.
+    status`` or ``orchestration worker-list``, the version-matched guide and command help. It never starts, stops or messages a worker.
     """
 
     def __init__(self, orca=None):
-        self.orca = orca or os.environ.get(CLI_ENV) or DEFAULT_CLI
+        self.orca = orca or resolve_orca_cli()
 
     def run(self, argv, timeout=CLI_TIMEOUT_SECONDS):
         command = list(argv)
@@ -324,6 +338,72 @@ def _check_command_surface(runner, run_id):
         "cli-command-surface", "pass", command, observed,
         "the command surface answered a minimal worker-list probe",
     )
+
+
+def _check_messaging(context, runner):
+    """Fail closed unless this session and its selected CLI support recovery."""
+    messaging = context.get("messaging")
+    if not isinstance(messaging, dict):
+        messaging = {}
+    evidence = messaging.get("evidence_ref")
+    confirmed = (messaging.get("native_wake_confirmed") is True
+                 and messaging.get("source") in ("live_preamble", "verified_session")
+                 and isinstance(evidence, str) and bool(evidence.strip()))
+    migration_ref = messaging.get("migration_evidence_ref")
+    migration_ready = (messaging.get("legacy_migration_complete") is True
+                       and isinstance(migration_ref, str) and bool(migration_ref.strip()))
+    probes = (
+        (["orca", "--version"], ()),
+        (["orca", "skills", "get", "orchestration"], ()),
+        (["orca", "orchestration", "check", "--help"], ("--retry-request",)),
+        (["orca", "orchestration", "inbox", "--help"], ("--terminal", "--full")),
+    )
+    observations = []
+    outputs = {}
+    for argv, required in probes:
+        result = _run(runner, argv)
+        output = result["stdout"]
+        key = "/".join(argv[1:])
+        digest = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        outputs[key] = output
+        observations.append({"command": " ".join(argv), "returncode": result["returncode"],
+                             "markers_present": all(token in output.lower() for token in required),
+                             "sha256": digest})
+    version = outputs["--version"].strip()
+    available = bool(version) and all(outputs["/".join(argv[1:])].strip()
+                                      for argv, _required in probes) and all(
+                                      row["returncode"] == 0 and row["markers_present"]
+                                      for row in observations)
+    # Only this exact verified version and wording can pass without a human review.
+    known = (version == "1.4.248"
+             and "orca wakes you." in outputs["skills/get/orchestration"].lower()
+             and "default: return the bound run's oldest unread fifo batch and mark it handled."
+             in outputs["orchestration/check/--help"].lower())
+    review = messaging.get("human_verification")
+    review = review if isinstance(review, dict) else {}
+    hashes = {"/".join(argv[1:]): row["sha256"]
+              for (argv, _required), row in zip(probes, observations)}
+    reviewer = review.get("reviewed_by")
+    review_ref = review.get("evidence_ref")
+    reviewed = (isinstance(reviewer, str) and bool(reviewer.strip())
+                and isinstance(review_ref, str) and bool(review_ref.strip())
+                and review.get("version") == version
+                and review.get("probe_sha256") == hashes
+                and all(review.get(key) is True for key in
+                        ("native_wake", "handled_check", "retry_recovery", "inbox_recovery")))
+    passed = confirmed and migration_ready and available and (known or reviewed)
+    return _item("message-capability", "pass" if passed else "fail",
+                 "read selected CLI version, orchestration guide and check/inbox help",
+                 {"session_confirmed": confirmed, "session_source": messaging.get("source"),
+                  "migration_confirmed": migration_ready,
+                  "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
+                  "version": version, "probes": observations,
+                  "semantic_basis": "known_version" if known else "human_review" if reviewed else "unknown",
+                  "reviewed_by": reviewer if reviewed else "",
+                  "review_evidence_ref": review_ref if reviewed else ""},
+                 "native delivery and recovery confirmed" if passed else
+                 "native delivery or recovery unverified; do not dispatch",
+                 evidence if isinstance(evidence, str) else "")
 
 
 def _check_guide(context):
@@ -612,6 +692,8 @@ def _apply_overrides(items, raw_overrides):
             record["error"] = "an override requires item, by and reason"
         elif item_id not in by_id:
             record["error"] = f"unknown item: {item_id}"
+        elif item_id == "message-capability":
+            record["error"] = "message capability cannot be waived"
         elif by_id[item_id]["result"] != "fail":
             record["error"] = "the item did not fail; nothing to waive"
         else:
@@ -764,6 +846,7 @@ def check(ticket, context, runner=None):
 
     items = [
         _check_live_settings(runner),
+        _check_messaging(context, runner),
         _check_status(runner),
         _check_command_surface(runner, context["run_id"]),
         _check_guide(context),
@@ -948,18 +1031,13 @@ def _inbox_observation(context):
     if not isinstance(inbox, dict):
         _invalid("context.inbox must be an object recording the inbox state")
     installed = bool(inbox.get("installed"))
-    healthy = bool(inbox.get("healthy"))
+    healthy = inbox.get("healthy") is True
     reason = inbox.get("reason") if isinstance(inbox.get("reason"), str) else ""
-    healthy_now = installed and healthy
-    note = (
-        "the inbox consumer is installed and healthy"
-        if healthy_now else "the inbox consumer is not installed and healthy"
-    )
-    if reason:
-        note += ": " + reason
+    healthy_now = inbox.get("native_wake") is True and healthy
     detail = {
         "observation": "inbox-health",
         "installed": installed,
+        "native_wake": inbox.get("native_wake") is True,
         "healthy": healthy,
         "outcome": "healthy" if healthy_now else "unhealthy",
         "reason": reason,
@@ -1055,9 +1133,9 @@ def post_dispatch(ticket, context, runner=None):
         "id": "inbox-health",
         "outcome": inbox_detail["outcome"],
         "note": (
-            "inbox installed and healthy"
+            "native wake confirmed and healthy"
             if inbox_detail["outcome"] == "healthy"
-            else "inbox not installed and healthy: " + inbox_detail["reason"]
+            else "native wake not confirmed and healthy: " + inbox_detail["reason"]
         ),
         "detail": inbox_detail,
         "record": inbox_record,
@@ -1108,7 +1186,7 @@ def main(argv=None):
         command_parser.add_argument(
             "--context", required=True, help="preflight context JSON file")
         command_parser.add_argument(
-            "--orca", help="Orca executable; defaults to ORCA_CLI_COMMAND or 'orca'")
+            "--orca", help="Orca executable; defaults to the resolved Orca executable")
     args = parser.parse_args(argv)
 
     try:

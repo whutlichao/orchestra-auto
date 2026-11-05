@@ -21,7 +21,7 @@ Read [launch-kit.zh-CN.md](launch-kit.zh-CN.md) for the Chinese version.
 ## 1. Positioning
 
 **One line.** A supervised Orca workflow where the coordinator plans, dispatches and verifies, workers
-edit and open PRs, and the coordinator merges once the gates pass — without a confirmation round trip
+edit and open PRs, and the coordinator merges when authorized and the gates pass — without a confirmation round trip
 per ticket.
 
 **The problem it solves.** Orchestrating agents across a real codebase is easy to start and hard to
@@ -36,7 +36,7 @@ finish. The failure modes are specific and repeatable:
   discarded with it.
 
 **What this skill is.** A written procedure that names those failure modes and gives each one a
-concrete countermeasure, plus one small script that makes the message inbox safe to rely on.
+concrete countermeasure and native Orca message delivery.
 
 **What it is not.** Not a general orchestration framework, not portable to other CLIs, not a
 decision-maker. It is explicit that the human decides scope, approach forks and anything involving
@@ -126,9 +126,7 @@ show the safety net. Read the bracket notes as stage directions; they are not sp
 
 [1:20 — Close.]
 "It's two installable skills, English and Chinese, MIT, and the safety rules are
- the product. There's one script: it makes the message inbox atomic, deduplicated,
- and honest about failures — and when a message actually arrives it ends itself to
- wake me, because a file on disk can't start a turn. Link below."
+ the product. Orca wakes the agent natively; it records message IDs and evidence. Link below."
 
 [1:30 — END]
 ```
@@ -157,7 +155,7 @@ No. They are the same procedure, and the test suite asserts parity: the same ref
 same eval scenarios in the same order with the same assertion counts, and a byte-identical script.
 
 **Will it merge without asking me?**
-It merges without asking you *per ticket* once the gates pass, which is the point of the workflow.
+When merge is authorized, it merges without asking you *per ticket* once the gates pass. A request only for a PR ends with it open.
 It stops and asks when the gates fail, when the repository blocks the merge, when the user asks to
 keep a PR open, or when the merge would change the scope you set. Those exceptions are written down.
 
@@ -165,18 +163,11 @@ keep a PR open, or when the merge would change the scope you set. Those exceptio
 No. Scope, approach forks and the escalation five go to you. Only detail-class questions — naming,
 directory placement, implementation technique, test style — are answered for you.
 
-**What is the one script?**
-`inbox-loop.py`: a standard-library inbox consumer that saves every delivery batch atomically by
-delivery ID, deduplicates by message ID, acknowledges only batches that are entirely heartbeats, and
-exits loudly on a CLI error instead of pretending the queue was empty. It is also the wake, and the
-wake is an ending: a file on disk cannot start a coordinator turn, but the exit of a long-running
-command is what the harness surfaces as a new message. So the consumer ends the process and prints
-exactly one machine-readable JSON line on stdout when a newly persisted non-heartbeat batch arrives
-(`reason=delivery`), when this Run's worker signature changes (`reason=worker_state`), or when the
-loop itself fails (`reason=error`, non-zero exit) — which is why it is reinstalled after every wake.
+**How does messaging work?**
+Orca delivers native wakes. The agent handles its own messages, records IDs and evidence, and recovers lost context from inbox. The old inbox-loop entrypoint is disabled because a background consuming check can steal mail.
 
 **Is it safe to run?**
-It installs Markdown plus one standard-library Python script; installing runs nothing. The skill's
+It installs Markdown and standard-library scripts; installing runs nothing. The skill's
 own safety rules cover the rest, including not reading or echoing credentials, and stopping rather
 than self-answering an escalation-class question.
 
@@ -203,12 +194,11 @@ Covered by [README.md](../README.md). For a release, use:
 > **orchestra-auto v0.1.0** — the first public release.
 >
 > Two installable Agent Skills (English + 简体中文) that encode a supervised Orca workflow:
-> coordinator plans and verifies, workers edit and open PRs, the coordinator merges once the gates
-> pass.
+> coordinator plans and verifies, workers edit and open PRs, the coordinator merges when authorized and the gates
+> pass; a PR-only request stays open.
 >
 > The interesting content is the safety rules, not the happy path: isolated worktrees, real evidence
-> that a worker's turn began, live worker settings instead of hardcoded agents, atomic and
-> deduplicated message handling by a consumer that ends the process to wake the coordinator,
+> that a worker's turn began, live worker settings instead of hardcoded agents, native wake and evidence-based message-ID reconciliation,
 > decisions escalated to a human, per-ticket-type gates, evidence preserved before any revert, and
 > bounded retries with stop thresholds.
 >
@@ -246,12 +236,10 @@ Do **not** write a submission post — there is no submission channel. What a ma
 >
 > It's Orca-specific — it drives `orca orchestration` verbs — and says so up front. The interesting
 > part is the safety rules: per-ticket worktrees, real start evidence, live worker settings rather
-> than a hardcoded agent, atomic message handling with one small stdlib script that ends the process
-> to wake the coordinator, decisions escalated to a human, gates by ticket type, evidence preserved
+> than a hardcoded agent, native wake and message-ID reconciliation, decisions escalated to a human, gates by ticket type, evidence preserved
 > before any revert, bounded retries.
 >
-> 38 scenarios per language in `evals/`, plus real behaviour tests for the inbox script (atomic
-> writes, replay safety, ack discipline, the wake line, loud failure). MIT. Feedback welcome.
+> 38 scenarios per language in `evals/`, plus simulated message-contract regression tests. MIT. Feedback welcome.
 
 ### 6.4 X / Twitter
 
@@ -266,7 +254,7 @@ Follow-up posts (thread, one idea each): (2) `state: ready` is not evidence — 
 proving a turn began; (3) the scope-change question a worker asks that a naive loop answers for you;
 (4) the tens-of-thousands-line diff that was a formatter reflow, and why you preserve before you
 revert; (5) one
-Python script that makes an agent inbox safe to rely on.
+native wake and evidence-based message recovery.
 
 *Do not post a thread announcing a skills.sh listing you have not verified.*
 
@@ -298,9 +286,7 @@ subreddits punish launch posts and reward "here is what went wrong for me".
 > ```
 >
 > Most of it is prose: when to isolate, what counts as evidence, which questions go to the human,
-> when to stop retrying. There's one small stdlib script that saves message batches atomically,
-> only auto-acks batches that are entirely heartbeats, and ends the process when a real batch lands
-> — that exit is what wakes the coordinator.
+> when to stop retrying. Orca wakes the coordinator natively; the agent handles its own messages and reconciles evidence.
 >
 > Repo: https://github.com/whutlichao/orchestra-auto — happy to hear where the rules are wrong;
 > I'd rather be corrected than keep guessing.
@@ -320,13 +306,12 @@ subreddits punish launch posts and reward "here is what went wrong for me".
 >
 > The content is mostly judgement calls: isolate every ticket into its own top-level worktree; don't
 > treat a `ready` receipt as proof a turn began; read the live agent setting instead of hardcoding
-> one; persist every message batch atomically and only auto-ack heartbeats; classify a worker's
+> one; handle native messages and reconcile evidence by message ID; classify a worker's
 > question before answering it, and send scope changes to the human; run gates by ticket type; keep
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
-> One small standard-library Python script handles the inbox and ends the process to wake the
-> coordinator when a real batch lands. The rest is Markdown plus 38 prompt-level scenarios per
-> language so the reasoning is testable, and real behaviour tests for the script.
+> Orca wakes the coordinator natively. The packages include 38 prompt-level scenarios per
+> language and simulated message-contract regression tests.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether
 > others hit the same failures or different ones.
@@ -352,8 +337,7 @@ subreddits punish launch posts and reward "here is what went wrong for me".
 > ```
 >
 > 内容大部分是判断规则：什么时候隔离、什么算证据、哪些问题必须问人、什么时候该停止重试。
-> 只带一个小脚本（仅标准库），负责把消息批次原子落盘、只自动 ack 全是心跳的批次，并在真批次
-> 到达时结束进程——那次退出就是唤醒 coordinator 的信号，所以每次唤醒之后都要重新安装。
+> Orca 原生唤醒 coordinator；agent 处理自己的消息并按消息 ID 对账证据。
 >
 > 仓库：https://github.com/whutlichao/orchestra-auto
 > 欢迎指出规则里的错误——我宁愿被纠正，也不想继续猜。

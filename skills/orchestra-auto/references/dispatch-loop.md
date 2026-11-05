@@ -55,7 +55,7 @@ Every task worker, without exception:
   for `task-create` + `worker-start --task <id>` only when several tickets have dependencies,
   when you need a planned fan-out, or when retrying a known Task.
 - Immediately after the receipt, confirm the turn really started per §4.3.1, and verify §4.5's
-  inbox consumer and waiting method.
+  native wake contract.
 
 **Base ref: read the fork state once per repository, before the first dispatch into it.** The
 fact is already recorded by Orca; the skill only has to read it:
@@ -137,40 +137,9 @@ worktrees before spending the map; if not, it runs implementers serially, or the
 back to one worker per ticket (default cap 3). The coordinator accepts the single integration PR,
 not each nested branch, and never enters a nested worktree.
 
-## 4.5 Communication loop: enqueue, collect, handle and wake are verified separately
+## 4.5 Communication loop
 
-Read the [communication and recovery protocol](inbox-and-waiting.md) before
-dispatching. Keep one ledger per Run outside the repository: Run/coordinator handle,
-Task/Dispatch/worker handle/worktree, last progress, message IDs, handling state, completion
-receipt, PR, next check time. After context compaction or recovery, read the ledger and the
-real Orca state first; never guess identity from an old conversation.
-
-- Prepare a single inbox consumer and a waiting method before the first worker starts; after
-  every dispatch confirm the turn started and check the consumer.
-- One consumer per Run, bound to the real coordinator handle; messages are saved
-  atomically by deliveryId, a restart never overwrites, and unhandled evidence is never rotated
-  away. The consumer is also the wake: it ends the process, with one line on stdout, when a new
-  non-heartbeat batch or a worker-state change arrives (§3 of
-  [inbox and waiting](inbox-and-waiting.md)), so install it as a call the harness surfaces and
-  install it again after every wake.
-- Deduplicate every message by message ID and verify its Run/Task/Dispatch. Acknowledge only
-  after the whole batch and any needed terminal-ownership decisions are handled. When the
-  current batch is blocked on a human decision, use a read-only `check --all` to inspect
-  following messages and keep handling other workers promptly; an ack is not a reply, and you
-  must not ack with an unreviewed deliveryId lifted from a different check.
-- Collect messages after long operations and while idle. A single foreground wait never exceeds
-  60 seconds; after three rounds with no progress, inspect worker-list / worker-show /
-  worker-read, the queue and the local ledger, and recover from evidence rather than waiting
-  blindly.
-- Unless the environment forces the turn to end, ending a coordinator turn with work still in
-  flight requires a **confirmed** notification mechanism for the next turn. An unverified
-  background process, a message file, or a successful `send` does not count. With no automatic
-  wakeup, keep the current turn in bounded polling; when the environment must take control back,
-  state explicitly what is still running, that you cannot be woken automatically, and where the
-  recovery entry point is — never claim you will continue automatically, and never leave the
-  user to prod you on a schedule.
-- Recovery for a missing worker_done or an already-idle worker, plus error and stop conditions,
-  follow the reference.
+Read [communication and recovery](inbox-and-waiting.md). Keep an out-of-repo ledger of Run, Task, Dispatch, worker, message IDs, handling states, evidence and PR. Verify turn start after dispatch, then end the turn for Orca's native wake. Handle each whole message or batch, deduplicate by message ID and reconcile uncertain effects before replay. Only the agent consumes its own inbox; never start the retired consumer or a background consuming check. Recover lost context via the documented inbox and retry commands. Investigate silence using worker-list, worker-show, worker-read and artifacts; silence alone does not establish termination.
 
 Progress dashboard: initialize and open it before the first dispatch of every actual Run, then follow
 the checkpoint ownership table in [progress dashboard](progress-dashboard.md) after the normal action.

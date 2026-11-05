@@ -66,6 +66,19 @@ EXIT_BUDGET = 4
 DEFAULT_MAX_SECONDS = 60.0
 CLI_ENV = "ORCA_CLI_COMMAND"
 DEFAULT_CLI = "orca"
+
+
+def resolve_orca_cli():
+    """Follow the version-matched Orca discovery stub without fallback."""
+    if CLI_ENV in os.environ:
+        return os.environ[CLI_ENV]
+    if os.environ.get("ORCA_DEV_REPO_ROOT"):
+        return "orca-dev"
+    if sys.platform.startswith("linux") and not (
+            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
+        return "orca-ide"
+    return DEFAULT_CLI
+
 OSASCRIPT_ENV = "ORCA_VISUAL_EVIDENCE_OSASCRIPT"
 DEFAULT_OSASCRIPT = "osascript"
 CLI_TIMEOUT_SECONDS = 120
@@ -585,8 +598,8 @@ def build_parser():
                             help="stop after this long with Orca hidden (default 60)")
     run_parser.add_argument("--dry-run", action="store_true",
                             help="probe and validate without hiding or shooting")
-    run_parser.add_argument("--orca", default=os.environ.get(CLI_ENV, DEFAULT_CLI),
-                            help=f"Orca CLI executable (default ${CLI_ENV} or orca)")
+    run_parser.add_argument("--orca", default=resolve_orca_cli(),
+                            help="Orca CLI executable (defaults to the resolved executable)")
     run_parser.add_argument("--osascript",
                             default=os.environ.get(OSASCRIPT_ENV, DEFAULT_OSASCRIPT),
                             help="test seam: osascript executable")

@@ -130,7 +130,7 @@ EN_INVARIANTS = (
     "worktree",           # isolated top-level worktree per ticket
     "turnStart",          # formal evidence that a worker's turn began
     "disabled TUI agent",  # live preference and disabled-state check
-    "deliveryId",         # durable, deduplicated message handling
+    "message ID",         # durable, deduplicated message handling
     "escalation",         # decisions go to a human
     "G-merge",            # acceptance before merge
     "implement-spec",     # long-horizon map goes through one worker
@@ -143,7 +143,7 @@ ZH_INVARIANTS = (
     "worktree",
     "turnStart",
     "禁用 TUI agent",
-    "deliveryId",
+    "消息 ID",
     "escalation",
     "G-merge",
     "implement-spec",
@@ -1779,12 +1779,12 @@ class LeakScanTests(unittest.TestCase):
             )
 
     def test_random_uuid_tokens_are_not_reported_as_credentials(self):
-        """The inbox script's temp-file UUIDs are tokens, not secrets.
+        """The ledger's temp-file UUIDs are tokens, not secrets.
 
         This is the documented anti-false-positive: a UUID literal in the script must
         match no credential pattern, so the scanner stays trustworthy.
         """
-        script = (SKILL_DIRS[0] / "scripts" / "inbox-loop.py").read_text()
+        script = (SKILL_DIRS[0] / "scripts" / "ledger.py").read_text()
         self.assertIn("uuid.uuid4().hex", script, "the script is expected to mint temp tokens")
         for _name, pattern, reason in self.FORBIDDEN:
             self.assertIsNone(
