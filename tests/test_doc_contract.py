@@ -88,5 +88,51 @@ class InboxWakeContractTests(unittest.TestCase):
                     f"{name}: at-least-once wake cannot also promise no duplicate wake")
 
 
+#: The two identity classes the inbox reference must name, and the env variables that
+#: resolve them. ``caller`` alone stalled a real coordinator: an Orca-launched TUI agent
+#: terminal has ``ORCA_TERMINAL_HANDLE`` but never ``ORCA_AGENT_SESSION_ID``.
+IDENTITY_MARKERS = (
+    "ORCA_AGENT_SESSION_ID",
+    "ORCA_TERMINAL_HANDLE",
+    "ORCA_AGENT_PANE",
+    "caller.orcaSessionId",
+    "orca terminal list",
+)
+#: The old failure-table sentence that made ``orca status --json`` the only source.
+SINGLE_SOURCE_CLAIMS = (
+    "handle 取自真实调用方身份（`orca status --json`）",
+    "Take handles from the real calling identity (`orca status --json`)",
+)
+
+
+class InboxIdentityTests(unittest.TestCase):
+    """A missing caller is a missing session id, not a missing coordinator."""
+
+    def test_each_bundle_names_both_identity_classes(self):
+        for name in SKILL_NAMES:
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / "skills" / name / INBOX_REFERENCE).read_text()
+                for marker in IDENTITY_MARKERS:
+                    self.assertIn(marker, text,
+                                  f"{name}: identity section lost {marker}")
+
+    def test_status_is_no_longer_the_only_handle_source(self):
+        for name in SKILL_NAMES:
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / "skills" / name / INBOX_REFERENCE).read_text()
+                for claim in SINGLE_SOURCE_CLAIMS:
+                    self.assertNotIn(
+                        claim, text,
+                        f"{name}: the failure table still makes status the only source")
+
+    def test_the_handle_check_is_runnable_prose(self):
+        """The documented check must quote both variables, not just describe them."""
+        for name in SKILL_NAMES:
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / "skills" / name / INBOX_REFERENCE).read_text()
+                self.assertIn('"$ORCA_TERMINAL_HANDLE"', text)
+                self.assertIn('os.environ["ORCA_AGENT_PANE"]', text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,37 @@ calling identity — never from a terminal title or from "the most recent termin
 process names the coordinator explicitly with `check --terminal <coordinator_handle>`; `check`
 does not take `--from`.
 
+**How this session's handle is resolved.** Orca has two identity classes; do not mix them:
+
+- **Structured sessions / supervised workers**: `orca status --json`'s
+  `result.caller.orcaSessionId`, which the CLI resolves from the injected
+  `ORCA_AGENT_SESSION_ID`. Only these sessions carry it.
+- **A TUI agent terminal Orca launched directly** (the usual shape for pi / omp here):
+  `ORCA_TERMINAL_HANDLE` in the environment. That is the runtime handle Orca issued to this
+  terminal; match `ORCA_AGENT_PANE` (`<tabId>:<leafId>`) against the row in
+  `orca terminal list --json` to confirm it is yours, then write it to the ledger.
+
+An empty `caller` is **not** "no identity" — a TUI agent terminal never receives a session id,
+and `status` omits caller by design rather than guessing from a terminal. Verify the handle with
+this block (a non-zero exit means it is not yours):
+
+```bash
+[ -n "${ORCA_TERMINAL_HANDLE:-}" ] || { echo "no runtime terminal handle" >&2; exit 1; }
+orca terminal list --json | python3 -c '
+import json, os, sys
+handle = os.environ["ORCA_TERMINAL_HANDLE"]
+tab, leaf = os.environ["ORCA_AGENT_PANE"].split(":", 1)
+row = next(r for r in json.load(sys.stdin)["result"]["terminals"] if r["handle"] == handle)
+assert (row["tabId"], row["leafId"]) == (tab, leaf), "handle does not belong to this pane"
+print(handle)
+'
+```
+
+Having neither (no `caller` and no `ORCA_TERMINAL_HANDLE`) is the only real "no identity":
+report per §9 and do not guess one from a title or "the most recent terminal". Once confirmed,
+run `orca orchestration check --terminal "$ORCA_TERMINAL_HANDLE" --json` (an empty mailbox still
+returns `messages: []`), then `run-create` / `run-use` and record the handle in the ledger.
+
 Each Run gets its own directory and its own single consumer. Startup example:
 
 ```bash
@@ -446,7 +477,7 @@ order; the first two account for nearly every case.
 | Wakeup | A `worker_done` is already on disk or in the queue, yet the coordinator's turn ended long ago and nothing started a new one: delivery files newer than your last turn, or a stale `NEW-MESSAGE`, with no confirmed wake method from §3 | A successful `send` proves a durable enqueue only; wake and nudge are best-effort. Confirm which §3 branch you have. With a harness that surfaces job completion, the end of the consumer — the wake line in §3.1 — **is** the wake; if it never arrived, check that the consumer was installed as §3.2 describes and not via `nohup`, and that its next wait was installed after the previous wake (§3.4). Without such a harness, stay in the bounded tier of §3.3 or record the un-wakeable state before yielding. Never read "the loop is alive" as "I will be woken" |
 | Unacked FIFO head | Earlier messages were fine, later `worker_done` messages never appear, and an unanswered question or decision sits at the head of the batch | `check` returns the bound Run's **oldest unacknowledged** Delivery and replays that exact batch until `--ack`, so one unacked batch hides everything behind it. The head is `blocked` with its delivery id and reason `unacknowledged`, computed from the delivery files and `receipts.jsonl`. Handle the whole batch, then ack that snapshot's `deliveryId` through `inbox-loop.sh --ack` (§2 step 3) so the receipt records pending, then success or failed. While a human decision blocks the head, read later messages with the read-only `check --all` (§2 step 4); `--all` never yields an ackable ID. An ack is not a reply |
 | Interrupted action | The batch is still unacked, its ledger entry sits at `processing`, and the process died between doing the work and recording it — so the effect may already have landed | Establish the fact before replaying (§2): read the real state — `pr view` for a merge, the reply receipt, the file itself. Replay under the same delivery ID only when the effect is verifiable and the action is idempotent; an effect you cannot establish from evidence goes to the human instead of being re-executed blind. This is the `runtime_unavailable` judgement one layer up: the mutation may already have taken effect, so prove it or ask, never assume |
-| Identity or mailbox | Nothing arrives at any inbox, or messages land where you are not looking | `check` names its caller with `--terminal <handle>` and rejects `--from`; a handle taken from a terminal title, from "the most recent terminal", or from another session or Run addresses the wrong mailbox. Take handles from the real calling identity (`orca status --json`) and keep them in the ledger. A `worker_done` or heartbeat cannot target a group, and its sender handle must equal the Dispatch assignee exactly or the task never settles |
+| Identity or mailbox | Nothing arrives at any inbox, or messages land where you are not looking | `check` names its caller with `--terminal <handle>` and rejects `--from`; a handle taken from a terminal title, from "the most recent terminal", or from another session or Run addresses the wrong mailbox. Take handles from the real calling identity: structured sessions use `caller.orcaSessionId`, and a TUI agent terminal Orca launched uses `ORCA_TERMINAL_HANDLE` checked against `ORCA_AGENT_PANE`; an absent `caller` is not a missing identity, so never stop for it (§1). Keep the handle in the ledger. A `worker_done` or heartbeat cannot target a group, and its sender handle must equal the Dispatch assignee exactly or the task never settles |
 | Dead consumer | Total silence, heartbeats included: `--status` reports DEAD with `phase=error` or an `ERROR` line in `watch.log`; or the wake line arrived with `reason=error` | The script writes CLI failures, JSON errors and lost bindings to disk and exits non-zero on purpose, so a stop is never an empty queue — and that stop is itself a wake (§3.1). Judge death from `state.json`, never from the pid file alone (§1). Read the `ERROR` line and the `detail`; a binding/waiter problem usually means another instance or another Run's loop took the slot. Before re-issuing anything, follow the CLI's own recovery guidance when it printed one: a `runtime_unavailable` error carries a `request-show --request <id>` pointer, and the mutation may already have taken effect, so establish that with `request-show` and replay it with `--retry-request <id>` rather than treating it as a fresh attempt. The consumer never retries by itself. Waiter slots are a cross-directory resource: before starting a new loop, confirm and stop the old one, and never migrate an old state directory |
 | Worker never sent | Only heartbeats arrive, or a plain final that claims success does; an auto-acked heartbeat-only batch looks like traffic while reporting nothing | Write the §4 contract into the spec, and classify with 5.3 |
 
