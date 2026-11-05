@@ -114,6 +114,13 @@ def flag(name, default=None):
             return argv[index + 1]
     return default
 
+if argv == ["skills", "get", "orchestration"]:
+    text_only("Orca wakes you.")
+if argv == ["orchestration", "check", "--help"]:
+    text_only("default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request")
+if argv == ["orchestration", "inbox", "--help"]:
+    text_only("--terminal --full")
+
 if argv and argv[0] == "status":
     response = CONFIG.get("status")
     if isinstance(response, dict) and "fail" in response:

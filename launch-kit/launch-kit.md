@@ -194,8 +194,8 @@ Covered by [README.md](../README.md). For a release, use:
 > **orchestra-auto v0.1.0** — the first public release.
 >
 > Two installable Agent Skills (English + 简体中文) that encode a supervised Orca workflow:
-> coordinator plans and verifies, workers edit and open PRs, the coordinator merges once the gates
-> pass.
+> coordinator plans and verifies, workers edit and open PRs, the coordinator merges when authorized and the gates
+> pass; a PR-only request stays open.
 >
 > The interesting content is the safety rules, not the happy path: isolated worktrees, real evidence
 > that a worker's turn began, live worker settings instead of hardcoded agents, native wake and evidence-based message-ID reconciliation,

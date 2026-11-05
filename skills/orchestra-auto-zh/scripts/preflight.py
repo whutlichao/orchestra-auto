@@ -105,12 +105,13 @@ CHECKLIST = (
 
 #: The independent blocking lookup that runs before the sheet: the agent choice depends
 #: on it, so it is not one of the twelve tick-sheet lines.
-INDEPENDENT_ITEMS = ("live-settings",)
+INDEPENDENT_ITEMS = ("live-settings", "message-capability")
 
 ITEM_CLASS = {
     item_id: line["class"] for line in CHECKLIST for item_id in line["items"]
 }
 ITEM_CLASS["live-settings"] = "mechanical"
+ITEM_CLASS["message-capability"] = "mechanical"
 
 JUDGMENT_ITEMS = tuple(
     item_id
@@ -213,7 +214,7 @@ class LocalRunner:
     """Run the mechanical probes through the resolved Orca CLI.
 
     The only Orca command this module ever runs is a read: ``status``, ``agent hooks
-    status`` or ``orchestration worker-list``. It never starts, stops or messages a worker.
+    status`` or ``orchestration worker-list``, the version-matched guide and command help. It never starts, stops or messages a worker.
     """
 
     def __init__(self, orca=None):
@@ -337,6 +338,44 @@ def _check_command_surface(runner, run_id):
         "cli-command-surface", "pass", command, observed,
         "the command surface answered a minimal worker-list probe",
     )
+
+
+def _check_messaging(context, runner):
+    """Fail closed unless this session and its selected CLI support recovery."""
+    messaging = context.get("messaging")
+    if not isinstance(messaging, dict):
+        messaging = {}
+    evidence = messaging.get("evidence_ref")
+    confirmed = (messaging.get("native_wake_confirmed") is True
+                 and messaging.get("source") in ("live_preamble", "verified_session")
+                 and isinstance(evidence, str) and bool(evidence.strip()))
+    migration_ref = messaging.get("migration_evidence_ref")
+    migration_ready = (messaging.get("legacy_migration_complete") is True
+                       and isinstance(migration_ref, str) and bool(migration_ref.strip()))
+    probes = (
+        (["orca", "skills", "get", "orchestration"], ("orca wakes you.",)),
+        (["orca", "orchestration", "check", "--help"],
+         ("default: return the bound run's oldest unread fifo batch and mark it handled.", "--retry-request")),
+        (["orca", "orchestration", "inbox", "--help"], ("--terminal", "--full")),
+    )
+    observations = []
+    for argv, required in probes:
+        result = _run(runner, argv)
+        output = result["stdout"].lower()
+        found = all(token in output for token in required)
+        observations.append({"command": " ".join(argv), "returncode": result["returncode"],
+                             "markers_present": found})
+    passed = confirmed and migration_ready and all(row["returncode"] == 0 and row["markers_present"]
+                               for row in observations)
+    return _item("message-capability", "pass" if passed else "fail",
+                 "read version-matched orchestration guide and check/inbox help",
+                 {"session_confirmed": confirmed, "session_source": messaging.get("source"),
+                  "migration_confirmed": migration_ready,
+                  "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
+                  "probes": observations},
+                 "native delivery and recovery confirmed" if passed else
+                 "native delivery or recovery unverified; do not dispatch",
+                 evidence if isinstance(evidence, str) else "")
 
 
 def _check_guide(context):
@@ -625,6 +664,8 @@ def _apply_overrides(items, raw_overrides):
             record["error"] = "an override requires item, by and reason"
         elif item_id not in by_id:
             record["error"] = f"unknown item: {item_id}"
+        elif item_id == "message-capability":
+            record["error"] = "message capability cannot be waived"
         elif by_id[item_id]["result"] != "fail":
             record["error"] = "the item did not fail; nothing to waive"
         else:
@@ -777,6 +818,7 @@ def check(ticket, context, runner=None):
 
     items = [
         _check_live_settings(runner),
+        _check_messaging(context, runner),
         _check_status(runner),
         _check_command_surface(runner, context["run_id"]),
         _check_guide(context),

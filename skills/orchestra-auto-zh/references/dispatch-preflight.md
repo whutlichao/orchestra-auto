@@ -32,22 +32,25 @@ python3 "$SKILLS_ROOT/orchestra-auto-zh/scripts/preflight.py" check \
 `version`、`command`）、`judgments`（每个判断项一条 `pass` 或 `fail`，带 `note` 与
 `evidence_ref`）、`baselines`（`label`、`source_commit`，可选 `order_of_magnitude` 或
 `used: false`）、`overrides`、`review_exemption`；`post-dispatch` 另需 `worktree`、
-`dashboard` 与 `inbox`。判断项没有记录结果即失败；机械项由 CLI 观察，协调者不提供其值。
+`dashboard` 与 `inbox`。判断项没有记录结果即失败；机械探针由 CLI 观察。`message-capability` 还要求协调者提供可独立核验的会话与迁移证据；脚本记录该声明，但不能验证其真实性。
 
 回执记录工单身份（`id`、`type`、`gate`、`origin`）、`checked_at`、`items`、`blocking`、
 `overrides` 与 `post_dispatch`。每个 item 都带 `id`、`class`、`result`、`command`、`observed`、
 `note` 与 `evidence_ref`。`class` 为 `mechanical`（由 CLI 观察）或 `judgment`（由协调者记录）；
 `result` 为 `pass`、`fail` 或 `waived`。§4.0.1 的十二条保留原有身份，并在每条里写明自己的
-item id 与 class。`live-settings` 是一个显式独立的阻断型预检项（blocking），不是第十三条
-tick 行：它在 tick sheet 之前执行，因为 worker 的 agent 选择依赖它。
+item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断型预检项，在 tick sheet 前执行，不增加 tick 行。
 
-所有派活前 item 都是阻断项。某个阻断项失败即拒绝派活；只有带 `item`、`by`、`reason` 的
+所有派活前 item 都是阻断项。某个阻断项失败即拒绝派活；除不可豁免的 `message-capability` 外，只有带 `item`、`by`、`reason` 的
 `overrides` 条目才能把它变成 `waived`，不完整的 override 不豁免任何东西。退出码 `0` 表示
 回执已持久化且没有阻断；`1` 表示有阻断失败、输入非法，或回执无法持久写入；`2` 是用法错误。
 **任何非零退出都不得派活，回执写入失败时同样不得派活**——写失败的记录不等于没有记录。
 预检命令从不运行 `worker-start`；协调者只在退出 `0` 之后才启动 worker。
 
 看板写入永远不参与这个决定。看板写失败是在回执之后记录的 gap，它不能把通过的预检变成失败。
+
+### 消息投递与恢复门禁
+
+任何 worker 启动前，`message-capability` 是独立的阻断型 **mechanical** 项。预检读取所选可执行文件的 `skills get orchestration`、`orchestration check --help` 和 `orchestration inbox --help`，检查 1.4.248 原生唤醒、check 标记处理、retry 和 inbox 恢复标记。协调者还须在 `context.messaging` 提供 `native_wake_confirmed: true`、`source: "live_preamble"` 或 `"verified_session"`，以及指向当前会话实际投递证据的非空 `evidence_ref`。还须在证明不存在旧消费者或已完成迁移和对账后，才设置 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。仅有 guide 文本不能证明当前会话能被唤醒。缺失、不支持、不可读或措辞不匹配均安全失败；`message-capability` 不可豁免。记录真实证据，不能编造；先核验当前 guide 和会话，否则停止。这里没有验证旧版本。派活前还须按[通信与恢复](inbox-and-waiting.md)完成适用的旧收件器迁移。
 
 ### 实时 worker 设置查找
 
@@ -168,7 +171,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
   复核是派活后的 observation，不是派活前 gate，也绝不改写回执。豁免理由要同时写进 spec 与 Answer。
 - **看板记录已回填，或已记录 gap**（`dashboard-backfill`）。这是 ledger observation：看板写失败
   记录 gap，不阻断派活，也不改变预检结果。
-- **原生唤醒契约已确认**（`inbox-health`，§4.5）：记录当前会话是否支持原生唤醒及证据缺口。这是 observation，不阻止派活，也不安装收件器。 仅有当前证据时设置 `context.inbox.native_wake: true` 和 `healthy: true`；否则记录原因。旧 `installed` 不证明原生唤醒。
+- **消息通道持续健康**（`inbox-health`，§4.5）：记录派活后的 observation 或缺口；它不能替代或豁免派活前 `message-capability` 门禁。旧 `installed` 不证明原生唤醒。
 
 拿到回执后记录这三项观察：
 

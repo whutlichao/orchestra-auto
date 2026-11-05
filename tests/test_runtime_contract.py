@@ -69,3 +69,45 @@ class PreflightNativeWake(unittest.TestCase):
             self.assertEqual(actual["outcome"], "healthy")
             malformed = module._inbox_observation({"inbox": {"native_wake": True, "healthy": "yes"}})
             self.assertEqual(malformed["outcome"], "unhealthy")
+
+class MessagingCapabilityTests(unittest.TestCase):
+    def test_dispatch_is_blocked_when_wake_or_recovery_is_unverified(self):
+        import importlib.util
+        for package in PACKAGES:
+            path = ROOT / 'skills' / package / 'scripts' / 'preflight.py'
+            spec = importlib.util.spec_from_file_location('preflight_message_test', path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            class Runner:
+                def __init__(self, missing=None):
+                    self.missing = missing
+                def run(self, argv, timeout=None):
+                    key = tuple(argv[1:])
+                    outputs = {
+                        ('skills', 'get', 'orchestration'): 'Orca wakes you.\nWhen Orca wakes you',
+                        ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request",
+                        ('orchestration', 'inbox', '--help'): '--terminal --full',
+                    }
+                    return {'returncode': 1 if key == self.missing else 0,
+                            'stdout': outputs.get(key, ''), 'stderr': ''}
+            good = {'messaging': {'native_wake_confirmed': True,
+                                  'source': 'live_preamble', 'evidence_ref': 'session evidence',
+                                  'legacy_migration_complete': True,
+                                  'migration_evidence_ref': 'inventory evidence'}}
+            with self.subTest(package=package):
+                self.assertEqual(module._check_messaging(good, Runner())['result'], 'pass')
+                self.assertEqual(module._check_messaging({}, Runner())['result'], 'fail')
+                incomplete = {'messaging': dict(good['messaging'], legacy_migration_complete=False)}
+                self.assertEqual(module._check_messaging(incomplete, Runner())['result'], 'fail')
+                self.assertEqual(module._check_messaging(good, Runner(('orchestration', 'inbox', '--help')))['result'], 'fail')
+                class NegativeRunner(Runner):
+                    def run(self, argv, timeout=None):
+                        result = super().run(argv, timeout)
+                        if argv[1:] == ['orchestration', 'check', '--help']:
+                            result['stdout'] = 'does not mark it handled --retry-request'
+                        return result
+                self.assertEqual(module._check_messaging(good, NegativeRunner())['result'], 'fail')
+                item = module._check_messaging({}, Runner())
+                overrides = module._apply_overrides([item], [{'item': 'message-capability', 'by': 'human', 'reason': 'skip'}])
+                self.assertFalse(overrides[0]['applied'])
+                self.assertTrue(module._blocking_decision([item], overrides)['blocked'])

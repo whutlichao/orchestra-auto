@@ -224,7 +224,7 @@ MIT。欢迎贡献。
 
 > agent 干活，开始容易，收尾最难。
 >
-> 我把收尾写下来了：隔离 worktree、worker 真的开始的证据、实时 worker 设置、原子化的消息处理、
+> 我把收尾写下来了：隔离 worktree、worker 真的开始的证据、实时 worker 设置、原生唤醒与消息 ID 对账、
 > 决策升级给人、按票型的门禁、有界重试。
 >
 > 中文 + English，MIT 🧵

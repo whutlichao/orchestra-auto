@@ -36,17 +36,16 @@ rest: `run_id`, `round_started_at`, `base_commit`, optional `checked_at`, `guide
 `evidence_ref` for each judgment item), `baselines` (`label`, `source_commit`, optional
 `order_of_magnitude` or `used: false`), `overrides` and `review_exemption`; `post-dispatch`
 also needs `worktree`, `dashboard` and `inbox`. A judgment item with no recorded result
-fails; a mechanical item is observed by the CLI, never supplied by the coordinator.
+fails; mechanical probes run through the CLI. `message-capability` also requires coordinator-supplied, independently verifiable session and migration evidence; the script records but cannot authenticate that attestation.
 
 The receipt records the ticket identity (`id`, `type`, `gate`, `origin`), `checked_at`, `items`,
 `blocking`, `overrides` and `post_dispatch`. Every item carries `id`, `class`, `result`,
 `command`, `observed`, `note` and `evidence_ref`. `class` is `mechanical` when the CLI observed
 the value or `judgment` when the coordinator recorded it; `result` is `pass`, `fail` or
 `waived`. The twelve §4.0.1 lines keep their identity and name their item id and class in the
-line itself. `live-settings` is an explicit independent blocking preflight item, not a
-thirteenth tick line: it runs before the sheet because the agent choice depends on it.
+line itself. `live-settings` and `message-capability` are explicit independent blocking preflight items, not additional tick lines: they run before the sheet.
 
-Every pre-dispatch item is blocking. A failed blocking item rejects the dispatch; an `overrides`
+Every pre-dispatch item is blocking. A failed blocking item rejects the dispatch; except for non-waivable `message-capability`, an `overrides`
 entry with `item`, `by` and `reason` is the only way to turn that item into `waived`, and an
 incomplete override waives nothing. Exit `0` means the receipt was written and nothing blocks;
 exit `1` means a blocking failure, invalid input, or a receipt that could not be written
@@ -56,6 +55,10 @@ command never runs `worker-start`; the coordinator starts the worker only after 
 
 A dashboard write is never part of this decision. A failed dashboard write is a gap recorded
 after the receipt, and it cannot turn a passing preflight into a failing one.
+
+### Message delivery and recovery gate
+
+Before any worker starts, `message-capability` is an independent blocking **mechanical** item. The preflight reads the selected executable's `skills get orchestration`, `orchestration check --help` and `orchestration inbox --help`, checking for the 1.4.248 native-wake, handled-check, retry and inbox-recovery markers. The coordinator also supplies `context.messaging` with `native_wake_confirmed: true`, `source: "live_preamble"` or `"verified_session"`, and a non-empty `evidence_ref` identifying the current session's actual delivery evidence. Also set `legacy_migration_complete: true` and a non-empty `migration_evidence_ref` only after proving either there is no legacy consumer or the migration and reconciliation are complete. Guide text alone does not prove this session can be woken. A missing, unsupported, unreadable or differently worded contract fails closed; `message-capability` cannot be waived. Record the actual evidence rather than inventing it. Verify the current guide and session or stop; older versions have not been verified here. Complete any applicable legacy-consumer migration before dispatch as described in [communication and recovery](inbox-and-waiting.md).
 
 ### Live worker settings lookup
 
@@ -226,7 +229,7 @@ implementers must never share one worktree.
 - **The dashboard record was backfilled or a gap was recorded** (`dashboard-backfill`). This is
   a ledger observation: a failed dashboard write records a gap, never blocks dispatch, and never
   changes the preflight result.
-- **The native wake contract is confirmed** (`inbox-health`, §4.5): record whether this session supports native wake and any evidence gap. This observation never blocks dispatch; it does not install a consumer. Set `context.inbox.native_wake: true` and `healthy: true` only with current evidence; otherwise record the reason. Legacy `installed` does not establish native wake.
+- **The message channel remains healthy** (`inbox-health`, §4.5): record a post-dispatch observation or gap. It does not replace or waive the pre-dispatch `message-capability` gate. Legacy `installed` does not establish native wake.
 
 Record these three observations after the receipt:
 
