@@ -109,8 +109,7 @@ the base, each head SHA and every step's tree SHA; the coordinator checks the co
 runs the applicable full gate on the final tree — CI by default, and only when the repository has
 no usable CI, one equivalent local full run instead. A single PR gets the same verification on its
 final head. Fix a PR first on a combined conflict or a real red; once any head or the target base
-changes, re-judge whether the earlier evidence still covers what you intend to merge. For a two-way
-PR, all gates green means §6.5's automatic merge, with no further user confirmation; when the user requested only a PR, stop with it open. Explicit user instructions take precedence.
+changes, re-judge whether the earlier evidence still covers what you intend to merge. When the user has authorized merge, the PR is two-way and all gates are green, proceed to §6.5 without another confirmation. When the user requested only a PR, stop with it open. Explicit user instructions take precedence.
 
 ### §6.5 Merge execution and teardown
 

@@ -107,6 +107,13 @@ class MessagingCapabilityTests(unittest.TestCase):
                             result['stdout'] = 'does not mark it handled --retry-request'
                         return result
                 self.assertEqual(module._check_messaging(good, NegativeRunner())['result'], 'fail')
+                class RewordedRunner(Runner):
+                    def run(self, argv, timeout=None):
+                        result = super().run(argv, timeout)
+                        if argv[1:] == ['orchestration', 'check', '--help']:
+                            result['stdout'] = 'returns the oldest unread FIFO batch and immediately marks it handled --retry-request'
+                        return result
+                self.assertEqual(module._check_messaging(good, RewordedRunner())['result'], 'fail')
                 item = module._check_messaging({}, Runner())
                 overrides = module._apply_overrides([item], [{'item': 'message-capability', 'by': 'human', 'reason': 'skip'}])
                 self.assertFalse(overrides[0]['applied'])

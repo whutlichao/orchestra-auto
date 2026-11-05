@@ -148,6 +148,27 @@ class RuntimeMigrationContractTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
                 self.assertIn(required, text)
 
+    def test_merge_gate_requires_authorization_even_for_two_way_prs(self):
+        required = {
+            'orchestra-auto': 'When the user has authorized merge, the PR is two-way',
+            'orchestra-auto-zh': '用户授权合并、双向门且门禁全绿',
+        }
+        for name, phrase in required.items():
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / 'skills' / name / 'references/gate-acceptance.md').read_text()
+                self.assertIn(phrase, text)
+                self.assertNotIn('all gates green means §6.5', text)
+
+    def test_message_probe_documents_wording_compatibility_limit(self):
+        required = {
+            'orchestra-auto': 'equivalent wording can still fail',
+            'orchestra-auto-zh': '语义相同但措辞不同也可能失败',
+        }
+        for name, phrase in required.items():
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / 'skills' / name / 'references/dispatch-preflight.md').read_text()
+                self.assertIn(phrase, text)
+
     def test_existing_consumer_is_quiesced_before_local_archive_reconciliation(self):
         cases = {
             'orchestra-auto': ('## Legacy consumer migration', 'inbox.lock',

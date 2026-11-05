@@ -50,7 +50,7 @@ item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断�
 
 ### 消息投递与恢复门禁
 
-任何 worker 启动前，`message-capability` 是独立的阻断型 **mechanical** 项。预检读取所选可执行文件的 `skills get orchestration`、`orchestration check --help` 和 `orchestration inbox --help`，检查 1.4.248 原生唤醒、check 标记处理、retry 和 inbox 恢复标记。协调者还须在 `context.messaging` 提供 `native_wake_confirmed: true`、`source: "live_preamble"` 或 `"verified_session"`，以及指向当前会话实际投递证据的非空 `evidence_ref`。还须在证明不存在旧消费者或已完成迁移和对账后，才设置 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。仅有 guide 文本不能证明当前会话能被唤醒。缺失、不支持、不可读或措辞不匹配均安全失败；`message-capability` 不可豁免。记录真实证据，不能编造；先核验当前 guide 和会话，否则停止。这里没有验证旧版本。派活前还须按[通信与恢复](inbox-and-waiting.md)完成适用的旧收件器迁移。
+任何 worker 启动前，`message-capability` 是独立的阻断型 **mechanical** 项。预检读取所选可执行文件的 `skills get orchestration`、`orchestration check --help` 和 `orchestration inbox --help`，检查 1.4.248 原生唤醒、check 标记处理、retry 和 inbox 恢复标记。协调者还须在 `context.messaging` 提供 `native_wake_confirmed: true`、`source: "live_preamble"` 或 `"verified_session"`，以及指向当前会话实际投递证据的非空 `evidence_ref`。还须在证明不存在旧消费者或已完成迁移和对账后，才设置 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。仅有 guide 文本不能证明当前会话能被唤醒。探针按不区分大小写的精确文本片段匹配 1.4.248，因此其他版本语义相同但措辞不同也可能失败。缺失、不支持、不可读或措辞不匹配均安全失败；`message-capability` 不可豁免或自动绕过。修改探针前须重新核验该版本。记录真实证据，不能编造；先核验当前 guide 和会话，否则停止。这里没有验证旧版本。派活前还须按[通信与恢复](inbox-and-waiting.md)完成适用的旧收件器迁移。
 
 ### 实时 worker 设置查找
 
