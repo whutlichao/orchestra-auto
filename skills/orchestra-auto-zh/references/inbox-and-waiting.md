@@ -30,6 +30,34 @@
 repo 外台账。句柄来自真实调用方身份，不从终端标题或“最新终端”推断。后台进程显式指定
 `check --terminal <coordinator_handle>`；`check` 不使用 `--from`。
 
+**本会话的 handle 怎么来。** Orca 有两类身份，别混用：
+
+- **结构化会话 / 受监督 worker**：`orca status --json` 的 `result.caller.orcaSessionId`，
+  CLI 从注入的 `ORCA_AGENT_SESSION_ID` 解出，只有这类会话才有。
+- **Orca 直接启动的 TUI agent 终端**（本机 pi / omp 的常见形态）：环境里的
+  `ORCA_TERMINAL_HANDLE`。这是 Orca 发给这个终端的运行时句柄；用 `ORCA_AGENT_PANE`
+  （`<tabId>:<leafId>`）与 `orca terminal list --json` 的行精确对上，确认它属于你，再写台账。
+
+`caller` 为空**不是**「没有身份」——TUI agent 终端本来就不注入 session id，`status` 按设计
+省略 caller 而不是拿终端去猜。用下面一行核对自己的 handle（不匹配即非零退出）：
+
+```bash
+[ -n "${ORCA_TERMINAL_HANDLE:-}" ] || { echo "no runtime terminal handle" >&2; exit 1; }
+orca terminal list --json | python3 -c '
+import json, os, sys
+handle = os.environ["ORCA_TERMINAL_HANDLE"]
+tab, leaf = os.environ["ORCA_AGENT_PANE"].split(":", 1)
+row = next(r for r in json.load(sys.stdin)["result"]["terminals"] if r["handle"] == handle)
+assert (row["tabId"], row["leafId"]) == (tab, leaf), "handle does not belong to this pane"
+print(handle)
+'
+```
+
+两类都没有（没有 `caller`，也没有 `ORCA_TERMINAL_HANDLE`）才是真的没有身份：按 §9 报告，
+不要从标题或「最新终端」猜一个。核对后先跑一次
+`orca orchestration check --terminal "$ORCA_TERMINAL_HANDLE" --json`（空邮箱也应返回
+`messages: []`），再 `run-create` / `run-use` 并把该 handle 写进台账。
+
 每个 Run 使用独立目录、唯一收件器。启动示例：
 
 ```bash
@@ -371,7 +399,7 @@ heartbeat 消息无关。脚本把该子进程的流放在自己的文件里，k
 | 唤醒 | worker_done 已在盘上或队列里，但协调者的 turn 早已结束、没有东西起新 turn：delivery 文件比你上一次 turn 更新，或 `NEW-MESSAGE` 早已过期，而 §3 的唤醒方式从未被确认 | `send` 成功只证明 durable enqueue；wake/nudge 是 best-effort。先确认自己处在 §3 哪一档：harness 能呈现作业完成时，收件器的结束——§3.1 那行唤醒——**就是**唤醒；若它始终没来，核对收件器是否按 §3.2 装的（而不是 `nohup`），以及上一次唤醒后是否装回了下一次等待（§3.4）。没有这种 harness 就停在 §3.3 的有界档，或在结束 turn 前记录无法自动唤醒的状态。绝不能把「进程还活着」当成「我会被叫醒」 |
 | FIFO 头部未 ack | 早先消息正常，之后的 worker_done 再不出现，批次头部压着一条未回答的提问或决策 | `check` 返回 Run 下**最老未 ack** 的 Delivery，并一直重放这一批直到 `--ack`，所以一批没 ack 就挡住它后面的一切。头部处于 `blocked`，带 delivery id 与原因 `unacknowledged`，由 delivery 文件与 `receipts.jsonl` 计算。整批处理完再通过 `inbox-loop.sh --ack` ack 该快照的 `deliveryId`（§2 第 3 条），让 receipt 记下 pending 与 success/failed。人类决策堵住头部时，用只读 `check --all` 读后续消息（§2 第 4 条）；`--all` 从不出产可 ack 的 ID。ack 不是回复 |
 | 动作被打断 | 批仍是未 ack，台账那条停在 `processing`，进程死在「做完事」和「记下事」之间——所以效果可能已经落地 | 先确立事实再重放（§2）：读真实状态——合并查 `pr view`、回复查回执、文件就读文件本身。只有效果可验证且动作幂等时，才用同一个 delivery ID 重放；无法从证据确立的效果交给人类，不要盲目重跑。这就是 `runtime_unavailable` 那条判断往上一层：变更可能已经生效，所以要证明它、或者去问，绝不假设 |
-| 身份/邮箱 | 哪个收件箱都收不到，或消息落在你没在看的地方 | `check` 用 `--terminal <handle>` 认调用方且不接受 `--from`；从终端标题、"最新终端"或别的会话/Run 拿来的 handle 指向错误邮箱。handle 取自真实调用方身份（`orca status --json`）并写入台账。worker_done/heartbeat 不能发组地址，其 sender handle 必须精确等于 dispatch assignee，否则该任务永不结算 |
+| 身份/邮箱 | 哪个收件箱都收不到，或消息落在你没在看的地方 | `check` 用 `--terminal <handle>` 认调用方且不接受 `--from`；从终端标题、"最新终端"或别的会话/Run 拿来的 handle 指向错误邮箱。handle 取自真实调用方身份：结构化会话用 `caller.orcaSessionId`，Orca 启动的 TUI agent 终端用 `ORCA_TERMINAL_HANDLE` 并与 `ORCA_AGENT_PANE` 核对；`caller` 缺失本身不是身份缺失，别因此停下（§1）。handle 写入台账。worker_done/heartbeat 不能发组地址，其 sender handle 必须精确等于 dispatch assignee，否则该任务永不结算 |
 | 收件器已死 | 彻底安静（连心跳也没有）：`--status` 报 DEAD 且 `phase=error`、或 `watch.log` 有 `ERROR` 行；或收到的唤醒行 `reason=error` | 脚本刻意把 CLI 失败、JSON 错误与绑定丢失落盘并非零退出，一次停止从不等价于空队列——而且那次停止本身就是一次唤醒（§3.1）。判死看 `state.json`，不要只看 pid 文件（§1）。读 `ERROR` 行与 `detail`；绑定/waiter 问题通常意味着别的实例或别的 Run 的 loop 占走了槽。在重新下发任何东西之前，先按 CLI 自己给出的恢复指引走：`runtime_unavailable` 错误会附带 `request-show --request <id>` 指引，而那次改动可能已经生效；用 `request-show` 确认、再用 `--retry-request <id>` 重放，而不是当成一次全新尝试。收件器自己从不重试。waiter 槽是跨目录资源：起新 loop 前先确认并停掉旧 loop，绝不迁移旧状态目录 |
 | worker 压根没发 | 只收到心跳，或收到声称成功的 plain final；被自动 ack 的纯心跳批次看着有流量，实际什么也没报 | 把 §4 的通信契约写进 spec，并按 5.3 分类 |
 
