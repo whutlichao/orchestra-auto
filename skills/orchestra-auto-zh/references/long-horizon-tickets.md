@@ -94,7 +94,7 @@ implementer 若是 Orca 嵌套 worker，必须遵守 `nested_worker_depth_exceed
    worktree 里。
 2. **集成已验收**：最终 tree 通过适用的全量门禁，且至少抽查两张票的证据证实摘要里的说法。
 3. **PR 已合并**：集成 PR 的 head 与最终验收 SHA 一致，标为 ready 前已把 integration branch
-   rebase 到当前默认 base；是否合并只看 §5 的门规则。
+   rebase 到当前默认 base；是否合并由用户授权及 §5 门规则共同决定。
 4. **票据按 tracker 关闭**：由 tracker 自己的规则关闭，通常是 PR 合并时 `Closes` 链接生效。
    所以关闭发生在合并**之后**，对账是合并后的步骤（见[门禁验收](gate-acceptance.md) §6.5），
    不是合并的前提。

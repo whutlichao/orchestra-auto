@@ -28,7 +28,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto
 | [`implement`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement/SKILL.md) | 做一块已经说清的工作；按约定的 seam 走 `tdd`，提交前跑 `code-review` |
 | [`implement-spec`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement-spec/SKILL.md) | 把整份 spec 落在一条 integration branch 上；就绪的票在各自 worktree 并行做，结束前跑 `code-review` |
 
-已有 spec 或已有票，就从对应的那一格进入。一张定案的票用 `implement`；整张票图交给一个长程 `implement-spec` worker；只要设计、规格或拆票，那一格的 PR 合并后就停。`tdd` 在票内调用。需求还散、形不成稳定需求时，先用 [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) 铺开决策票，路清了再进 `to-spec`。
+已有 spec 或已有票，就从对应的那一格进入。一张定案的票用 `implement`；整张票图交给一个长程 `implement-spec` worker；只要设计、规格或拆票，则到那一格的授权交付终点就停。`tdd` 在票内调用。需求还散、形不成稳定需求时，先用 [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) 铺开决策票，路清了再进 `to-spec`。
 
 ## 怎么跑
 
@@ -136,8 +136,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 22,624（−25.1%） | 7,552 → 5,656 |
-| 中文 | 24,359 → 19,649（−19.3%） | 6,089 → 4,912 |
+| 英文 | 30,208 → 22,663（−25.0%） | 7,552 → 5,665 |
+| 中文 | 24,359 → 19,739（−19.0%） | 6,089 → 4,934 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 

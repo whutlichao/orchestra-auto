@@ -134,5 +134,43 @@ class InboxIdentityTests(unittest.TestCase):
                 self.assertIn('os.environ["ORCA_AGENT_PANE"]', text)
 
 
+class RuntimeMigrationContractTests(unittest.TestCase):
+    def test_pr_only_scope_never_grants_merge(self):
+        cases = {
+            'orchestra-auto': ('asking you to open a PR is not one',
+                               'A PR-only request stops with the PR open'),
+            'orchestra-auto-zh': ('项目改动默认自动创建并合并 PR',
+                                  '只要求开 PR 时止于开放 PR'),
+        }
+        for name, (forbidden, required) in cases.items():
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / 'skills' / name / 'SKILL.md').read_text()
+                self.assertNotIn(forbidden, text)
+                self.assertIn(required, text)
+
+    def test_existing_consumer_is_quiesced_before_local_archive_reconciliation(self):
+        cases = {
+            'orchestra-auto': ('## Legacy consumer migration', 'inbox.lock',
+                               'verified process identity', 'stop its launcher',
+                               'confirm exit and no surviving check',
+                               'deliveries/*.json', 'receipts.jsonl',
+                               'successful ack is not proof', 'message ID',
+                               'block migration', 'failed or missing receipt',
+                               'latest 50 inbox rows', 'Never automatically repeat'),
+            'orchestra-auto-zh': ('## 旧收件器迁移', 'inbox.lock',
+                                  '核实进程身份', '停止其启动器',
+                                  '确认进程退出且没有遗留 check',
+                                  'deliveries/*.json', 'receipts.jsonl',
+                                  'ack 成功不证明', '消息 ID', '阻塞迁移',
+                                  '回执失败或缺失', 'inbox 最近 50 条', '不自动重复'),
+        }
+        for name, markers in cases.items():
+            with self.subTest(bundle=name):
+                text = (REPO_ROOT / 'skills' / name / INBOX_REFERENCE).read_text()
+                for marker in markers:
+                    self.assertIn(marker, text)
+                self.assertLess(text.index(markers[4]), text.index(markers[5]))
+
+
 if __name__ == "__main__":
     unittest.main()

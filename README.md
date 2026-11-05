@@ -28,7 +28,7 @@ The planning chain is Matt Pocock's and stays in the order he publishes. This re
 | [`implement`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement/SKILL.md) | Builds one settled piece of work; drives `tdd` at the agreed seams and runs `code-review` before committing |
 | [`implement-spec`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement-spec/SKILL.md) | Lands a whole spec on one integration branch; ready tickets run in parallel in their own worktrees, then `code-review` |
 
-Enter at the step you already have. A single settled ticket uses `implement`; a complete map goes to one long-horizon `implement-spec` worker; a request for only design, a spec or tickets stops once that step's PR is merged. `tdd` runs inside the ticket. When the request is too foggy to form a stable requirement, [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) lays out decision tickets first, and `to-spec` waits until the way is clear.
+Enter at the step you already have. A single settled ticket uses `implement`; a complete map goes to one long-horizon `implement-spec` worker; a request for only design, a spec or tickets stops at that step's authorized delivery endpoint. `tdd` runs inside the ticket. When the request is too foggy to form a stable requirement, [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) lays out decision tickets first, and `to-spec` waits until the way is clear.
 
 ## How it runs
 
@@ -136,8 +136,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 22,624 (−25.1%) | 7,552 → 5,656 |
-| Chinese | 24,359 → 19,649 (−19.3%) | 6,089 → 4,912 |
+| English | 30,208 → 22,663 (−25.0%) | 7,552 → 5,665 |
+| Chinese | 24,359 → 19,739 (−19.0%) | 6,089 → 4,934 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 

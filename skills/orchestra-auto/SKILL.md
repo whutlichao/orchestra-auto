@@ -108,9 +108,7 @@ decision tickets; read the target repo's wayfinding conventions first and do not
 settle an existing ADR or planned decision the change would overturn before going further. A
 full implementation request normally runs `grill-with-docs → to-spec → to-tickets →
 implement-spec`, but with a valid spec or ticket you enter at the matching stage. A single settled
-ticket stays on B; only a complete map uses `implement-spec`. If only design was asked for,
-stop once that artifact's PR is merged. The open-PR exception needs an explicit request to keep the
-PR unmerged (§0); asking you to open a PR is not one.
+ticket stays on B; only a complete map uses `implement-spec`. If only design was asked for, stop at that artifact’s authorized delivery endpoint. A PR-only request stops with the PR open (§0); an existing explicit merge authorization still applies unless the user overrides it.
 
 If §4.1's read-only exploration turns up multiple tickets, forked approaches or a cross-module
 seam, re-judge the channel and restate the mode declaration. If the scope itself is unclear, raise
@@ -249,7 +247,7 @@ claim is treated as one-way.
 Each round is bounded by the scope declared in §0. A full implementation request with unclear
 requirements runs `grill-with-docs → to-spec → to-tickets → implement-spec` in order; with a clear
 spec or existing tickets you enter at the matching stage. A design-only, spec-only or tickets-only
-request closes once that stage's artifact PR is merged, and you do not drift into implementation
+request closes at that stage's authorized delivery endpoint, and you do not drift into implementation
 on your own. If the user asked only for a PR, stop with it open (§0).
 
 Between laps, `scripts/chain.py resume` names the next position from the ledger and `exit-check` applies

@@ -21,7 +21,7 @@ Read [launch-kit.zh-CN.md](launch-kit.zh-CN.md) for the Chinese version.
 ## 1. Positioning
 
 **One line.** A supervised Orca workflow where the coordinator plans, dispatches and verifies, workers
-edit and open PRs, and the coordinator merges once the gates pass — without a confirmation round trip
+edit and open PRs, and the coordinator merges when authorized and the gates pass — without a confirmation round trip
 per ticket.
 
 **The problem it solves.** Orchestrating agents across a real codebase is easy to start and hard to
@@ -155,7 +155,7 @@ No. They are the same procedure, and the test suite asserts parity: the same ref
 same eval scenarios in the same order with the same assertion counts, and a byte-identical script.
 
 **Will it merge without asking me?**
-It merges without asking you *per ticket* once the gates pass, which is the point of the workflow.
+When merge is authorized, it merges without asking you *per ticket* once the gates pass. A request only for a PR ends with it open.
 It stops and asks when the gates fail, when the repository blocks the merge, when the user asks to
 keep a PR open, or when the merge would change the scope you set. Those exceptions are written down.
 
@@ -198,8 +198,7 @@ Covered by [README.md](../README.md). For a release, use:
 > pass.
 >
 > The interesting content is the safety rules, not the happy path: isolated worktrees, real evidence
-> that a worker's turn began, live worker settings instead of hardcoded agents, atomic and
-> deduplicated message handling by a consumer that ends the process to wake the coordinator,
+> that a worker's turn began, live worker settings instead of hardcoded agents, native wake and evidence-based message-ID reconciliation,
 > decisions escalated to a human, per-ticket-type gates, evidence preserved before any revert, and
 > bounded retries with stop thresholds.
 >
