@@ -136,8 +136,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 22,949（−24.0%） | 7,552 → 5,737 |
-| 中文 | 24,359 → 19,913（−18.3%） | 6,089 → 4,978 |
+| 英文 | 30,208 → 23,129（−23.4%） | 7,552 → 5,782 |
+| 中文 | 24,359 → 20,066（−17.6%） | 6,089 → 5,016 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
@@ -189,7 +189,7 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 ├── README.zh-CN.md             本文件
 ├── skills.sh.json              skills.sh 目录页的分组配置
 ├── skills/
-│   ├── orchestra-auto/         英文包；references/ 有 17 个文件
+│   ├── orchestra-auto/         英文包；references/ 有 18 个文件
 │   └── orchestra-auto-zh/      中文包，结构相同
 ├── launch-kit/                 定位、demo 讲稿、FAQ、各渠道草稿
 └── tests/                      上面的 unittest 套件

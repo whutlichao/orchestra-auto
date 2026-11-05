@@ -42,6 +42,7 @@ description: >-
 | `references/prose-contract.md` | 验收时、审查任一语言包时，或两份文档对「从某个信号能推出什么结论」看似不一致时 |
 | `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
 | `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型 |
+| `references/visual-evidence.md` | 票面要求 Orca 实际渲染截图（视觉证据）时：写 spec 的取证方式前，以及验收该证据前 |
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
 | `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
 | `references/long-horizon-tickets.md` | G-tickets 已验收完整票图且本轮要实施；或流程错误后需要 retro 时 |

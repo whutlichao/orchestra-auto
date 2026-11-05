@@ -44,11 +44,12 @@ SCRIPT_FILES = (
     "progress-demo.py",
     "progress.html",
     "progress.py",
+    "visual-evidence.py",
 )
 PYTHON_SCRIPTS = (
     "acceptance.py", "chain.py",
     "closeout.py", "health.py", "inbox-loop.py", "ledger.py", "preflight.py",
-    "progress-demo.py", "progress.py",
+    "progress-demo.py", "progress.py", "visual-evidence.py",
 )
 
 #: The eval count both bundles carried before this documentation-parity ticket. The new scenarios are
@@ -73,6 +74,7 @@ REFERENCE_FILES = (
     "reply-protocol.md",
     "run-health.md",
     "spec-contract.md",
+    "visual-evidence.md",
     "worker-start-and-recovery.md",
 )
 
