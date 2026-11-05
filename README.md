@@ -136,8 +136,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 22,949 (−24.0%) | 7,552 → 5,737 |
-| Chinese | 24,359 → 19,913 (−18.3%) | 6,089 → 4,978 |
+| English | 30,208 → 23,129 (−23.4%) | 7,552 → 5,782 |
+| Chinese | 24,359 → 20,066 (−17.6%) | 6,089 → 5,016 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 
@@ -189,7 +189,7 @@ The singleton exposes three read-only GET routes on `127.0.0.1`: `/health` (serv
 ├── README.zh-CN.md             中文说明
 ├── skills.sh.json              skills.sh directory grouping
 ├── skills/
-│   ├── orchestra-auto/         English bundle; references/ holds seventeen files
+│   ├── orchestra-auto/         English bundle; references/ holds eighteen files
 │   └── orchestra-auto-zh/      Chinese bundle, same structure
 ├── launch-kit/                 positioning, demo script, FAQs, channel drafts
 └── tests/                      the unittest suites above

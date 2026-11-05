@@ -53,6 +53,10 @@ question per §5.
    behaviour leaves observable red→green evidence. Pure copy, style or configuration changes prove
    the result with real rendering, a check, or an applicable test. A UI ticket's evidence must land
    on text, elements, accessible names or real browser behaviour produced by the product.
+   When the evidence is a screenshot Orca itself renders, capture the batch through
+   [visual evidence](visual-evidence.md) and `scripts/visual-evidence.py`; the report must carry
+   `restored` and `focusRestored` both true. Minimizing the window or `set frontmost` is an
+   evidence defect, sent back to be re-shot.
    Check that the spec's `Test tier:` line matches what actually ran: a narrow tier's selector,
    its results and the stated reason must line up. Running narrower than declared (just one picked
    test) or running the full suite on every round (slow, unexplained) is a send-back; a

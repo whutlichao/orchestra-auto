@@ -78,6 +78,8 @@ Observable acceptance: <the applicable test commands and observable results; red
 Question channel: orchestration ask (AskUserQuestion is banned).
 ```
 
+When the ticket needs Orca-rendered screenshots, add `Visual evidence: <plan path> → scripts/visual-evidence.py run --plan <plan> --report <report>` to the spec, forbid minimizing the window and `set frontmost`, and require the report's `restored` and `focusRestored` to be true; the protocol is [visual evidence](visual-evidence.md).
+
 For a long-horizon ticket map, `Pre-skill` is the absolute path to `implement-spec`. Add
 `Skill resolution:` (use the Skill tool for `tdd` / `code-review` when available, otherwise read
 their absolute paths), `PR skill:` (the absolute path to `pr`), `Tracker:`, `Spec:`, `Tickets:` and

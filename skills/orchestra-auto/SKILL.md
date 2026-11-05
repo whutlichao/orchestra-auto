@@ -53,6 +53,7 @@ Files under `references/` are read conditionally; SKILL.md keeps the routing and
 | `references/prose-contract.md` | During acceptance or a review of either bundle, or when two documents seem to disagree about what may be concluded from a signal |
 | `references/dispatch-loop.md` | Every B/C dispatch for the full worker-start flags, turn-start confirmation, guide fetch, or communication-loop detail |
 | `references/spec-contract.md` | When writing a worker's spec, on any channel and for any ticket type |
+| `references/visual-evidence.md` | When a ticket needs Orca-rendered screenshots (visual evidence): before writing the spec's capture method, and before accepting that evidence |
 | `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
 | `references/gate-acceptance.md` | When a ticket closes and you pick a gate; when merging a project PR or settling a worker |
 | `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |

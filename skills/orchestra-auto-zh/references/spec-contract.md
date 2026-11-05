@@ -57,6 +57,8 @@ Observable acceptance：<适用的测试命令与可观察结果；修复类红�
 提问通道：orchestration ask（禁 AskUserQuestion）。
 ```
 
+票面要求 Orca 实际渲染的截图时，spec 再加一行 `视觉证据：<plan 路径> → scripts/visual-evidence.py run --plan <plan> --report <report>`，点明禁止最小化窗口与 `set frontmost`，报告必须 `restored` 与 `focusRestored` 均为真；协议见[视觉证据](visual-evidence.md)。
+
 长程票图下，`前置 skill` 是 `implement-spec` 的绝对路径。另加 `skill 解析：`（有 Skill tool 时
 用 `tdd` / `code-review`；没有就直接读它们的绝对路径）、`PR skill：`（`pr` 的绝对路径）、
 `Tracker：`、`Spec：`、`Tickets：` 与 `Integration branch：`。worker 必须回报图与 frontier、
