@@ -21,6 +21,7 @@ The declared seams are deliberate and narrow:
 The acceptance schema is local. It is recorded in ``references/gate-acceptance.md``.
 """
 
+import copy
 import importlib.util
 import json
 import os
@@ -670,6 +671,20 @@ class AggregationTests(unittest.TestCase):
         self.assertTrue(ticket["divergent"])
         self.assertTrue(ticket["prs"][0]["divergent"])
         self.assertFalse(ticket["levels"]["implemented"]["value"])
+
+    def test_same_attempt_records_with_different_merge_shas_are_divergent(self):
+        first_payload = self.pr_record(12, accepted_sha=sha("a"))
+        second_payload = copy.deepcopy(first_payload)
+        second_payload["levels"]["merged"]["merge_sha"] = sha("c")
+        second_payload["levels"]["merged"]["ancestry"]["descendant"] = sha("c")
+        ticket = self.module.aggregate("39", [
+            self.ledger_record(first_payload, sequence=1),
+            self.ledger_record(second_payload, sequence=2),
+        ])
+
+        self.assertTrue(ticket["divergent"])
+        self.assertTrue(ticket["prs"][0]["divergent"])
+        self.assertFalse(ticket["levels"]["merged"]["value"])
 
     def test_never_merge_is_terminal_and_human(self):
         levels = open_levels()

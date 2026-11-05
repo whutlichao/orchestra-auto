@@ -809,6 +809,9 @@ def aggregate(ticket, records):
                 (_level_name, _level_value(_detail(record), _level_name))
                 for _level_name in LEVEL_NAMES
             ],
+            # Closeout uses this recorded merge claim in rows 2-4. Two records
+            # that disagree about it cannot be treated as one accepted claim.
+            "merge_sha": _level_object(_detail(record), "merged").get("merge_sha"),
         }) for record in current}
         divergent = len(signatures) > 1
         latest = current[-1]

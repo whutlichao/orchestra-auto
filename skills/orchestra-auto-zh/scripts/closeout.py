@@ -564,9 +564,9 @@ def _row_one(run_id, state, reason, accepted, divergent, merge_divergence=(),
                 "did not pass and blocks the declaration")
     for claim in divergent:
         problems.append(
-            "PR " + str(claim["pr"]) + ": the acceptance records at attempt "
-            + str(claim["attempt"]) + " disagree about the accepted SHA or the level "
-            "values; the divergent claim is not a single claim in force")
+            "PR " + str(claim["pr"]) + ": divergent acceptance records at attempt "
+            + str(claim["attempt"]) + " disagree about the accepted SHA, level values, "
+            "or merge SHA; the divergent claim is not a single claim in force")
     for entry in merge_divergence:
         fields = ", ".join(item["field"] for item in entry["divergence"])
         problems.append(
