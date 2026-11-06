@@ -209,6 +209,10 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 
 规划链用的是 [Matt Pocock 公开的工程 skill](https://github.com/mattpocock/skills)。本仓库写的是这些 skill 在 Orca（`orca orchestration`）上的监督式跑法，由本仓库实现。Matt Pocock 没有参与开发或维护，也没有背书。个人资料见 [github.com/mattpocock](https://github.com/mattpocock)。
 
+## 贡献者
+
+- **[@dxnnystyles](https://github.com/dxnnystyles)** — closeout 改为按票读取最新一次验收记录；同一次 attempt 下两条记录若对 merge SHA 的判断不一致，现在算作分歧，而不是当成同一个结论（[PR #49](https://github.com/whutlichao/orchestra-auto/pull/49)）。
+
 ## 许可
 
 [MIT](LICENSE)，版权 2026 whutlichao。欢迎贡献，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
