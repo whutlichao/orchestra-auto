@@ -269,6 +269,19 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.result_of(report, "docs-agents")["result"], "fail")
         self.assertIn("triage-labels.md is missing", self.result_of(report, "docs-agents")["detail"])
 
+    def test_a_failing_label_check_never_says_the_file_is_present(self):
+        """One evidence line cannot say both "is missing" and "present"; the branch decides."""
+        for labels_text in (None, " \n\t\n"):
+            with self.subTest(labels=labels_text), tempfile.TemporaryDirectory() as temporary:
+                root = build_repository(
+                    Path(temporary) / "repo", triage_labels_text=labels_text
+                )
+                report = self.report(root, triage_candidates=[triage_skill(temporary)])
+            detail = self.result_of(report, "docs-agents")["detail"]
+            self.assertEqual(self.result_of(report, "docs-agents")["result"], "fail")
+            self.assertNotIn("triage-labels.md present", detail)
+            self.assertIn("triage installed at", detail)
+
     def test_triage_labels_are_not_required_when_triage_is_not_installed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = build_repository(Path(temporary) / "repo", triage_labels_text=None)
@@ -289,7 +302,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(MODULE.STATUS_TO_EXIT[report["status"]], 0)
 
     def test_an_issue_tracker_document_without_the_heading_is_skipped(self):
-        """A tracker document with no heading is the local-markdown shape, not an unknown one."""
+        """A document with no heading is skipped, but the evidence must not call it local markdown."""
         with tempfile.TemporaryDirectory() as temporary:
             root = build_repository(
                 Path(temporary) / "repo",
@@ -298,7 +311,8 @@ class CheckTests(unittest.TestCase):
             report = self.report(root)
         self.assertEqual(self.result_of(report, "tracker")["result"], "skipped")
         self.assertEqual(
-            self.result_of(report, "tracker")["detail"], "n/a (local markdown tracker)"
+            self.result_of(report, "tracker")["detail"],
+            "n/a (no '# Issue tracker:' heading)",
         )
         self.assertEqual(report["status"], "initialized")
 

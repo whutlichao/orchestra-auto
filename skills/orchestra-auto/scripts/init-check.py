@@ -248,13 +248,20 @@ def check_docs_agents(repo, triage_candidates=None):
         evidence = "triage not installed"
     else:
         text, error = _read_text(Path(repo) / TRIAGE_LABELS)
+        labels_nonempty = text is not None and bool(text.strip())
         if text is None and isinstance(error, FileNotFoundError):
-            problems.append(f"{TRIAGE_LABELS} is missing; triage installed at {triage}")
+            problems.append(f"{TRIAGE_LABELS} is missing")
         elif text is None:
             problems.append(f"{TRIAGE_LABELS} is unreadable: {error}")
-        elif not text.strip():
-            problems.append(f"{TRIAGE_LABELS} is empty; triage installed at {triage}")
-        evidence = f"triage-labels.md present; triage installed at {triage}"
+        elif not labels_nonempty:
+            problems.append(f"{TRIAGE_LABELS} is empty")
+        # The evidence has to follow the branch that ran: a failing label check must never claim
+        # the file is present, or the one line contradicts itself.
+        evidence = (
+            f"triage-labels.md present; triage installed at {triage}"
+            if labels_nonempty
+            else f"triage installed at {triage}"
+        )
     if problems:
         return _result("docs-agents", "fail", "; ".join(problems) + "; " + evidence)
     return _result(
@@ -307,8 +314,10 @@ def check_tracker(repo, runner=None):
     state, name = read_tracker_heading(repo)
     if state == "missing":
         return _result("tracker", "skipped", f"n/a (no {TRACKER_DOCUMENT})")
+    if state == "absent":
+        return _result("tracker", "skipped", "n/a (no '# Issue tracker:' heading)")
     lowered = name.lower()
-    if state == "absent" or lowered == LOCAL_MARKDOWN_TRACKER:
+    if lowered == LOCAL_MARKDOWN_TRACKER:
         return _result("tracker", "skipped", "n/a (local markdown tracker)")
     probe = next((entry for entry in TRACKER_PROBES if entry["name"] == lowered), None)
     if probe is None:
