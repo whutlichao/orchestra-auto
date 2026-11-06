@@ -209,6 +209,10 @@ Where the procedure is least settled, written down so it can be argued with rath
 
 The planning chain is [Matt Pocock's public engineering skills](https://github.com/mattpocock/skills). This repository is the supervised way to run those skills on Orca (`orca orchestration`), and it is this repository's own work. Matt Pocock has not participated in its development or maintenance and does not endorse it. See [Matt Pocock's GitHub profile](https://github.com/mattpocock).
 
+## Contributors
+
+- **[@dxnnystyles](https://github.com/dxnnystyles)** — closeout reads the latest acceptance attempt per ticket, and two records at the same attempt that disagree about the merge SHA are now treated as divergent rather than as one claim ([PR #49](https://github.com/whutlichao/orchestra-auto/pull/49)).
+
 ## Licence
 
 [MIT](LICENSE), copyright 2026 whutlichao. Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
