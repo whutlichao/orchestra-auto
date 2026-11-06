@@ -54,7 +54,7 @@ item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断�
 
 对于**首次会话**，无需先派 worker 或已有投递。可使用明确适用于当前会话、说明 Orca 会唤醒它的实时 runtime preamble 或其他权威证据，在 `context.messaging` 记录 `native_wake_confirmed: true`、`source: "live_preamble"` 和指向该证据的非空 `evidence_ref`。通用 guide 本身不证明本会话能唤醒。也可用 `source: "verified_session"`，但必须有本会话实际唤醒的验证证据；不得编造投递。两者都无法证明时停止。仅在有证据证明没有旧消费者会竞争，或[旧版迁移](inbox-and-waiting.md)及对账完成后，才记录 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。
 
-语义自动核验路径**仅**识别已验证的 Orca 1.4.248 及其 guide/help 文本片段；版本或措辞变化时安全失败，不推断兼容。其他版本或兼容但措辞不同的输出，可由人类明确审阅当前版本的权威 guide、help 和会话证据。在 `context.messaging.human_verification` 中记录非空 `reviewed_by`、`evidence_ref`、精确 `version`、从失败回执的 `observed.probes` 复制的 `probe_sha256` 映射（键为命令参数以 `/` 连接，包括 `--version`），并分别对 `native_wake`、`handled_check`、`retry_recovery`、`inbox_recovery` 填 `true`。四项都必须有证据；语义未知或不支持仍阻断。预检将版本与每个哈希和新探针输出比对，输出变化则核验失效。脚本记录声明，但不能认证审阅者或证明语义；人类须实际核实。不得用普通 override 或编造证据通过门禁。重检成功不等于真实端到端测试。
+语义自动核验检查当前 CLI 的 guide 和 help 是否包含原生唤醒、check 标记已处理、重试和 inbox 恢复的具体契约文本，不依赖版本号。措辞变化或行为缺失时安全失败；文本检查不能证明运行时行为。对于兼容但未识别的措辞，可由人类明确审阅当前版本的权威 guide、help 和会话证据。在 `context.messaging.human_verification` 中记录非空 `reviewed_by`、`evidence_ref`、精确 `version`、从失败回执的 `observed.probes` 复制的 `probe_sha256` 映射（键为命令参数以 `/` 连接，包括 `--version`），并分别对 `native_wake`、`handled_check`、`retry_recovery`、`inbox_recovery` 填 `true`。四项都必须有证据；语义未知或不支持仍阻断。预检将版本与每个哈希和新探针输出比对，输出变化则核验失效。脚本记录声明，但不能认证审阅者或证明语义；人类须实际核实。不得用普通 override 或编造证据通过门禁。重检成功不等于真实端到端测试。
 
 ### 实时 worker 设置查找
 

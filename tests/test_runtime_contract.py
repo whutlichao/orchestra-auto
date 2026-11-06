@@ -71,6 +71,35 @@ class PreflightNativeWake(unittest.TestCase):
             self.assertEqual(malformed["outcome"], "unhealthy")
 
 class MessagingCapabilityTests(unittest.TestCase):
+    def test_future_version_with_matching_contract_passes_with_session_evidence(self):
+        import importlib.util
+        class Runner:
+            def run(self, argv, timeout=None):
+                outputs = {
+                    ('--version',): '9.99.999\n',
+                    ('skills', 'get', 'orchestration'): 'Orca wakes you.',
+                    ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full",
+                    ('orchestration', 'inbox', '--help'): '--terminal --full',
+                }
+                return {'returncode': 0, 'stdout': outputs[tuple(argv[1:])], 'stderr': ''}
+        context = {'messaging': {'native_wake_confirmed': True, 'source': 'live_preamble',
+                   'evidence_ref': 'fixture', 'legacy_migration_complete': True,
+                   'migration_evidence_ref': 'fixture'}}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location('preflight_14250', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(package=package):
+                self.assertEqual(module._check_messaging(context, Runner())['result'], 'pass')
+                self.assertEqual(module._check_messaging({}, Runner())['result'], 'fail')
+                class MissingRecovery(Runner):
+                    def run(self, argv, timeout=None):
+                        result = super().run(argv, timeout)
+                        if argv[1:] == ['orchestration', 'check', '--help']:
+                            result['stdout'] = result['stdout'].replace('get the same batch', 'discard the batch')
+                        return result
+                self.assertEqual(module._check_messaging(context, MissingRecovery())['result'], 'fail')
+
     def test_dispatch_is_blocked_when_wake_or_recovery_is_unverified(self):
         import importlib.util
         for package in PACKAGES:
@@ -86,7 +115,7 @@ class MessagingCapabilityTests(unittest.TestCase):
                     outputs = {
                         ('--version',): '1.4.248\n',
                         ('skills', 'get', 'orchestration'): 'Orca wakes you.\nWhen Orca wakes you',
-                        ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request",
+                        ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full",
                         ('orchestration', 'inbox', '--help'): '--terminal --full',
                     }
                     return {'returncode': 1 if key == self.missing else 0,
