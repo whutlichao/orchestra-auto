@@ -71,6 +71,40 @@ class PreflightNativeWake(unittest.TestCase):
             self.assertEqual(malformed["outcome"], "unhealthy")
 
 class MessagingCapabilityTests(unittest.TestCase):
+    def test_live_structured_chat_uses_current_runtime_contract(self):
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        class Runner:
+            def __init__(self, live=True, session='session-1', chat_contract=True):
+                self.live, self.session, self.chat_contract = live, session, chat_contract
+
+            def run(self, argv, timeout=None):
+                outputs = {
+                    ('--version',): '1.4.250',
+                    ('status', '--json'): json.dumps({'ok': True, 'result': {'caller': {
+                        'orcaSessionId': self.session, 'live': self.live}}}),
+                    ('skills', 'get', 'orchestration'): ('Orca wakes you. In a chat, each message arrives whole as its own message' if self.chat_contract else 'Orca wakes you.'),
+                    ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full",
+                    ('orchestration', 'inbox', '--help'): '--terminal --full',
+                }
+                return {'returncode': 0, 'stdout': outputs.get(tuple(argv[1:]), ''), 'stderr': ''}
+
+        context = {'messaging': {'legacy_migration_complete': True, 'migration_evidence_ref': 'inventory'}}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location('live_chat_preflight', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(package=package), patch.dict(os.environ, {'ORCA_STRUCTURED_SESSION': '1', 'ORCA_AGENT_SESSION_ID': 'session-1'}, clear=True):
+                self.assertEqual(module._check_messaging(context, Runner())['result'], 'pass')
+                self.assertEqual(module._check_messaging(context, Runner(live=False))['result'], 'fail')
+                self.assertEqual(module._check_messaging(context, Runner(session=''))['result'], 'fail')
+                self.assertEqual(module._check_messaging(context, Runner(chat_contract=False))['result'], 'fail')
+                self.assertEqual(module._check_messaging({}, Runner())['result'], 'fail')
+                with patch.dict(os.environ, {'ORCA_STRUCTURED_SESSION': '0'}):
+                    self.assertEqual(module._check_messaging(context, Runner())['result'], 'fail')
+
     def test_future_version_with_matching_contract_passes_with_session_evidence(self):
         import importlib.util
         class Runner:
