@@ -105,14 +105,17 @@ Record what the user asked for and where they want it to stop. Project changes o
 
 ### 1.1 Repository bootstrap gate
 
-Before entering a planning or implementation stage, confirm the target repo is bootstrapped (criteria and
-landing in [the dispatch loop](references/dispatch-loop.md) §4.3.0). When it is not, **land the
-initialization first, then enter the stage skill**: pre-skill
-`<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable before dispatch; it carries
-`disable-model-invocation: true`, so it only ever arrives by path and never appears in a skill list), a
-worker lands it in an isolated worktree, and the coordinator accepts it under G-docs before going on. If
-the user says this round skips initialization, record "uninitialized" in the mode declaration and the
-closeout report and report its effect on later stages per §9 (`to-spec` cannot publish to an unreachable
+Before a planning or implementation stage, probe the repo rather than re-derive the criteria:
+`python3 <bundle>/scripts/init-check.py check --repo <target repo> --json`, which reports exactly
+[the dispatch loop](references/dispatch-loop.md) §4.3.0's criteria; both bundles ship it. Exit `0` → enter
+the stage skill directly. Exit `1` → **land the initialization first, then enter the stage**: pre-skill
+`<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable; `disable-model-invocation: true`
+means path-only), a worker lands it in an isolated worktree, the coordinator accepts it under G-docs, and
+re-runs the probe before the stage skill. Exit `2` → the probe could not decide (no `git`, no usable
+tracker CLI, an undocumented tracker): report per §9 with its evidence; `unknown` is not uninitialized
+and does not start setup. Record the report's `status` and the probed repo's `git rev-parse HEAD` in the
+mode declaration and closeout report. If the user says this round skips it, record "uninitialized"
+there instead and report its effect on later stages per §9 (`to-spec` cannot publish to an unreachable
 tracker); do not skip silently and do not have the coordinator write governance files on main.
 
 When the fog is heavy and no stable requirement can be formed, `wayfinder` can produce a map and

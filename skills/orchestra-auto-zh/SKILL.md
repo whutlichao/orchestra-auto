@@ -92,10 +92,15 @@ worktree 名派活时再取 slug。
 
 ### 1.1 仓库初始化门
 
-进入规划或实施阶段前，先确认目标仓库已初始化（判据与落盘见[派活闭环](references/dispatch-loop.md) §4.3.0）。
-未初始化时**先落一次初始化，再进本阶段的 skill**：前置 skill 写
+进入规划或实施阶段前，coordinator 用脚本取证，不再手推判据：
+`python3 <bundle>/scripts/init-check.py check --repo <目标仓库> --json`（脚本在两个语言包里字节相同，
+报告的就是[派活闭环](references/dispatch-loop.md) §4.3.0 的判据）。退出 `0` → 直接进本阶段 skill。
+退出 `1` → **先落一次初始化，再进本阶段的 skill**：前置 skill 写
 `<绝对路径>/setup-matt-pocock-skills/SKILL.md`（派活前确认可读；它带 `disable-model-invocation: true`，
-只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 按 G-docs 验收后才继续。
+只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 按 G-docs 验收后
+复跑脚本，通过才进阶段 skill。退出 `2` → 脚本无法判定（没有 `git`、tracker CLI 不可用、追踪器未文档化）：
+按 §9 带脚本证据报告，不得把 `unknown` 当作「未初始化」去跑 setup。
+把报告里的 `status` 与被探仓库的 `git rev-parse HEAD` 写进模式声明与收口报告。
 用户明确说本轮不做初始化时，把「未初始化」写进模式声明与收口报告，按 §9 报告它对后续阶段的影响
 （tracker 不可达时 `to-spec` 发不出去）；不静默跳过，也不由 coordinator 在 main 上手写治理文件。
 
