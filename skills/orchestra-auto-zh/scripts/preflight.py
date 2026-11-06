@@ -374,11 +374,14 @@ def _check_messaging(context, runner):
                                       for argv, _required in probes) and all(
                                       row["returncode"] == 0 and row["markers_present"]
                                       for row in observations)
-    # Only this exact verified version and wording can pass without a human review.
-    known = (version == "1.4.248"
-             and "orca wakes you." in outputs["skills/get/orchestration"].lower()
-             and "default: return the bound run's oldest unread fifo batch and mark it handled."
-             in outputs["orchestration/check/--help"].lower())
+    # Match the documented behavior, independent of the release number. This
+    # recognizes precise wording, not arbitrary paraphrases or runtime behavior.
+    guide = outputs["skills/get/orchestration"].lower()
+    check = outputs["orchestration/check/--help"].lower()
+    known = ("orca wakes you." in guide
+             and "default: return the bound run's oldest unread fifo batch and mark it handled." in check
+             and "if a check response was lost, rerun it with the --retry-request it printed to get the same batch." in check
+             and "to find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full" in check)
     review = messaging.get("human_verification")
     review = review if isinstance(review, dict) else {}
     hashes = {"/".join(argv[1:]): row["sha256"]
@@ -398,7 +401,7 @@ def _check_messaging(context, runner):
                   "migration_confirmed": migration_ready,
                   "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
                   "version": version, "probes": observations,
-                  "semantic_basis": "known_version" if known else "human_review" if reviewed else "unknown",
+                  "semantic_basis": "documented_contract" if known else "human_review" if reviewed else "unknown",
                   "reviewed_by": reviewer if reviewed else "",
                   "review_evidence_ref": review_ref if reviewed else ""},
                  "native delivery and recovery confirmed" if passed else

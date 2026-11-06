@@ -178,7 +178,7 @@ def settings_runner(profile_dir, status=None, command_surface=None):
         (lambda argv: argv[1:] == ["skills", "get", "orchestration"],
          {"returncode": 0, "stdout": "Orca wakes you.", "stderr": ""}),
         (lambda argv: argv[1:] == ["orchestration", "check", "--help"],
-         {"returncode": 0, "stdout": "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request", "stderr": ""}),
+         {"returncode": 0, "stdout": "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full", "stderr": ""}),
         (lambda argv: argv[1:] == ["orchestration", "inbox", "--help"],
          {"returncode": 0, "stdout": "--terminal --full", "stderr": ""}),
         (lambda argv: argv[:2] == ["orca", "status"],

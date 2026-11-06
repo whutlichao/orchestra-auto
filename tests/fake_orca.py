@@ -119,7 +119,7 @@ if argv == ["--version"]:
 if argv == ["skills", "get", "orchestration"]:
     text_only("Orca wakes you.")
 if argv == ["orchestration", "check", "--help"]:
-    text_only("default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request")
+    text_only("default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full")
 if argv == ["orchestration", "inbox", "--help"]:
     text_only("--terminal --full")
 
