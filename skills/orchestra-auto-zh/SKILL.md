@@ -90,6 +90,15 @@ worktree 名派活时再取 slug。
 前置 skill 是本阶段那个 skill，不是通道那个（§4.3）；缺失按 §9 带证据报告。
 具体对照表见[派活闭环](references/dispatch-loop.md)。
 
+### 1.1 仓库初始化门
+
+进入规划或实施阶段前，先确认目标仓库已初始化（判据与落盘见[派活闭环](references/dispatch-loop.md) §4.3.0）。
+未初始化时**先落一次初始化，再进本阶段的 skill**：前置 skill 写
+`<绝对路径>/setup-matt-pocock-skills/SKILL.md`（派活前确认可读；它带 `disable-model-invocation: true`，
+只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 按 G-docs 验收后才继续。
+用户明确说本轮不做初始化时，把「未初始化」写进模式声明与收口报告，按 §9 报告它对后续阶段的影响
+（tracker 不可达时 `to-spec` 发不出去）；不静默跳过，也不由 coordinator 在 main 上手写治理文件。
+
 雾重到形不成稳定需求时，可用 `wayfinder` 产出地图与决策票；先读目标仓库的寻路约定，不要发明标签。
 若改动会推翻已有 ADR 或计划决策，先定夺该决策。完整实施请求通常走
 `grill-with-docs → to-spec → to-tickets → implement-spec`；已有有效 spec 或票时从对应阶段进入。
@@ -217,10 +226,9 @@ coordinator 自行核验可观察结果与证据，失败就列明缺项打回�
 
 ## 8. 规划依赖初始化（按需）
 
-只有本轮确实要使用 `grill-with-docs`、`to-spec`、`to-tickets` 或 `triage`，
-且它们需要的仓库配置缺失时，才检查该仓库的规划初始化要求。
-先复用仓库已有的 issue tracker 与 domain docs 配置。初始化若会新增治理文件、标签或 PR，
-须确认这些属于用户请求的规划范围。真正需要时由 worker 在独立 worktree 落盘，coordinator 验收。
+初始化门的判据、落盘路径与验收见 §1.1，不在这里重复。本轮要用 `grill-with-docs`、`to-spec`、
+`to-tickets` 或 `triage` 而依赖缺失时，先走那道门。已初始化就直接复用现有 tracker、标签与 domain docs，
+不要重跑或改写它们。初始化若会新增治理文件、标签或 PR，须确认这些属于用户请求的规划范围。
 
 ## 9. 失败与上报纪律
 

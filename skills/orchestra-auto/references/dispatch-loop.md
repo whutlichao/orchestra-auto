@@ -108,11 +108,22 @@ with an existing ticket map enters at `implement-spec`, a research question answ
 | A ticket split | `to-tickets` |
 | Implementation of a complete map | `implement-spec` |
 | External issues, conflicts, terminology | the repository's triage / conflict / `domain-modeling` flow |
+| The repo has no bootstrap yet | land `setup-matt-pocock-skills` first, then enter the matching stage above (SKILL.md §1.1) |
 
 Before dispatch, confirm the chosen path is readable and that this stage's dependencies exist: the
 tracker configuration for `to-spec` / `to-tickets`, the map and tracker for `implement-spec`, and the
 skills it will reach for any of them. Missing → report per §9 with the resolution that failed. Do not
 substitute a path from memory, and do not install anything this round was not authorized to install.
+
+Prove the gate's checks on the spot; any one missing means uninitialized: an `## Agent skills` block in
+`AGENTS.md` or `CLAUDE.md` (by setup's own selection rule — when `CLAUDE.md` exists, edit it and never
+create a second file); a non-empty `docs/agents/issue-tracker.md` and `docs/agents/domain.md` (plus
+`docs/agents/triage-labels.md` when `triage` is installed); and, for a GitHub / GitLab tracker,
+`gh repo view` / `glab repo view` printing the project from inside the target repo.
+`setup-matt-pocock-skills` carries `disable-model-invocation: true`, so it only ever arrives by path —
+never expect it to show up in a skill list on its own. It asks one question at a time (tracker, triage
+label vocabulary, domain doc layout); handle those answers per SKILL.md §5. Its output is governance
+documentation and still lands through a worker plus G-docs acceptance, never on main.
 
 ## 4.3.1 Confirming the turn started after dispatch
 
