@@ -39,6 +39,7 @@ SCRIPT_FILES = (
     "health.py",
     "inbox-loop.py",
     "inbox-loop.sh",
+    "init-check.py",
     "ledger.py",
     "preflight.py",
     "progress-demo.py",
@@ -48,7 +49,7 @@ SCRIPT_FILES = (
 )
 PYTHON_SCRIPTS = (
     "acceptance.py", "chain.py",
-    "closeout.py", "health.py", "inbox-loop.py", "ledger.py", "preflight.py",
+    "closeout.py", "health.py", "inbox-loop.py", "init-check.py", "ledger.py", "preflight.py",
     "progress-demo.py", "progress.py", "visual-evidence.py",
 )
 

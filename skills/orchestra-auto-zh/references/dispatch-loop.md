@@ -97,7 +97,11 @@ spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 ski
 初始化门的判据要现场取证，三项缺一即未初始化：`AGENTS.md` 或 `CLAUDE.md` 里有 `## Agent skills` 块
 （按 setup 自己的选择规则：有 `CLAUDE.md` 就改它，不要另建一份）；`docs/agents/issue-tracker.md` 与
 `docs/agents/domain.md` 存在且非空（装了 `triage` 时还有 `docs/agents/triage-labels.md`）；追踪器是
-GitHub / GitLab 时，在目标仓库内 `gh repo view` / `glab repo view` 能打印项目。`setup-matt-pocock-skills`
+GitHub / GitLab 时，在目标仓库内 `gh repo view` / `glab repo view` 能打印项目。这三项判据就是
+`scripts/init-check.py check` 报告的内容，外加一个确定取证根目录的 `repository` 探针：
+退出 `0` 已初始化、`1` 未初始化（三项缺一）、`2` 无法判定；
+取证以脚本为准，`unknown` 按未判定处理，不当作未初始化，逐退出码的处理见 SKILL.md §1.1。
+`setup-matt-pocock-skills`
 带 `disable-model-invocation: true`，只能按路径点名，别指望它从技能清单里自己出现。它一次问一个问题
 （追踪器 / triage 标签词表 / 领域文档布局），问回来的按 SKILL.md §5 处理；产物属治理文档，仍走
 worker + G-docs 验收，不落 main。
