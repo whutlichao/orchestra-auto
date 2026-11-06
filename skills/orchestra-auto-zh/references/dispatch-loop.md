@@ -89,9 +89,18 @@ spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 ski
 | 拆票 | `to-tickets` |
 | 实施完整票图 | `implement-spec` |
 | 外部 issue、冲突、术语 | 仓库的 triage / 冲突处理 / `domain-modeling` 流程 |
+| 仓库还没有初始化产物 | 先补 `setup-matt-pocock-skills`，再进入上表对应阶段（SKILL.md §1.1） |
 
 派活前确认所选路径可读，且本阶段的依赖齐备：`to-spec` / `to-tickets` 要 tracker 配置，
 `implement-spec` 要票图与 tracker，任一阶段都要它后续会用到的 skill。缺失 → 按 §9 带证据报告那次失败的解析。不凭记忆换一个路径，也不在本轮擅自安装。
+
+初始化门的判据要现场取证，三项缺一即未初始化：`AGENTS.md` 或 `CLAUDE.md` 里有 `## Agent skills` 块
+（按 setup 自己的选择规则：有 `CLAUDE.md` 就改它，不要另建一份）；`docs/agents/issue-tracker.md` 与
+`docs/agents/domain.md` 存在且非空（装了 `triage` 时还有 `docs/agents/triage-labels.md`）；追踪器是
+GitHub / GitLab 时，在目标仓库内 `gh repo view` / `glab repo view` 能打印项目。`setup-matt-pocock-skills`
+带 `disable-model-invocation: true`，只能按路径点名，别指望它从技能清单里自己出现。它一次问一个问题
+（追踪器 / triage 标签词表 / 领域文档布局），问回来的按 SKILL.md §5 处理；产物属治理文档，仍走
+worker + G-docs 验收，不落 main。
 
 ### 4.3.1 派活后确认 turn 开始
 

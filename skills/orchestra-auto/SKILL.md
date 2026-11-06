@@ -103,6 +103,18 @@ Record what the user asked for and where they want it to stop. Project changes o
 | A multi-ticket or not-yet-settled full implementation request | C | Converge on requirements and dependencies first; once G-tickets accepts a complete map, dispatch **one** long-horizon `implement-spec` worker |
 | External issues/PRs, conflicts, or terminology governance | B/C | The repository's triage, conflict-handling or `domain-modeling` flow |
 
+### 1.1 Repository bootstrap gate
+
+Before entering a planning or implementation stage, confirm the target repo is bootstrapped (criteria and
+landing in [the dispatch loop](references/dispatch-loop.md) §4.3.0). When it is not, **land the
+initialization first, then enter the stage skill**: pre-skill
+`<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable before dispatch; it carries
+`disable-model-invocation: true`, so it only ever arrives by path and never appears in a skill list), a
+worker lands it in an isolated worktree, and the coordinator accepts it under G-docs before going on. If
+the user says this round skips initialization, record "uninitialized" in the mode declaration and the
+closeout report and report its effect on later stages per §9 (`to-spec` cannot publish to an unreachable
+tracker); do not skip silently and do not have the coordinator write governance files on main.
+
 When the fog is heavy and no stable requirement can be formed, `wayfinder` can produce a map and
 decision tickets; read the target repo's wayfinding conventions first and do not invent labels, and
 settle an existing ADR or planned decision the change would overturn before going further. A
@@ -271,7 +283,10 @@ each PR's merge SHA, the local sync and the final main HEAD, and say why a merge
 
 ## 8. Planning dependency initialization (on demand)
 
-Only when this round uses `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and their repository configuration is missing, check the planning setup. Reuse the existing tracker and docs configuration; confirm new governance files, labels or PRs belong to the round. When genuinely needed, a worker lands it in an isolated worktree and the coordinator accepts it.
+The gate's criteria, landing path and acceptance live in §1.1 and are not repeated here. When this round
+needs `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and the dependency is missing, go through that
+gate first; when the repo is already bootstrapped, reuse the existing tracker, labels and domain docs
+instead of re-running or rewriting them. Confirm new governance files, labels or PRs belong to the round.
 
 ## 9. Failure and reporting discipline
 
