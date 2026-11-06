@@ -378,6 +378,27 @@ def _check_messaging(context, runner):
     # recognizes precise wording, not arbitrary paraphrases or runtime behavior.
     guide = outputs["skills/get/orchestration"].lower()
     check = outputs["orchestration/check/--help"].lower()
+    status_observation = {}
+    session_source = messaging.get("source")
+    if not confirmed and os.environ.get("ORCA_STRUCTURED_SESSION") == "1" and os.environ.get("ORCA_AGENT_SESSION_ID"):
+        status_result = _run(runner, ["orca", "status", "--json"])
+        status, problem = _command_reply(status_result, "orca status --json")
+        result = status.get("result") if isinstance(status, dict) else None
+        caller = result.get("caller") if isinstance(result, dict) else None
+        caller = caller if isinstance(caller, dict) else {}
+        session_id = caller.get("orcaSessionId")
+        chat_contract = ("orca wakes you." in guide and
+                         "in a chat, each message arrives whole as its own message" in guide)
+        confirmed = (not problem and status.get("ok") is True and caller.get("live") is True
+                     and isinstance(session_id, str) and bool(session_id.strip()) and chat_contract)
+        status_observation = {"returncode": status_result["returncode"],
+                              "sha256": hashlib.sha256(status_result["stdout"].encode("utf-8")).hexdigest(),
+                              "caller_live": caller.get("live") is True,
+                              "session_id": session_id if isinstance(session_id, str) else "",
+                              "chat_contract": chat_contract}
+        if confirmed:
+            session_source = "live_structured_chat"
+            evidence = "orca status --json + version-matched orchestration guide"
     known = ("orca wakes you." in guide
              and "default: return the bound run's oldest unread fifo batch and mark it handled." in check
              and "if a check response was lost, rerun it with the --retry-request it printed to get the same batch." in check
@@ -397,7 +418,8 @@ def _check_messaging(context, runner):
     passed = confirmed and migration_ready and available and (known or reviewed)
     return _item("message-capability", "pass" if passed else "fail",
                  "read selected CLI version, orchestration guide and check/inbox help",
-                 {"session_confirmed": confirmed, "session_source": messaging.get("source"),
+                 {"session_confirmed": confirmed, "session_source": session_source,
+                  "session_probe": status_observation,
                   "migration_confirmed": migration_ready,
                   "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
                   "version": version, "probes": observations,

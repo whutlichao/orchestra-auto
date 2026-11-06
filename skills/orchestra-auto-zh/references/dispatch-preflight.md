@@ -52,7 +52,9 @@ item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断�
 
 首次派活前，`message-capability` 是独立且不可豁免的 **mechanical** 门禁。预检用所选 CLI 检查 `--version`、同版本 `skills get orchestration`、`check --help` 和 `inbox --help`，回执记录各命令退出码与实际 stdout 的 SHA-256。四条命令必须成功且有输出，相应帮助必须提供 `--retry-request`、`--terminal` 和 `--full`；这些参数本身不能证明语义。
 
-对于**首次会话**，无需先派 worker 或已有投递。可使用明确适用于当前会话、说明 Orca 会唤醒它的实时 runtime preamble 或其他权威证据，在 `context.messaging` 记录 `native_wake_confirmed: true`、`source: "live_preamble"` 和指向该证据的非空 `evidence_ref`。通用 guide 本身不证明本会话能唤醒。也可用 `source: "verified_session"`，但必须有本会话实际唤醒的验证证据；不得编造投递。两者都无法证明时停止。仅在有证据证明没有旧消费者会竞争，或[旧版迁移](inbox-and-waiting.md)及对账完成后，才记录 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。
+对于**首次会话**，无需先派 worker 或已有投递。可使用明确适用于当前会话、说明 Orca 会唤醒它的实时 runtime preamble 或其他权威证据，在 `context.messaging` 记录 `native_wake_confirmed: true`、`source: "live_preamble"` 和指向该证据的非空 `evidence_ref`。通用 guide 本身不证明本会话能唤醒。也可用 `source: "verified_session"`，但必须有本会话实际唤醒的验证证据；不得编造投递。上述证据及下述自动取证路径均无法确认时停止。仅在有证据证明没有旧消费者会竞争，或[旧版迁移](inbox-and-waiting.md)及对账完成后，才记录 `legacy_migration_complete: true` 与非空 `migration_evidence_ref`。
+
+结构化聊天还有自动取证路径：设置了 `ORCA_STRUCTURED_SESSION=1` 和会话凭据时，预检读取所选 CLI 的实时 `status --json`，要求其解析出非空且 `live: true` 的 caller，并要求同版本指南明确描述聊天消息投递及原生唤醒。回执记录状态输出哈希、caller 身份和指南探针；它证明当前身份与文档契约相符，不声称完成了端到端唤醒测试。状态不可用、会话不活跃或契约无法识别时仍须使用上述其他证据，否则停止。此路径不替代旧消费者迁移核验。
 
 语义自动核验检查当前 CLI 的 guide 和 help 是否包含原生唤醒、check 标记已处理、重试和 inbox 恢复的具体契约文本，不依赖版本号。措辞变化或行为缺失时安全失败；文本检查不能证明运行时行为。对于兼容但未识别的措辞，可由人类明确审阅当前版本的权威 guide、help 和会话证据。在 `context.messaging.human_verification` 中记录非空 `reviewed_by`、`evidence_ref`、精确 `version`、从失败回执的 `observed.probes` 复制的 `probe_sha256` 映射（键为命令参数以 `/` 连接，包括 `--version`），并分别对 `native_wake`、`handled_check`、`retry_recovery`、`inbox_recovery` 填 `true`。四项都必须有证据；语义未知或不支持仍阻断。预检将版本与每个哈希和新探针输出比对，输出变化则核验失效。脚本记录声明，但不能认证审阅者或证明语义；人类须实际核实。不得用普通 override 或编造证据通过门禁。重检成功不等于真实端到端测试。
 
