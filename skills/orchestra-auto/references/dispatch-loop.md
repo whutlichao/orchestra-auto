@@ -2,7 +2,18 @@
 
 **When to read**: for every B/C dispatch, for the full worker-start flags, turn-start confirmation
 narrative, orchestration-guide fetch, or communication-loop verification detail beyond the short
-SKILL.md stubs.
+SKILL.md stubs. Also read [entry evidence](#entry-evidence) when deciding which route a request
+enters — that table is the single authority for the route, and the pre-skill table below follows it.
+
+## Contents
+
+- [4.2 Fetch the orchestration guide](#42-fetch-the-orchestration-guide-once-to-disk)
+- [4.3 Overriding Orca's default placement](#43--overriding-orcas-default-placement-the-single-most-important-rule-here)
+- [4.3.0 Pre-skill: pick it by stage and ticket type](#430-pre-skill-pick-it-by-stage-and-ticket-type-not-by-channel)
+- [Entry evidence: the routing table and capability checks](#entry-evidence)
+- [4.3.1 Confirming the turn started after dispatch](#431-confirming-the-turn-started-after-dispatch)
+- [4.3.2 Long-horizon dispatch](#432-long-horizon-dispatch-one-worker-per-map)
+- [4.5 Communication loop](#45-communication-loop)
 
 ## 4.2 Fetch the orchestration guide (once, to disk)
 
@@ -93,25 +104,11 @@ for expected drift, reasoned in the spec (Orca 1.4.245: 20 commits; version-scop
 
 ## 4.3.0 Pre-skill: pick it by stage and ticket type, not by channel
 
-The `Pre-skill:` line in the spec names the skill of the stage you are actually running. There is no
-fixed channel-to-skill mapping: a round that already holds a valid spec enters at `to-tickets`, one
-with an existing ticket map enters at `implement-spec`, a research question answered on disk uses
+The `Pre-skill:` line in the spec names the skill of the stage you are actually running — take it
+from the route row recorded under [entry evidence](#entry-evidence). There is no fixed
+channel-to-skill mapping: a round that already holds a valid spec enters at `to-tickets`, one with
+an existing ticket map enters at `implement-spec`, a research question answered on disk uses
 `research`, and a bug fix uses `diagnosing-bugs` and then `implement`.
-
-| This round's stage | Pre-skill |
-| --- | --- |
-| Explanation, status, discussion | none (channel A), unless an interactive skill is requested |
-| Explicit non-code interview | `grill-me` → `grilling` |
-| Bounded change, bug fix, existing spec or ticket | `implement` (`diagnosing-bugs` first for a bug) |
-| Research that lands on disk | `research` |
-| A design made sharp against the codebase | `grill-with-docs` |
-| Large foggy effort spanning sessions: chart or work a decision map | `wayfinder` |
-| A decision needing a runnable throwaway to react to | `prototype` |
-| A spec | `to-spec` |
-| A ticket split | `to-tickets` |
-| Implementation of a complete map | `implement-spec` |
-| External issues, conflicts, terminology | the repository's triage / conflict / `domain-modeling` flow |
-| The repo has no bootstrap yet | land `setup-matt-pocock-skills` first, then enter the matching stage above (SKILL.md §1.1) |
 
 Before dispatch, confirm the chosen path is readable and that this stage's dependencies exist: the
 tracker configuration for `to-spec` / `to-tickets`, the map and tracker for `implement-spec`, and the
@@ -135,31 +132,77 @@ The grill-specific G-docs criteria do not apply to setup.
 
 ## Entry evidence
 
-Before selecting an entry, establish the evidence for the user's goal, observable behaviour,
-scope, acceptance and key choices. For unresolved trade-offs, use `wayfinder` if the effort spans
-sessions and the route is foggy; otherwise use `grill-me` for a non-code interview or
-`grill-with-docs` for codebase/domain alignment. Record which decisions need the user. Enter at an existing spec or ticket
-only after checking that it applies to this request, is current and resolves those questions. For
-a small change or fix entered directly at implementation, record the evidence for scope,
-acceptance and settled key choices in the mode declaration; re-route when exploration reveals a
-new fork. The absence of a spec is not a reason to skip grill. When the user explicitly asks for
-grill, do it even for a small change.
+### The routing table: one authority for which route a request enters
 
-`grill-me` wraps `grilling`; `grill-with-docs` invokes both `grilling` and `domain-modeling`.
-Resolve and pass all required skill paths to a worker; reading a wrapper alone is not evidence its
-dependencies ran. Preserve the user's questions, answers and constraints across fresh contexts.
-`grilling` and `prototype` require the user's real decisions or feedback. Respect host restrictions
-on user-invoked entrypoints; if a required skill is unavailable, report the failed resolution.
+This table is the single authority for **which route a request enters**. SKILL.md §1 decides the
+channel and the delivery endpoint — A/B/C are supervision and delivery shapes, not skills — and
+§4.3.0 below maps the chosen route to the pre-skill path the spec must carry. Upstream `ask-matt`
+is the design reference for the routes; the supervision, isolation, authorization and recovery
+rules are this project's adaptation; each skill's own text remains the authority on how its stage
+works.
 
-For `wayfinder`, specify **chart** or **work** and pass the destination or map pointer and tracker
-operations. Chart grills the destination and breadth, creates the map and specifiable decision
-tickets, wires blockers, starts research where authorized, then stops. Work claims a frontier
-ticket, resolves it by type and updates the map; at most one non-research ticket per session.
-Research is AFK, prototype and grilling are HITL, task is HITL or AFK depending on the blocker.
-Decision tickets differ from implementation tickets. Validate each invocation and the completed
-map separately under G-wayfinder. Research and prototype may use throwaway branches and context
-pointers without a project PR when authorized; do not apply the implementation PR contract to a
-disposable artifact.
+Before choosing a row, establish the evidence for the user's goal, observable behaviour, scope,
+acceptance and key choices. An existing spec or ticket is an entry only after checking that it
+applies to this request, is current and resolves those questions. The absence of a spec is not a
+reason to skip grill; an explicit user request for a named skill wins over every row; and an ADR or
+planned decision the change would overturn is settled before going further.
+
+| # | Condition | Input the row needs | Route (skill and dependencies) | Completion evidence | Returns to |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Plain explanation, status or discussion; a verbal research conclusion | the question | Answer in this context; no Run, no worker, no project files | the answer is delivered | — |
+| 2 | New idea, plan or design with unresolved trade-offs, and no working directory | the user's words | `grill-me` (user-invoked) → `grilling` | each round's questions, answers and rationale recorded; frontier empty and the user confirms shared understanding | the row whose stage the settled work needs |
+| 3 | The same, with a working directory | the user's words and the codebase | `grill-with-docs` (user-invoked) → `grilling` + `domain-modeling`; glossary terms and ADRs only when a term or a hard-to-reverse decision is actually settled | as row 2, plus the records the repository's domain conventions require | the row whose stage the settled work needs |
+| 4 | A bounded small change or fix, a continuation ticket, or an existing valid spec or ticket | current goal, scope, acceptance and the source of each settled choice | `implement` (`diagnosing-bugs` first for a bug) | the mode declaration records scope, acceptance and why no new interview was needed; a new fork re-routes to row 2/3 | G-impl |
+| 5 | Planning itself exceeds one session and the route to the destination is foggy | destination or map pointer; tracker operations | `wayfinder` (user-invoked): **chart** or **work** | chart: destination, breadth-first grill, map, typed decision tickets and real blockers; work: a claimed ticket resolved, map updated; map complete requires every decision done and no in-scope fog | `to-spec` (row 10), or a justified small direct implementation (row 4) |
+| 6 | A decision depends on verifiable sources | the question and the sources | `research` (AFK) | a cited Markdown file lands; the conclusion returns to the decision, it does not decide for the user | the grill/spec stage that asked |
+| 7 | Discussion cannot settle look, logic or state | the one question the prototype answers | `prototype` (HITL) | the user reacted to a concrete artifact; the question and conclusion are recorded; throwaway branch or pointer | the stage that asked |
+| 8 | A decision depends on information someone else holds | recipient and the answers required | `to-questionnaire` (user-invoked); writing it authorizes no sending | the questionnaire is written and delivered through the named process; the ticket stays blocked until real answers arrive | the grill/spec stage that asked |
+| 9 | Requirements are aligned and one session can implement them | the settled decisions | `implement` in the same context, or one worker with a complete spec | the applicable ticket acceptance evidence | G-impl |
+| 10 | An aligned build spans sessions | the settled decisions and, when one exists, the spec | `to-spec` → `to-tickets` (both user-invoked); then `implement` per ticket or `implement-spec` for a complete map | the user checked seams (G-spec) and ticket granularity and blocking edges (G-tickets) | G-spec / G-tickets / G-impl |
+| 11 | A raw external issue or PR needs clarification | the tracker and the repository's triage configuration | `triage` (user-invoked) | labels and states follow the repository; tickets produced by `to-tickets` are agent-ready and are not re-triaged | `implement` for agent-ready issues |
+| 12 | A hard, hard-to-reproduce bug or a regression | a tight red feedback loop for this bug | `diagnosing-bugs`, then `implement` | the loop is red on the old code and green after the fix; a regression test locks it | `retro` after the fix when useful |
+| 13 | Architecture pain, or a seam that resists testing | the codebase | `improve-codebase-architecture` (user-invoked) | the user selected a candidate | `grill-with-docs` (row 3) with the chosen idea |
+| 14 | Only a human can perform the step | the blocked step | `wizard` (model-invoked) | an interactive script; the human confirms each step; the agent continues the original task | the task that was blocked |
+| 15 | Delivery finished, a repeated mistake, or a process error | first-hand session evidence | `retro` (user-invoked) | candidates are written outside the repository; a human selects one before a worker lands it | a later round |
+
+The wayfinder condition is about **the planning itself** exceeding one session with a foggy route —
+not about the number of files, tickets or implementation workers. For `wayfinder`, specify **chart**
+or **work** and pass the destination or map pointer and tracker operations. Chart grills the
+destination and breadth, creates the map and specifiable decision tickets, wires blockers, starts
+research where authorized, then stops. Work claims a frontier ticket, resolves it by type and
+updates the map; at most one non-research ticket per session. Research is AFK, prototype and
+grilling are HITL, task is HITL or AFK depending on the blocker. Decision tickets differ from
+implementation tickets; validate each invocation and the completed map separately under
+G-wayfinder. Research and prototype may use throwaway branches and context pointers without a
+project PR when authorized; do not apply the implementation PR contract to a disposable artifact.
+
+`domain-modeling` and `codebase-design` are vocabulary layers underneath; `writing-for-agents`
+maintains agent-facing documentation. `teach` and `wait-what` remain standalone, user-chosen
+entries and never enter the fixed chain. Experimental upstream skills are not default dependencies.
+
+### Invocation class, wrapper dependencies and host capability
+
+Resolve three facts separately before dispatch, and record them in the spec:
+
+1. **Invocation class** — the installed `SKILL.md` frontmatter says whether a skill is user-invoked
+   (`disable-model-invocation: true`) or model-invoked. A user-invoked skill is entered from the
+   user's explicit request or an invocation form the host accepts; the coordinator does not turn a
+   path into a call. A model-invoked skill may be reached by the stage that needs it.
+2. **Wrapper and dependencies** — `grill-me` wraps `grilling`; `grill-with-docs` invokes `grilling`
+   and `domain-modeling`; `wayfinder` resolves tickets through `research`, `prototype`, `grilling`
+   and `task`; `implement` drives `tdd` and closes with `code-review`. A wrapper's one-line body is
+   not evidence its dependencies ran, and reading the wrapper is not evidence either. Pass each
+   dependency's real path, and confirm it resolves and is readable before dispatch.
+3. **Host capability** — write the invocation form the host supports into the spec's `Pre-skill`
+   block. Where the host forbids the invocation, read the file as this project's documented
+   adaptation and label it that way; where a required skill cannot be resolved at all, report the
+   capability gap per §9. Never report a direct read as a native invocation, and never install a
+   skill this round was not authorized to install.
+
+`setup-matt-pocock-skills` follows the same policy: §1.1's gate names it explicitly, and neither
+automatic discovery nor an absolute path bypasses a host restriction. The grill-specific G-docs
+criteria do not apply to setup. Preserve the user's questions, answers and constraints across
+fresh contexts; `grilling` and `prototype` require the user's real decisions or feedback.
 
 ## 4.3.1 Confirming the turn started after dispatch
 

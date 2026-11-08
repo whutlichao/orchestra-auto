@@ -1,7 +1,13 @@
 # The spec contract
 
 **When to read this**: when you are about to write a worker's spec, on any channel and for any
-ticket type.
+ticket type; or when you must hand a planning stage to a fresh context and need to know what the
+handoff has to carry.
+
+## Contents
+
+- [4.4 The spec contract](#44-the-spec-contract)
+- [Planning context and handoff](#planning-context-and-handoff)
 
 ### 4.4 The spec contract
 
@@ -127,3 +133,54 @@ boundary, escalate the scope question per §5; do not silently reclassify with a
 A worker sees only the spec, never this skill. Write the applicable behaviour rules and the
 actual delivery endpoint into the spec; item 6's local prevention applies only when its
 condition holds, and the full disposition is in the recovery reference.
+
+## Planning context and handoff
+
+The preferred path keeps grill, `to-spec` and `to-tickets` in **one planning context**, so the
+spec and the ticket split build on the same conversation. Split only when the work itself needs
+it, the host's context is degrading, or the user's chosen topology requires isolation. A worker per
+stage is this project's supervision choice, not a requirement of the planning skills; when a
+stage runs in a fresh context, the handoff below is what keeps it faithful.
+
+**Three different documents, not one.** A *worker task spec* is the self-contained delegation
+described in §4.4 — it says what this dispatch must produce. A *product spec* is the artifact
+`to-spec` publishes; a worker that is asked to write one receives task spec and product spec
+separately. A *planning handoff* is the record that moves a stage across contexts. None of them
+substitutes for another, and none of them proves a decision was made.
+
+**The handoff record.** When a stage moves to a fresh context — across harnesses, directories,
+collaborators, or mid-phase forks — write the following and point at it from the new context. The
+record lives outside the repository; the pointer lives where the work continues.
+
+```text
+Handoff: <one-line goal> | endpoint <authorized delivery endpoint>
+Decisions: <decision → the user's own words or a direct pointer to them → source (user / ADR / spec)>
+Constraints: <numbers, negative requirements ("do not…", "only…"), ordering, exclusions>
+Facts: <verified facts and where they were verified — files, issues, commits, commands>
+Open questions: <each with who can answer it and why it is still open>
+Skills: <the routes and their dependencies, with real paths and invocation class>
+Artifacts: <pointers, never copies, to specs, tickets, research, prototypes, diffs>
+Next: <the first action in the new context, and the gate that will close it>
+```
+
+Pointers, not copies: a document that already exists is referenced, so the new context reads the
+current version rather than a stale paste. The user's original decisions are the one exception —
+their words are quoted, because a paraphrase is how a constraint gets softened. Sensitive
+material stays desensitized.
+
+**What must survive the handoff**: every numeric constraint, every negative requirement, every
+decision whose source is the user, and every open question. A handoff that carries the goal but
+loses "the retry cap is 30 s, never 60" or "do not touch the settings page" has not moved the
+work; it has restarted it.
+
+**When a pointer suffices.** A tightly scoped subtask inside the same phase only needs the task
+spec and a context pointer — the files it must read. The full handoff record is for a real boundary:
+a new harness, directory or collaborator, a forked side task, or a stage resumed after the original
+context was cleared. Do not dress a subtask up as a handoff, and do not send a boundary crossing
+without one.
+
+**The user's answer returns through the original message.** When a worker asks a decision-class
+question, the answer is recorded in the handoff or Answer with the human's key words, then sent back
+on the same orchestration channel; introducing another tool to answer a worker splits the audit
+trail. `grilling` and `prototype` decisions must come from the user, never from a coordinator or a
+worker substituting for them.

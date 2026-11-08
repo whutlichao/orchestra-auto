@@ -199,8 +199,13 @@ class CheckArtifactTests(unittest.TestCase):
         self.assertIn("票 2", errors[0])
 
     def test_a_ticket_map_without_blocks_fails(self):
-        errors = chain.check_artifact("to-tickets", "- 只列了一堆要点\n")
+        """Explicit ``--source list`` compatibility mode still demands ticket blocks."""
+        errors = chain.check_artifact("to-tickets", "- 只列了一堆要点\n", source="list")
         self.assertTrue(any("no '## ' ticket blocks" in e for e in errors), errors)
+
+    def test_unrecognisable_text_asks_for_the_format(self):
+        errors = chain.check_artifact("to-tickets", "- 只列了一堆要点\n")
+        self.assertTrue(any("--source" in e for e in errors), errors)
 
     def test_a_done_when_line_counts_as_acceptance(self):
         text = "## 票 1\n\n- 改文案\n- Done when: 设置页显示 Auto sync\n"
@@ -262,6 +267,77 @@ class LedgerPathTests(unittest.TestCase):
                          Path("/tmp/ledger-home/runs/r1/ledger.jsonl"))
 
 
+class TicketBoundaryTests(unittest.TestCase):
+    """Real upstream ticket shapes must be recognised by their real boundaries.
+
+    ``to-tickets`` may land a directory with one Markdown file per ticket, a single issue
+    body, or a combined list. The old check split only on ``## `` and therefore invented
+    tickets from an issue's ordinary sections and accepted a file boundary as "no ticket".
+    """
+
+    FILE_TICKET = (
+        "# Add the retry cap\n\n"
+        "## What to build\n\n"
+        "Exponential backoff with a 30 s cap.\n\n"
+        "## Acceptance criteria\n\n"
+        "- The delay is capped at 30 s\n"
+    )
+
+    ISSUE_BODY = (
+        "## What to build\n\n"
+        "Exponential backoff with a 30 s cap.\n\n"
+        "## Acceptance criteria\n\n"
+        "- The delay is capped at 30 s\n\n"
+        "## Out of scope\n\n"
+        "- Jitter\n"
+    )
+
+    def test_one_file_per_ticket_is_a_ticket(self):
+        self.assertEqual(
+            chain.check_artifact("to-tickets", self.FILE_TICKET, source="file"), [])
+
+    def test_an_issue_body_is_one_ticket_not_one_per_section(self):
+        self.assertEqual(
+            chain.check_artifact("to-tickets", self.ISSUE_BODY, source="issue"), [])
+
+    def test_a_combined_ticket_list_still_checks_each_block(self):
+        text = ("## 票 1\n\n- 改文案\n- 验收：设置页显示 Auto sync\n\n"
+                "## 票 2\n\n- 改样式\n")
+        errors = chain.check_artifact("to-tickets", text, source="list")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("票 2", errors[0])
+
+    def test_ambiguous_input_asks_for_the_format_instead_of_guessing(self):
+        """A map title plus a ticket-like `##` heading fits both shapes; do not guess."""
+        ambiguous = ("# The map\n\n## Add the retry cap\n\n- Acceptance: the delay is capped\n")
+        with self.assertRaises(chain.AmbiguousArtifact) as caught:
+            chain.check_artifact("to-tickets", ambiguous)
+        self.assertIn("--source", str(caught.exception))
+
+    def test_an_empty_acceptance_line_is_named_at_the_real_ticket(self):
+        text = ("# Ticket two\n\n## What to build\n\nThing.\n\n## Acceptance criteria\n\n")
+        errors = chain.check_artifact("to-tickets", text, source="file")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Ticket two", errors[0])
+
+    def test_unknown_blockers_and_cycles_are_reported_separately(self):
+        text = (
+            "## 票 1\n\n- Blocked by: 票 9\n- 验收：a\n\n"
+            "## 票 2\n\n- Blocked by: 票 3\n- 验收：b\n\n"
+            "## 票 3\n\n- Blocked by: 票 2\n- 验收：c\n"
+        )
+        errors = chain.check_artifact("to-tickets", text, source="list")
+        self.assertTrue(any("票 9" in e and "unknown" in e for e in errors), errors)
+        self.assertTrue(any("cycle" in e for e in errors), errors)
+
+    def test_a_native_check_and_the_dispatch_additions_are_reported_apart(self):
+        body = "## What to build\n\nThing.\n\n## Acceptance criteria\n\n- it works\n"
+        result = chain.inspect_spec(body)
+        self.assertTrue(result["native"]["passed"])
+        self.assertFalse(result["dispatch"]["passed"])
+        self.assertTrue(any("Test tier" in e for e in result["dispatch"]["errors"]))
+
+
 class CliTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -274,7 +350,6 @@ class CliTests(unittest.TestCase):
         completed = subprocess.run([sys.executable, str(CHAIN), *argv],
                                    capture_output=True, text=True, timeout=60)
         return completed.returncode, completed.stdout, completed.stderr
-
     def test_steps_prints_the_positions_and_the_steps(self):
         code, out, _ = self.run_cli("steps")
         self.assertEqual(code, 0)
@@ -292,6 +367,46 @@ class CliTests(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual(payload["next"]["position"], "spec")
         self.assertEqual(payload["problems"], [])
+        self.assertEqual(payload["legacy"]["state"], "legacy")
+
+    def test_a_flow_record_takes_precedence_over_the_five_position_chain(self):
+        """The flow is the plan; the ledger is only an index beside it."""
+        flow_file = self.root / "flow.jsonl"
+        flow_file.write_text(json.dumps({
+            "schema_version": 1, "record_id": "flow-1", "kind": "flow", "flow_id": "f1",
+            "run_id": "r1", "goal": "design only", "endpoint": "design artifact",
+            "nodes": [
+                {"id": "grill", "gate": "G-docs", "depends_on": []},
+                {"id": "spec", "gate": "G-spec", "depends_on": ["grill"],
+                 "applies": False, "entry_evidence": "the user asked for design only"},
+            ],
+        }) + "\n" + json.dumps({
+            "schema_version": 1, "record_id": "state-1", "kind": "state", "flow_id": "f1",
+            "node": "grill", "state": "accepted", "task_id": "t1", "attempt": 1,
+            "artifact_version": "v1", "evidence_ref": "answer.md",
+        }) + "\n", encoding="utf-8")
+        code, out, _ = self.run_cli("resume", "--run-id", "r1", "--flow", str(flow_file))
+        self.assertEqual(code, 0, out)
+        payload = json.loads(out)
+        self.assertEqual(payload["state"], "complete")
+        self.assertNotIn("next", payload)
+        self.assertIn("not merge authorization", payload["note"])
+
+    def test_an_uncertain_flow_resume_exits_one(self):
+        flow_file = self.root / "flow.jsonl"
+        flow_file.write_text(json.dumps({
+            "schema_version": 1, "record_id": "flow-1", "kind": "flow", "flow_id": "f1",
+            "run_id": "r1", "goal": "x", "endpoint": "design artifact",
+            "nodes": [{"id": "grill", "gate": "G-docs", "depends_on": []}],
+        }) + "\n" + json.dumps({
+            "schema_version": 1, "record_id": "state-1", "kind": "state", "flow_id": "f1",
+            "node": "ghost", "state": "blocked", "reason": "x",
+        }) + "\n", encoding="utf-8")
+        code, out, _ = self.run_cli("resume", "--run-id", "r1", "--flow", str(flow_file))
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["state"], "uncertain")
+        self.assertEqual(payload["ready"], [])
 
     def test_resume_degrades_to_unknown_when_the_archive_is_schema_invalid(self):
         """Archive history is read through the ledger's validator, not a JSON-object reader."""
@@ -331,6 +446,68 @@ class CliTests(unittest.TestCase):
                                     "--artifact", str(self.root / "nope.md"))
         self.assertEqual(code, 1)
         self.assertIn("artifact not found", json.loads(out)["errors"][0])
+
+    def test_a_collection_checks_every_file_as_one_ticket_each(self):
+        first = self.root / "01-first.md"
+        first.write_text("# 01: First\n\n**Blocked by:** None (can start immediately).\n\n"
+                         "- [ ] the behaviour works\n", encoding="utf-8")
+        second = self.root / "02-second.md"
+        second.write_text("# 02: Second\n\n**Blocked by:** 01: First\n\n- [ ] it works\n",
+                          encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-tickets",
+                                    "--artifact", str(first), "--artifact", str(second))
+        self.assertEqual(code, 0, out)
+        payload = json.loads(out)
+        self.assertTrue(payload["passed"])
+        self.assertEqual(len(payload["artifacts"]), 2)
+
+    def test_a_collection_names_the_file_that_fails(self):
+        good = self.root / "01-good.md"
+        good.write_text("# 01: Good\n\n- [ ] works\n", encoding="utf-8")
+        bad = self.root / "02-bad.md"
+        bad.write_text("# 02: Bad\n\nNo criteria here.\n", encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-tickets",
+                                    "--artifact", str(good), "--artifact", str(bad))
+        self.assertEqual(code, 1)
+        errors = json.loads(out)["errors"]
+        self.assertTrue(any("02-bad.md" in error and "02: Bad" in error for error in errors),
+                        errors)
+
+    def test_an_ambiguous_artifact_exits_two_and_asks_for_the_source(self):
+        ambiguous = self.root / "map.md"
+        ambiguous.write_text("# Map\n\n## Add the cap\n\n- Acceptance: capped\n", encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-tickets",
+                                    "--artifact", str(ambiguous))
+        self.assertEqual(code, 2)
+        self.assertIn("--source", json.loads(out)["errors"][0])
+
+    def test_the_explicit_source_mode_resolves_the_ambiguity(self):
+        ambiguous = self.root / "map.md"
+        ambiguous.write_text("# Map\n\n## Add the cap\n\n- Acceptance: capped\n", encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-tickets",
+                                    "--artifact", str(ambiguous), "--source", "list")
+        self.assertEqual(code, 0, out)
+
+    def test_an_issue_body_checks_as_one_ticket(self):
+        issue = self.root / "issue.md"
+        issue.write_text(
+            "## What to build\n\nExponential backoff.\n\n"
+            "## Acceptance criteria\n\n- [ ] capped at 30 s\n", encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-tickets",
+                                    "--artifact", str(issue), "--source", "issue")
+        self.assertEqual(code, 0, out)
+
+    def test_the_spec_report_separates_native_from_dispatch(self):
+        spec = self.root / "spec.md"
+        spec.write_text("## Problem Statement\n\nx\n\n## Acceptance criteria\n\n- works\n",
+                        encoding="utf-8")
+        code, out, _ = self.run_cli("exit-check", "--step", "to-spec",
+                                    "--artifact", str(spec))
+        payload = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertTrue(payload["native"]["passed"])
+        self.assertFalse(payload["dispatch"]["passed"])
+        self.assertTrue(any("Test tier" in error for error in payload["dispatch"]["errors"]))
 
 
 if __name__ == "__main__":

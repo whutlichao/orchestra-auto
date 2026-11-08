@@ -45,15 +45,17 @@ Orca 在链的每一格外包一圈循环：
 
 ### 两轮之间：续跑与出口检查
 
-每轮结束都留一条台账记录，所以下一轮不必从对话里重建：
+一次 Run 不一定走满五个阶段，所以计划是显式的。`scripts/flow.py` 写下带版本号的流程记录——节点、依赖、门禁、状态与证据——
+`resume` 优先读它；没有流程记录的 Run 回退到旧账本链，答案标为 `legacy`，因为旧账本证明不了当前阶段、门禁与交付终点。
 
 ```bash
-python3 scripts/chain.py resume --run-id <run_id>          # 链条从哪个位置继续，以及为什么
+python3 scripts/flow.py plan --run-id <run_id>              # 下一个就绪节点、阻塞项与证据缺口
+python3 scripts/chain.py resume --run-id <run_id>           # 先看 flow，否则旧链
 python3 scripts/chain.py exit-check --step to-spec --artifact spec.md
-python3 scripts/chain.py exit-check --step to-tickets --artifact tickets.md
+python3 scripts/chain.py exit-check --step to-tickets --artifact 01-a.md --artifact 02-b.md
 ```
 
-`resume` 读这次 Run 的台账，返回第一个「门禁还没有通过的验收记录」的位置——`grill`、`spec`、`tickets`、`build`、`review`。`implement` 和 `implement-spec` 故意共用 `build` 这个位置：两者都关在 G-impl 上，一条记录分不出是哪一个。`exit-check` 施加两道产物地板：spec 要有 `Test tier:` 行和带可验收条目的验收小节，票图里每一张票都要有验收行。其余步骤直接拒绝——它们的出口信号是测试运行或 PR 状态，假装检查比直说不查更糟。
+`exit-check` 把 spec 的上游原生检查与本项目的 `Test tier:` 附加项分开报告，并按真实票边界检查票据——一票一文件、一条 issue 正文，或合并列表——绝不把每个 `##` 章节当成一张票。其余步骤直接拒绝——它们的出口信号是测试运行或 PR 状态，假装检查比直说不查更糟。
 
 两者都不是判决。它们只抓缺失的小节，抓不住错误的决定；门禁仍然归 coordinator。[chain-run.md](skills/orchestra-auto-zh/references/chain-run.md) 写明各自能推出什么、不能推出什么。
 
@@ -124,13 +126,14 @@ python3 -m unittest discover -s tests -v
 
 - `tests/test_inbox_loop.py` 使用模拟的 1.4.248 消息契约，验证已退役入口不消费消息或修改历史状态，以及 retry、去重和 inbox 恢复。
 - `tests/test_progress_dashboard.py` 覆盖进度 CLI 与 localhost 看板：snapshot 与注册表契约、单例启动锁、协议兼容、回退、Run 隔离、只读 HTTP 表面与 `serve --state` 的 DEMO 路径。
-- `tests/test_chain.py` 覆盖链级续跑与两道产物地板：哪些验收记录能让一个位置落地、为什么链条更早的缺口优先、以及出口检查拒绝判断什么。
+- `tests/test_chain.py` 覆盖链级续跑与产物地板：哪些验收记录能让一个位置落地、为什么链条更早的缺口优先、哪些旧账本答案标为 `legacy`、如何识别票据的真实边界，以及出口检查拒绝判断什么。
+- `tests/test_flow.py` 覆盖显式流程记录：schema 校验、只追加的优先级、过期验收、失效与下游传播、导入，以及只设计的交付终点。
 - `tests/test_ledger.py`、`test_preflight.py`、`test_health.py`、`test_acceptance.py` 与 `test_closeout.py` 通过各自声明的缝覆盖稳定性模块。
 - `tests/test_package_content.py` 检查包本身：两个语言变体结构一致、frontmatter、所有相对链接、reference 及其触发条件、eval 形状、`py_compile`、`bash -n`、MIT 许可与脱敏扫描。其中的散文契约回归钉住文档过去判错的决定；锚点测试**只查锚点，不等于完整语义等价**，所以双轴 review 仍要读 diff。
 
 ### 场景检查
 
-每个语言变体都带 `evals/evals.json`，**38 个提示词层面的场景**，覆盖通道判定、worker 栏取值、启动确认、门禁选择、review 安排、打回判断、决策分类、升级、合并例外，以及原生唤醒与恢复契约。最后七个覆盖稳定性工作流；崩溃窗口对账是一个场景，同时点名 W1/W2/W3，因此总数是 31 + 7 = 38。这些是场景检查，不是端到端证明：它们看的是 agent 是否按 skill 的意图推理，不证明编排在真实 Orca 主机上能跑通。
+每个语言变体都带 `evals/evals.json`，**52 个提示词层面的场景**，覆盖通道判定、worker 栏取值、启动确认、门禁选择、review 安排、打回判断、决策分类、升级、合并例外、原生唤醒与恢复契约，以及路由表、交接记录、wayfinder 支线、显式流程与产物格式。稳定性工作流新增七个（崩溃窗口对账是一个场景，同时点名 W1/W2/W3）；工作流重构新增十四个。总数是 31 + 7 + 14 = 52。这些是场景检查，不是端到端证明：它们看的是 agent 是否按 skill 的意图推理，不证明编排在真实 Orca 主机上能跑通。
 
 ### 入口体积与激活成本
 
@@ -138,8 +141,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 24,175（−20.0%） | 7,552 → 6,043 |
-| 中文 | 24,359 → 21,781（−10.6%） | 6,089 → 5,445 |
+| 英文 | 30,208 → 25,535（−15.5%） | 7,552 → 6,383 |
+| 中文 | 24,359 → 22,555（−7.4%） | 6,089 → 5,638 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 

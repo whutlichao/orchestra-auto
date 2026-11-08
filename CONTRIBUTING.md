@@ -21,9 +21,10 @@ language-specific (a quoted idle banner, a CLI flag name). Concretely:
 
 - The same reference files exist in both, with the same trigger conditions.
 - The same eval scenarios exist in both, in the same order, with the same assertion counts.
-- All shipped scripts and static assets (`acceptance.py`, `closeout.py`, `health.py`, `inbox-loop.py`,
-  `inbox-loop.sh`, `init-check.py`, `ledger.py`, `preflight.py`, `progress.py`, `progress-demo.py`,
-  `progress.html`, `visual-evidence.py`) are **byte-identical** between the variants. The tests assert
+- All shipped scripts and static assets (`acceptance.py`, `chain.py`, `closeout.py`, `flow.py`,
+  `health.py`, `inbox-loop.py`, `inbox-loop.sh`, `init-check.py`, `ledger.py`, `preflight.py`,
+  `progress.py`, `progress-demo.py`, `progress.html`, `visual-evidence.py`) are **byte-identical**
+  between the variants. The tests assert
   this; a divergence is a test failure, not a style preference. `SCRIPT_FILES` and `PYTHON_SCRIPTS` in
   `tests/test_package_content.py` are the lists those checks iterate: a new script that is not
   added to both fails the suite on purpose, because an unregistered script would otherwise be
@@ -55,6 +56,7 @@ python3 -m unittest tests.test_closeout -v             # closeout checklist + re
 python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
 python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 python3 -m unittest tests.test_chain -v                   # chain resume + exit checks
+python3 -m unittest tests.test_flow -v                    # explicit flow record + plan
 ```
 
 GitHub Actions runs that same suite on Python 3.10 and 3.14: `ubuntu-latest` runs all modules,

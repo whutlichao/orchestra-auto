@@ -45,15 +45,23 @@ The next step is another lap: another worker, another new worktree. The spec nam
 
 ### Between laps: resume and exit checks
 
-A lap ends with a ledger record, so the next lap does not have to be reconstructed from the conversation:
+A Run does not always chain five stages, so the plan is explicit. `scripts/flow.py` writes a
+versioned flow record — nodes, dependencies, gates, states and evidence — and `resume` reads it
+first; a Run with no flow record falls back to the old ledger chain and its answer is marked
+`legacy`, because an old ledger cannot prove the current stage, gates or endpoint.
 
 ```bash
-python3 scripts/chain.py resume --run-id <run_id>          # where the chain continues, and why
+python3 scripts/flow.py plan --run-id <run_id>              # the next ready node, blockers, gaps
+python3 scripts/chain.py resume --run-id <run_id>           # flow first; legacy chain otherwise
 python3 scripts/chain.py exit-check --step to-spec --artifact spec.md
-python3 scripts/chain.py exit-check --step to-tickets --artifact tickets.md
+python3 scripts/chain.py exit-check --step to-tickets --artifact 01-a.md --artifact 02-b.md
 ```
 
-`resume` reads the Run's ledger and returns the first position whose gate has no passed acceptance record — `grill`, `spec`, `tickets`, `build`, `review`. `implement` and `implement-spec` share that `build` position on purpose: both close on G-impl, and one record cannot tell them apart. `exit-check` applies the two artifact-shaped floors a spec or a ticket map has to clear before the next step consumes it — a `Test tier:` line and an acceptance section with a testable bullet; an acceptance line in every ticket. Everything else refuses, because the exit signal for those steps is a test run or a PR state and pretending to check it would be worse than declining.
+`exit-check` reports a spec's upstream-native checks apart from this project's `Test tier:`
+addition, and checks tickets at their real boundaries — one file per ticket, one issue body, or
+the combined list — never one ticket per `##` section. Everything else refuses, because the exit
+signal for those steps is a test run or a PR state and pretending to check it would be worse than
+declining.
 
 Neither is a verdict. They catch a missing section, never a wrong decision; the gate stays with the coordinator. [chain-run.md](skills/orchestra-auto/references/chain-run.md) states what each may and may not conclude.
 
@@ -124,13 +132,14 @@ The exit status is the answer. The suite needs no network, credentials or partic
 
 - `tests/test_inbox_loop.py` models the 1.4.248 message contract and checks that retired entrypoints preserve old state and do not consume mail, plus retry, deduplication and inbox recovery.
 - `tests/test_progress_dashboard.py` covers the progress CLI and the localhost dashboard: snapshot and registry contracts, the singleton startup lock, protocol compatibility, fallbacks, Run isolation, the read-only HTTP surface and the `serve --state` DEMO path.
-- `tests/test_chain.py` covers chain-level resume and the two artifact floors: which acceptance records land a position, why a gap earlier in the chain wins, and what an exit check refuses to judge.
+- `tests/test_chain.py` covers chain-level resume and the artifact floors: which acceptance records land a position, why a gap earlier in the chain wins, which legacy answers are marked `legacy`, how a ticket's real boundary is detected, and what an exit check refuses to judge.
+- `tests/test_flow.py` covers the explicit flow record: schema validation, append-only precedence, stale acceptances, invalidation and downstream propagation, imports, and the design-only endpoint.
 - `tests/test_ledger.py`, `test_preflight.py`, `test_health.py`, `test_acceptance.py` and `test_closeout.py` cover the stability modules through their declared seams.
 - `tests/test_package_content.py` checks the package itself: parity between the language variants, frontmatter, every relative link, references and their triggers, eval shape, `py_compile`, `bash -n`, the MIT licence and the leak scan. Its prose-contract suite pins the decisions the documents used to get wrong; the anchor test **checks anchors, not full semantic equivalence**, so the two-axis review still reads the diff.
 
 ### Scenario checks
 
-Each language variant ships `evals/evals.json` with **38 prompt-level scenarios** covering channel routing, worker-slot resolution, start verification, gate choice, review arrangement, send-back judgement, decision classification, escalation, merge exceptions and the native wake and recovery contract. The last seven cover the stability workstreams; crash-window reconciliation is one scenario naming W1/W2/W3, so the total is 31 + 7 = 38. These are scenario checks, not end-to-end proof: they show whether an agent reasons the way the skill intends, not whether orchestration works against a live Orca host.
+Each language variant ships `evals/evals.json` with **52 prompt-level scenarios** covering channel routing, worker-slot resolution, start verification, gate choice, review arrangement, send-back judgement, decision classification, escalation, merge exceptions, the native wake and recovery contract, the routing table, the handoff record, the wayfinder branches, the explicit flow and the artifact formats. The stability workstreams add seven scenarios (crash-window reconciliation is one scenario naming W1/W2/W3); the workflow redesign adds fourteen. The total is 31 + 7 + 14 = 52. These are scenario checks, not end-to-end proof: they show whether an agent reasons the way the skill intends, not whether orchestration works against a live Orca host.
 
 ### Entrypoint size and activation cost
 
@@ -138,8 +147,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 24,175 (−20.0%) | 7,552 → 6,043 |
-| Chinese | 24,359 → 21,781 (−10.6%) | 6,089 → 5,445 |
+| English | 30,208 → 25,535 (−15.5%) | 7,552 → 6,383 |
+| Chinese | 24,359 → 22,555 (−7.4%) | 6,089 → 5,638 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 

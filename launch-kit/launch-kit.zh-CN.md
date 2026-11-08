@@ -218,7 +218,7 @@ MIT。欢迎贡献。
 > 安全规则：每票独立 worktree、真实的启动证据、读实时 worker 设置而不是写死、原生唤醒与消息 ID 对账、决策升级给人、按票型的门禁、
 > 还原前先留证、有界重试。
 >
-> 每种语言 `evals/` 里有 38 个场景，另有模拟消息契约的回归测试。MIT。欢迎反馈。
+> 每种语言 `evals/` 里有 52 个场景，另有模拟消息契约的回归测试。MIT。欢迎反馈。
 
 ### 6.4 X / Twitter
 
@@ -286,7 +286,7 @@ diff，以及为什么先留证再还原；(5) 一个 Python 脚本，让 agent 
 > question before answering it, and send scope changes to the human; run gates by ticket type; keep
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
-> Orca wakes the coordinator natively. The packages include 38 prompt-level scenarios per
+> Orca wakes the coordinator natively. The packages include 52 prompt-level scenarios per
 > language and simulated message-contract regression tests.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether

@@ -27,7 +27,12 @@ Public interface (deep module):
 
 * ``landed_positions(records) -> list`` — pure: positions with a passed acceptance record.
 * ``next_step(records) -> dict`` — pure: the resume answer, including why it is that position.
-* ``check_artifact(step_id, text) -> list`` — pure: exit-check errors for one step.
+* ``check_artifact(step_id, text, source=None, base_dir=None) -> list`` — pure: exit-check
+  errors for one step. ``source`` declares the artifact shape (``list``, ``file`` or ``issue``)
+  for a ticket artifact; leaving it out detects the shape and raises ``AmbiguousArtifact`` when
+  the text fits more than one. ``base_dir`` resolves relative links inside a ticket.
+* ``inspect_spec(text) -> dict`` — pure: the upstream-native checks and the project's dispatch
+  additions, reported apart so a native spec is never called invalid for missing an addition.
 * ``load_records(path) -> (records, problems)`` — tolerant JSONL reader with the ledger's rules:
   a trailing partial line is discarded, a corrupt complete line is reported, never dropped.
 * ``load_effective_records(path) -> (records, problems, unknown)`` — the active ledger plus
@@ -36,6 +41,12 @@ Public interface (deep module):
 
 CLI: ``steps``, ``resume``, ``exit-check``. JSON out; exit ``0`` is success, ``1`` is a failed
 check or invalid input, ``2`` is a usage error.
+
+Ticket artifacts come in three real shapes and the check must use each one's own boundary:
+a combined ``## <ticket>`` list, a single file with ``# <title>`` and an acceptance section,
+and a single issue body whose sections are *not* tickets. ``--artifact`` repeated is a
+collection: every file is one ticket. ``--source`` is the explicit compatibility mode for a
+list whose blocks carry no ticket label.
 
 Only the Python standard library is used.
 """
@@ -62,7 +73,19 @@ def _load_ledger():
     return module
 
 
+def _load_flow():
+    """Import the sibling ``flow.py`` by path: the flow contract stays in one module."""
+    path = Path(__file__).with_name("flow.py")
+    spec = importlib.util.spec_from_file_location("orca_chain_flow", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 LEDGER = _load_ledger()
+FLOW = _load_flow()
 
 #: Per-step metadata. ``exit`` names the check ``exit-check`` can apply; ``external`` means the
 #: exit signal is a test run, a review or a PR state that this module deliberately does not read.
@@ -145,6 +168,53 @@ ANY_HEADING = re.compile(r"^#{1,6}\s", re.MULTILINE)
 #: A level-two ticket heading, zero-width so the title survives the split.
 TICKET_HEADING = re.compile(r"^##\s+(?=\S)", re.MULTILINE)
 
+#: A single ticket's own title: the upstream local file template opens with ``# <NN>: <title>``.
+H1_HEADING = re.compile(r"^#\s+(?=\S)", re.MULTILINE)
+
+#: Headings that name an ordinary section of one artifact, never a ticket in a combined list.
+#: This is what stops an issue body's ``## What to build`` and ``## Acceptance criteria`` from
+#: being read as two tickets.
+ORDINARY_SECTION = re.compile(
+    r"^(?:"
+    r"what to build|acceptance criteria|blocked by|parent|out of scope|"
+    r"problem statement|solution|user stories|implementation decisions|"
+    r"testing decisions|further notes|notes|acceptance|"
+    r"destination|decisions so far|not yet specified|question|"
+    r"验收|验收标准|阻塞|阻塞于|依赖|范围外|问题|方案|备注|任务|目的地|已定决定|未指定"
+    r")\s*[:：]?\s*$",
+    re.IGNORECASE,
+)
+
+#: ``Blocked by:`` as a line or a bold label, in either language.
+BLOCKED_BY = re.compile(
+    r"^\s*(?:[-*+]\s*)?(?:\*\*)?(?:blocked by|阻塞于|依赖)(?:\*\*)?\s*[:：]\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+#: A task-list checkbox is acceptance evidence in the upstream local ticket template, which has
+#: no acceptance heading: the checkboxes at the end of the file are the criteria.
+CHECKBOX_LINE = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+\S", re.MULTILINE)
+
+#: Values that mean "no blockers".
+NO_BLOCKERS = re.compile(
+    r"^(?:none|n/?a|no|无|没有)(?:\s*\(.*\))?$", re.IGNORECASE)
+
+#: The explicit ticket formats ``--source`` accepts, and the two single-ticket ones.
+TICKET_SOURCES = ("list", "file", "issue")
+SINGLE_TICKET_SOURCES = ("file", "issue")
+
+
+class AmbiguousArtifact(ValueError):
+    """The text fits more than one ticket shape, so the caller must name the format."""
+
+    def __init__(self, shapes):
+        self.shapes = tuple(shapes)
+        super().__init__(
+            "the ticket artifact fits more than one shape ("
+            + " or ".join(self.shapes)
+            + "); pass --source " + "|".join(TICKET_SOURCES) + " instead of guessing"
+        )
+
 _KNOWN_GATES = {position["gate"] for position in POSITIONS}
 
 
@@ -215,12 +285,19 @@ def next_step(records):
     }
 
 
-def check_artifact(step_id, text):
+def check_artifact(step_id, text, source=None, base_dir=None):
     """Return the exit-check errors for one step's artifact text; an empty list is a pass.
 
     Only the two artifact-shaped steps are checkable here. ``external`` steps return a single
     error that names the real signal, because pretending to check a test run would be worse than
     refusing to.
+
+    A ticket artifact is checked against its real boundary. ``source="file"`` reads one ticket
+    whose title is the first ``# `` heading; ``source="issue"`` reads one ticket whose acceptance
+    section is a heading; ``source="list"`` reads the combined ``## <ticket>`` format this
+    project uses. ``source=None`` detects the shape and raises ``AmbiguousArtifact`` when more
+    than one fits — an issue body with ordinary ``##`` sections must never be read as several
+    tickets, and a single file must never be read as one ticket per section.
     """
     if step_id not in STEP_IDS:
         return ["unknown step " + repr(step_id) + "; known steps: " + ", ".join(STEP_IDS)]
@@ -233,28 +310,187 @@ def check_artifact(step_id, text):
             "its exit signal is the test run, the review or the PR state — "
             "record it with acceptance.py, not here"
         ]
-    errors = []
     if step["exit"] == "spec":
-        if not TEST_TIER.search(text):
-            errors.append("spec: missing a 'Test tier:' line (narrow or wide, with the reason)")
-        heading = ACCEPTANCE_HEADING.search(text)
-        if not heading:
-            errors.append("spec: missing an acceptance section")
-        else:
-            rest = text[heading.end():]
-            sibling = ANY_HEADING.search(rest)
-            body = rest[:sibling.start()] if sibling else rest
-            if not BULLET_LINE.search(body):
-                errors.append("spec: the acceptance section has no testable line")
-    if step["exit"] == "tickets":
-        blocks = TICKET_HEADING.split(text)[1:]
-        if not blocks:
-            errors.append("tickets: no '## ' ticket blocks found")
-        for index, block in enumerate(blocks, start=1):
-            title = block.strip().splitlines()[0] if block.strip() else ""
-            body = "\n".join(block.splitlines()[1:])
-            if not ACCEPTANCE_LINE.search(body):
-                errors.append(f"tickets: ticket {index} ({title[:40]!r}) has no acceptance line")
+        report = inspect_spec(text)
+        return report["native"]["errors"] + report["dispatch"]["errors"]
+    if source is not None and source not in TICKET_SOURCES:
+        return ["tickets: unknown source " + repr(source) + "; use " + "|".join(TICKET_SOURCES)]
+    if source is None:
+        shape = detect_ticket_source(text)
+        if shape is None:
+            return ["tickets: no '## ' ticket blocks found and the text is not a single "
+                    "ticket; name the format with --source " + "|".join(TICKET_SOURCES)]
+        source = shape
+    if source == "list":
+        return _check_ticket_list(text)
+    return _check_single_ticket(text, base_dir)
+
+
+def inspect_spec(text):
+    """Report the upstream-native spec checks and this project's dispatch additions apart.
+
+    The upstream spec template has no ``Test tier:`` line; that line is this project's
+    addition, needed before the spec enters implementation here. Reporting them separately
+    keeps "this is not an upstream spec" from being confused with "this spec is invalid
+    upstream", and neither result claims the requirement itself is correct.
+    """
+    native, dispatch = [], []
+    heading = ACCEPTANCE_HEADING.search(text)
+    if not heading:
+        native.append("spec: missing an acceptance section")
+    else:
+        rest = text[heading.end():]
+        sibling = ANY_HEADING.search(rest)
+        body = rest[:sibling.start()] if sibling else rest
+        if not BULLET_LINE.search(body) and not CHECKBOX_LINE.search(body):
+            native.append("spec: the acceptance section has no testable line")
+    if not TEST_TIER.search(text):
+        dispatch.append("spec: missing a 'Test tier:' line (narrow or wide, with the reason) "
+                        "(project addition, not an upstream requirement)")
+    return {
+        "native": {"passed": not native, "errors": native},
+        "dispatch": {"passed": not dispatch, "errors": dispatch},
+    }
+
+
+def detect_ticket_source(text):
+    """Return ``"list"``, ``"file"``, ``"issue"`` or ``None`` for one artifact's shape.
+
+    ``list`` is the project's combined format: at least one ``## <ticket>`` heading whose title
+    is not an ordinary section label. Anything else that can stand as one ticket — a ``# ``
+    title, an acceptance heading, or the upstream local template's trailing checkboxes — is
+    ``file``; ``issue`` is the same single-ticket shape and shares its check. A text that fits no
+    shape is ``None``: it is not a ticket artifact at all. A single-ticket text that also carries
+    a ticket-like ``##`` title fits both and genuinely is ambiguous — a map with its own title
+    and one ticket with ticket-like sections cannot be told apart — so that raises rather than
+    guesses.
+    """
+    blocks = [title for title in TICKET_HEADING.split(text)[1:]
+              if not ORDINARY_SECTION.match(title.strip().splitlines()[0].strip())]
+    single_evidence = (H1_HEADING.search(text) is not None
+                       or ACCEPTANCE_HEADING.search(text) is not None
+                       or CHECKBOX_LINE.search(text) is not None)
+    shapes = []
+    if blocks:
+        shapes.append("list")
+    if single_evidence:
+        shapes.append("file")
+    if not shapes:
+        return None
+    if len(shapes) > 1:
+        raise AmbiguousArtifact(shapes)
+    return shapes[0]
+
+
+def _ticket_title(text):
+    """The ticket's own name: its first ``# `` heading, else empty."""
+    match = H1_HEADING.search(text)
+    if not match:
+        return ""
+    return text[match.end():].splitlines()[0].strip()
+
+
+def _blockers(body):
+    """Every ticket this block says blocks it, in either language."""
+    for match in BLOCKED_BY.finditer(body):
+        value = match.group("value").strip()
+        if not value or NO_BLOCKERS.match(value):
+            continue
+        for part in re.split(r"[,，、]", value):
+            part = part.strip()
+            if part:
+                yield part
+
+
+def _check_single_ticket(text, base_dir=None):
+    """One ticket: its own title, one acceptance section, real blockers and links."""
+    errors = []
+    title = _ticket_title(text)
+    label = title[:40] if title else "(untitled)"
+    heading = ACCEPTANCE_HEADING.search(text)
+    if heading:
+        rest = text[heading.end():]
+        sibling = ANY_HEADING.search(rest)
+        body = rest[:sibling.start()] if sibling else rest
+        if not BULLET_LINE.search(body) and not CHECKBOX_LINE.search(body):
+            errors.append(f"tickets: ticket ({label!r}) has no acceptance criteria")
+    elif not CHECKBOX_LINE.search(text):
+        errors.append(f"tickets: ticket ({label!r}) has no acceptance section "
+                      "(a heading or the local template's checkboxes)")
+    for reference in _blockers(text):
+        if title and reference == title:
+            errors.append(f"tickets: ticket ({label!r}) blocks itself")
+    errors.extend(_check_references(text, base_dir, label))
+    return errors
+
+
+def _check_ticket_list(text):
+    """A combined ``## <ticket>`` list: each block on its own, then the edges as a graph."""
+    blocks = TICKET_HEADING.split(text)[1:]
+    if not blocks:
+        return ["tickets: no '## ' ticket blocks found"]
+    titles = [block.strip().splitlines()[0].strip() if block.strip() else ""
+              for block in blocks]
+    known = set(titles)
+    edges = {}
+    errors = []
+    for block, title in zip(blocks, titles):
+        body = "\n".join(block.splitlines()[1:])
+        label = title[:40]
+        if not ACCEPTANCE_LINE.search(body) and not CHECKBOX_LINE.search(body):
+            errors.append(f"tickets: ticket ({label!r}) has no acceptance line")
+        references = list(_blockers(body))
+        edges[title] = references
+        for reference in references:
+            if reference == title:
+                errors.append(f"tickets: ticket ({label!r}) blocks itself")
+            elif reference not in known:
+                errors.append(f"tickets: ticket ({label!r}) is blocked by unknown ticket "
+                              f"({reference[:40]!r})")
+    for cycle in _cycles(edges, known):
+        errors.append("tickets: blocking cycle " + " -> ".join(cycle))
+    return errors
+
+
+def _cycles(edges, known):
+    """Every blocking cycle reachable through tickets that exist, each reported once.
+
+    A cycle is a defect of the graph, not of one ticket, so it is named by the path that closes
+    it; the check does not attempt to say which edge is "wrong".
+    """
+    state = {}
+    found = []
+
+    def visit(node, path):
+        state[node] = "visiting"
+        path = path + [node]
+        for target in edges.get(node, ()):
+            if target not in known:
+                continue
+            if state.get(target) == "visiting":
+                start = path.index(target)
+                found.append(path[start:] + [target])
+            elif target not in state:
+                visit(target, path)
+        state[node] = "done"
+
+    for node in edges:
+        if node not in state:
+            visit(node, [])
+    return found
+
+
+def _check_references(text, base_dir, label):
+    """A ticket that links a local file must link one that exists; a missing file is named."""
+    if not base_dir:
+        return []
+    errors = []
+    root = Path(base_dir)
+    for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text):
+        if target.startswith(("http://", "https://", "mailto:")):
+            continue
+        if not (root / target).exists():
+            errors.append(f"tickets: ticket ({label!r}) links a missing file ({target})")
     return errors
 
 
@@ -312,6 +548,23 @@ def ledger_path(run_id, home=None):
     return root / "runs" / run_id / "ledger.jsonl"
 
 
+def _resolve_flow_path(args):
+    """The explicit flow file wins, then the flow home, then the ledger's own Run directory.
+
+    Placing ``flow.jsonl`` beside ``ledger.jsonl`` by default means a coordinator who already
+    points the ledger somewhere does not have to point the flow somewhere else.
+    """
+    if getattr(args, "flow", None):
+        return Path(args.flow)
+    home = getattr(args, "flow_home", None)
+    if home:
+        return FLOW.flow_path(args.run_id, home)
+    ledger_home = getattr(args, "ledger_home", None)
+    if ledger_home:
+        return Path(ledger_home) / "runs" / args.run_id / "flow.jsonl"
+    return FLOW.flow_path(args.run_id)
+
+
 def _emit(payload):
     print(json.dumps(payload, ensure_ascii=False, indent=1))
 
@@ -327,10 +580,18 @@ def main(argv=None):
     resume_parser.add_argument("--run-id", required=True)
     resume_parser.add_argument("--ledger-home", default=None)
     resume_parser.add_argument("--ledger", default=None, help="read this file instead of a home")
+    resume_parser.add_argument("--flow", default=None,
+                              help="explicit process record; defaults beside the ledger")
+    resume_parser.add_argument("--flow-home", default=None,
+                              help="home holding runs/<id>/flow.jsonl")
 
     check_parser = subparsers.add_parser("exit-check", help="check one step's artifact")
     check_parser.add_argument("--step", required=True, choices=STEP_IDS)
-    check_parser.add_argument("--artifact", required=True, help="path to the artifact text")
+    check_parser.add_argument("--artifact", required=True, action="append",
+                              help="path to the artifact text; repeat for a ticket collection")
+    check_parser.add_argument("--source", default=None, choices=TICKET_SOURCES,
+                              help="ticket format: list (combined ## blocks), file (one local "
+                                   "ticket) or issue (one issue body); detected when omitted")
 
     args = parser.parse_args(argv)
 
@@ -340,28 +601,79 @@ def main(argv=None):
 
     if args.command == "resume":
         path = Path(args.ledger) if args.ledger else ledger_path(args.run_id, args.ledger_home)
+        flow_path = _resolve_flow_path(args)
+        flow_records, flow_problems = FLOW.read_records(flow_path)
+        if flow_records or flow_path.exists():
+            answer = FLOW.plan(flow_records)
+            answer["problems"] = flow_problems + answer["problems"]
+            answer["ledger"] = str(path)
+            answer["ledger_mode"] = "index only"
+            if flow_problems and answer["state"] != "uncertain":
+                answer["state"] = "uncertain"
+                answer["ready"] = []
+                answer["evidence_gaps"] = answer["evidence_gaps"] + [
+                    "the flow file has invalid records; resolve them before resuming"]
+            _emit(answer)
+            return 0 if answer["state"] != "uncertain" else 1
         records, problems, unknown = load_effective_records(path)
+        legacy = {"state": "legacy",
+                  "reason": "no explicit flow record; this is a five-position chain suggestion "
+                            "from an old ledger and cannot prove the current stage, gates or "
+                            "endpoint, nor that new work is authorized",
+                  "flow": str(flow_path)}
         if unknown is not None:
             _emit({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
                    "state": "unknown", "landed": [], "next": None,
-                   "reason": unknown["reason"], "history": unknown,
+                   "reason": unknown["reason"], "history": unknown, "legacy": legacy,
                    "problems": problems})
             return 0
         answer = next_step(records)
         answer.update({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
-                       "history": {"state": "ok", "reason": ""}, "problems": problems})
+                       "history": {"state": "ok", "reason": ""}, "problems": problems,
+                       "legacy": legacy})
         _emit(answer)
         return 0
 
     if args.command == "exit-check":
-        artifact = Path(args.artifact)
-        if not artifact.exists():
+        artifacts = [Path(path) for path in args.artifact]
+        missing = [str(path) for path in artifacts if not path.exists()]
+        if missing:
             _emit({"version": SCHEMA_VERSION, "step": args.step, "passed": False,
-                   "errors": ["artifact not found: " + str(artifact)]})
+                   "errors": ["artifact not found: " + path for path in missing]})
             return 1
-        errors = check_artifact(args.step, artifact.read_text(encoding="utf-8"))
-        _emit({"version": SCHEMA_VERSION, "step": args.step, "artifact": str(artifact),
-               "passed": not errors, "errors": errors})
+        errors = []
+        report = None
+        try:
+            if len(artifacts) == 1:
+                artifact = artifacts[0]
+                text = artifact.read_text(encoding="utf-8")
+                if args.step == "to-spec":
+                    report = inspect_spec(text)
+                    errors = report["native"]["errors"] + report["dispatch"]["errors"]
+                else:
+                    errors = check_artifact(args.step, text,
+                                            source=args.source, base_dir=artifact.parent)
+            else:
+                if args.step != "to-tickets":
+                    errors = ["--artifact may be repeated only for to-tickets (a collection)"]
+                for artifact in artifacts:
+                    errors.extend(
+                        f"{artifact.name}: {error}" for error in check_artifact(
+                            args.step, artifact.read_text(encoding="utf-8"),
+                            source=args.source or "file", base_dir=artifact.parent))
+        except AmbiguousArtifact as exc:
+            _emit({"version": SCHEMA_VERSION, "step": args.step, "passed": False,
+                   "errors": [str(exc)]})
+            return 2
+        payload = {"version": SCHEMA_VERSION, "step": args.step,
+                   "artifacts": [str(path) for path in artifacts],
+                   "passed": not errors, "errors": errors}
+        if report is not None:
+            payload["native"] = report["native"]
+            payload["dispatch"] = report["dispatch"]
+        if len(artifacts) == 1:
+            payload["artifact"] = str(artifacts[0])
+        _emit(payload)
         return 0 if not errors else 1
 
     parser.print_usage(sys.stderr)

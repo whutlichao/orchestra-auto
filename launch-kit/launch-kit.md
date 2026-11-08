@@ -239,7 +239,7 @@ Do **not** write a submission post — there is no submission channel. What a ma
 > than a hardcoded agent, native wake and message-ID reconciliation, decisions escalated to a human, gates by ticket type, evidence preserved
 > before any revert, bounded retries.
 >
-> 38 scenarios per language in `evals/`, plus simulated message-contract regression tests. MIT. Feedback welcome.
+> 52 scenarios per language in `evals/`, plus simulated message-contract regression tests. MIT. Feedback welcome.
 
 ### 6.4 X / Twitter
 
@@ -310,7 +310,7 @@ subreddits punish launch posts and reward "here is what went wrong for me".
 > question before answering it, and send scope changes to the human; run gates by ticket type; keep
 > the evidence before reverting an odd diff; stop after bounded retries.
 >
-> Orca wakes the coordinator natively. The packages include 38 prompt-level scenarios per
+> Orca wakes the coordinator natively. The packages include 52 prompt-level scenarios per
 > language and simulated message-contract regression tests.
 >
 > It's deliberately not portable: the judgements transfer, the commands don't. Curious whether
