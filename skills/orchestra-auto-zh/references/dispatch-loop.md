@@ -116,7 +116,7 @@ GitHub / GitLab 时，在目标仓库内 `gh repo view` / `glab repo view` 能�
 退出 `0` 已初始化、`1` 未初始化（三项缺一）、`2` 无法判定；
 取证以脚本为准，`unknown` 按未判定处理，不当作未初始化，逐退出码的处理见 SKILL.md §1.1。
 `setup-matt-pocock-skills`
-带 `disable-model-invocation: true`，只能按路径点名，别指望它从技能清单里自己出现。它一次问一个问题
+带 `disable-model-invocation: true`，须明确指定名称、调用形式和路径，别指望它从技能清单里自己出现。它一次问一个问题
 （追踪器 / triage 标签词表 / 领域文档布局），问回来的按 SKILL.md §5 处理；产物属治理文档，仍走
 worker 落盘并核验初始化产物，不落 main；grill 专用的 G-docs 判据不用于 setup。
 

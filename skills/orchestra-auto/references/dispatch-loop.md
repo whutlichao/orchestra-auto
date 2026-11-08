@@ -127,7 +127,7 @@ criteria are exactly what `scripts/init-check.py check` reports, next to a `repo
 establishes which root they are read from: exit `0` initialized, `1` uninitialized
 (one criterion is missing), `2` unknown (the probe could not decide). Take the evidence from the script,
 and read `unknown` as undecided — never as uninitialized; SKILL.md §1.1 gives the per-exit handling.
-`setup-matt-pocock-skills` carries `disable-model-invocation: true`, so it only ever arrives by path —
+`setup-matt-pocock-skills` carries `disable-model-invocation: true`, so explicitly name it and its path —
 never expect it to show up in a skill list on its own. It asks one question at a time (tracker, triage
 label vocabulary, domain doc layout); handle those answers per SKILL.md §5. Its output is governance
 documentation and lands through a worker with initialization artifacts verified, never on main.

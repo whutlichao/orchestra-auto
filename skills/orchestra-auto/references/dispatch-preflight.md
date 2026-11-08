@@ -141,7 +141,7 @@ falls off. The parenthesised section is where it belongs.
       the real diff afterwards.
 - [ ] **The spec has all five elements** (`spec-elements`; judgment): Target / Change /
       Constraints / Ownership / Observable acceptance, with the BEHAVIOR RULE paragraph and the
-      pre-skill's absolute path as the first two items (§4.4).
+      complete pre-skill block as the first two items, plus the skill execution evidence requirement (§4.4).
 - [ ] **The worktree parameters are right** (`worktree-parameters`; judgment):
       `--worktree new-top-level` + `--name <ticket slug>` + `--agent <§0's worker>`; a
       long-horizon map uses `--name <feature>-integration` and one worker. If the session cwd

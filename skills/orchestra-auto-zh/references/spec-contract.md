@@ -8,15 +8,19 @@ Guide 的 Task-spec contract 五要素必须齐：**Target / Change / Constraint
 Observable acceptance**。外加第一条固定为：
 
 ```text
-前置 skill：<绝对路径>——开工前完整读它，按其流程执行，不许跳过。
+前置 skill：
+- 名称：<本阶段 skill 名称>
+- 显式调用：<当前 agent 支持的调用形式；未知则写未确认>
+- 文件位置：<实际绝对路径>/SKILL.md
+skill 执行要求：本任务明确要求使用该 skill。优先按宿主支持的方式显式调用；调用失败或不支持时记录原因。仅在宿主规则允许时读取文件并遵循流程；若宿主禁止替代执行，停止并报告阻塞。按 skill 要求处理配套文件。直接读取不得报告为原生调用。
 ```
 
-**这一行是其余 skills 的唯一入口。** 没有它，worker 就不会去读 grill-with-docs /
-tdd / diagnosing-bugs / code-review，于是「不用其他 skills」的故障就复现了。路径写在 spec 里，
-让 worker 自己读全文，不要由你转述。**这条路径是本轮实际所处阶段对应的 skill**（SKILL.md §1），
+**这一区块是本阶段 skill 的交接契约。** 没有它，worker 可能不会加载 grill-with-docs /
+tdd / diagnosing-bugs / code-review，导致「不用其他 skills」的故障。路径写在 spec 里，
+让 worker 自己加载完整内容，不要由你转述。**这条路径是本轮实际所处阶段对应的 skill**（SKILL.md §1），
 不是按通道固定：已持有有效 spec 的一轮写 `to-tickets`，有完整票图的写 `implement-spec`，
 修 bug 写 `diagnosing-bugs` 与 `implement`。落笔前先确认路径可解析、可读；
-不可读就带证据报告，而不是编一个路径或擅自安装本轮未获授权的 skill。
+不可读就带证据报告，而不是编一个路径或擅自安装本轮未获授权的 skill。只写已确认受该 agent 支持的调用形式；未知写未确认，不假定 spec 中的命令会被宿主解析为原生调用。
 
 实施类 B 通道的 spec 模板；只写本票适用的门禁。文档票按对应文档门禁改写：
 
@@ -47,19 +51,23 @@ tdd / diagnosing-bugs / code-review，于是「不用其他 skills」的故障�
    交付前检查 `git status` 与 diff；异常大 diff 先取证并按恢复参考逐文件处理。
    仅在确认仓库确有自动重排风险时，开工前按恢复参考配置本地忽略的 formatter 覆盖项。
 
-前置 skill：<绝对路径>——开工前完整读它，按其流程执行，不许跳过。
+前置 skill：
+- 名称：<本阶段 skill 名称>
+- 显式调用：<当前 agent 支持的调用形式；未知则写未确认>
+- 文件位置：<实际绝对路径>/SKILL.md
+skill 执行要求：本任务明确要求使用该 skill。优先按宿主支持的方式显式调用；调用失败或不支持时记录原因。仅在宿主规则允许时读取文件并遵循流程；若宿主禁止替代执行，停止并报告阻塞。按 skill 要求处理配套文件。直接读取不得报告为原生调用。
 Target：<文件/模块>
 Change：<要产出的具体结果>
 Constraints：<不许碰的边界；术语用 codebase-design 词汇>
 Ownership：<本票可编辑范围；票据正本在 worktree 内，你负责 Status 流转与 Answer 追加>
 Observable acceptance：<适用的测试命令与可观察结果；修复类红→绿证据；需要时含 code-review 双轴。项目文件有改动时：解析并使用本机 pr skill 编写 PR body，推分支，以 --body-file 创建或更新 PR，再把 PR 号、body 路径与 CI 读数记入 GitHub 与仓库外台账，不为它们追加项目提交（用户或仓库明确要求把该事实写进仓库时，以该规则为准）。PR 的目标仓库与 base 要写进 spec，这也是本行的一部分：写明 PR 落到哪个仓库、那边的 base 是哪个分支——fork 时是 upstream 仓库的默认分支，绝不是 fork 自己的 main——不得留给 gh 默认解析；形态是 `gh pr create --repo <upstream-owner/repo> --base <默认分支> --head <fork-owner>:<branch>`。最后发送并核实 worker_done 回执>
+skill 执行证据：<名称和路径；加载方式：原生调用 / 直接读取 / 未加载；可核查的调用或读取记录，或失败原因；关键步骤及产物>
 提问通道：orchestration ask（禁 AskUserQuestion）。
 ```
 
 票面要求 Orca 实际渲染的截图时，spec 再加一行 `视觉证据：<plan 路径> → scripts/visual-evidence.py run --plan <plan> --report <report>`，点明禁止最小化窗口与 `set frontmost`，报告必须 `restored` 与 `focusRestored` 均为真；协议见[视觉证据](visual-evidence.md)。
 
-长程票图下，`前置 skill` 是 `implement-spec` 的绝对路径。另加 `skill 解析：`（有 Skill tool 时
-用 `tdd` / `code-review`；没有就直接读它们的绝对路径）、`PR skill：`（`pr` 的绝对路径）、
+长程票图下，`前置 skill` 区块指定 `implement-spec`。另加 `skill 解析：`（为 `tdd` / `code-review` 按同一调用与后备规则写名称、调用形式及绝对路径）、`PR skill：`（`pr` 的绝对路径）、
 `Tracker：`、`Spec：`、`Tickets：` 与 `Integration branch：`。worker 必须回报图与 frontier、
 每票的 branch 与 commit、integration branch、唯一的集成 PR、`Closes` 链接，以及带证据的
 Door 声明。嵌套的决策类问题经顶层 worker 上抛；worker 不得替人类作答。逐票 TDD 加

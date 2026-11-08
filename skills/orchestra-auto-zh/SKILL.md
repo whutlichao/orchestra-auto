@@ -104,7 +104,7 @@ worktree 名派活时再取 slug。
 报告的就是[派活闭环](references/dispatch-loop.md) §4.3.0 的判据）。退出 `0` → 直接进本阶段 skill。
 退出 `1` → **先落一次初始化，再进本阶段的 skill**：前置 skill 写
 `<绝对路径>/setup-matt-pocock-skills/SKILL.md`（派活前确认可读；它带 `disable-model-invocation: true`，
-只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 核验初始化产物后
+须明确指定名称、调用形式和路径，不要指望它自动出现在清单里），worker 在独立 worktree 落盘，coordinator 核验初始化产物后
 复跑脚本，通过才进阶段 skill。退出 `2` → 脚本无法判定（没有 `git`、tracker CLI 不可用、追踪器未文档化）：
 按 §9 带脚本证据报告，不得把 `unknown` 当作「未初始化」去跑 setup。
 把报告里的 `status` 与被探仓库的 `git rev-parse HEAD` 写进模式声明与收口报告。

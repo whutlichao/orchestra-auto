@@ -111,7 +111,7 @@ Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信�
       派活前依据 Target、Change 和预期文件判断；worktree 尚未创建，不运行针对它的 `git diff`。
       文档票只写适用的文档门禁，不把源码测试或双轴源码 review 写成验收项。完成后再以真实 diff 复核票型。
 - [ ] **spec 五要素齐**（`spec-elements`；judgment）：Target / Change / Constraints /
-      Ownership / Observable acceptance，且开头两段是 BEHAVIOR RULE 与前置 skill 绝对路径（§4.4）。
+      Ownership / Observable acceptance，且开头是 BEHAVIOR RULE 与完整前置 skill 区块；spec 含 skill 执行证据要求（§4.4）。
 - [ ] **worktree 参数对**（`worktree-parameters`；judgment）：`--worktree new-top-level` +
       `--name <票 slug>` + `--agent <§0 的 worker>`；长程票图用 `--name <feature>-integration`，
       只派一个 worker；会话 cwd 与目标 repo 不一致时已加 `--repo <selector>`（§4.3）。
