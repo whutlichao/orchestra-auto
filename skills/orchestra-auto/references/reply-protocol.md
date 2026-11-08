@@ -52,8 +52,9 @@ Pause the reply to the worker and put three things in front of the human:
 Only after the human confirms or changes it do you reply to the worker with
 `reply --id <original message_id>`. When the human's choice differs from yours, theirs wins; do
 not relitigate. If you have a genuinely strong technical objection, say it once, and if the human
-does not change their mind, follow theirs. A worker's `ask` blocks — it waits for your answer —
-so make the question complete in one pass to reduce round trips.
+does not change their mind, follow theirs. Work dependent on the decision waits for the answer;
+ordinary `ask` and `--wait` / `--resume` have different call-waiting behaviour. Follow the
+version-matched guide for wake and continuation.
 
 ## 5.3 Detail-class: the coordinator answers
 

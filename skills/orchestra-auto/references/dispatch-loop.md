@@ -100,10 +100,13 @@ with an existing ticket map enters at `implement-spec`, a research question answ
 
 | This round's stage | Pre-skill |
 | --- | --- |
-| Explanation, status, discussion | none (channel A) |
+| Explanation, status, discussion | none (channel A), unless an interactive skill is requested |
+| Explicit non-code interview | `grill-me` → `grilling` |
 | Bounded change, bug fix, existing spec or ticket | `implement` (`diagnosing-bugs` first for a bug) |
 | Research that lands on disk | `research` |
 | A design made sharp against the codebase | `grill-with-docs` |
+| Large foggy effort spanning sessions: chart or work a decision map | `wayfinder` |
+| A decision needing a runnable throwaway to react to | `prototype` |
 | A spec | `to-spec` |
 | A ticket split | `to-tickets` |
 | Implementation of a complete map | `implement-spec` |
@@ -127,7 +130,36 @@ and read `unknown` as undecided — never as uninitialized; SKILL.md §1.1 gives
 `setup-matt-pocock-skills` carries `disable-model-invocation: true`, so explicitly name it and its path —
 never expect it to show up in a skill list on its own. It asks one question at a time (tracker, triage
 label vocabulary, domain doc layout); handle those answers per SKILL.md §5. Its output is governance
-documentation and still lands through a worker plus G-docs acceptance, never on main.
+documentation and lands through a worker with initialization artifacts verified, never on main.
+The grill-specific G-docs criteria do not apply to setup.
+
+## Entry evidence
+
+Before selecting an entry, establish the evidence for the user's goal, observable behaviour,
+scope, acceptance and key choices. For unresolved trade-offs, use `wayfinder` if the effort spans
+sessions and the route is foggy; otherwise use `grill-me` for a non-code interview or
+`grill-with-docs` for codebase/domain alignment. Record which decisions need the user. Enter at an existing spec or ticket
+only after checking that it applies to this request, is current and resolves those questions. For
+a small change or fix entered directly at implementation, record the evidence for scope,
+acceptance and settled key choices in the mode declaration; re-route when exploration reveals a
+new fork. The absence of a spec is not a reason to skip grill. When the user explicitly asks for
+grill, do it even for a small change.
+
+`grill-me` wraps `grilling`; `grill-with-docs` invokes both `grilling` and `domain-modeling`.
+Resolve and pass all required skill paths to a worker; reading a wrapper alone is not evidence its
+dependencies ran. Preserve the user's questions, answers and constraints across fresh contexts.
+`grilling` and `prototype` require the user's real decisions or feedback. Respect host restrictions
+on user-invoked entrypoints; if a required skill is unavailable, report the failed resolution.
+
+For `wayfinder`, specify **chart** or **work** and pass the destination or map pointer and tracker
+operations. Chart grills the destination and breadth, creates the map and specifiable decision
+tickets, wires blockers, starts research where authorized, then stops. Work claims a frontier
+ticket, resolves it by type and updates the map; at most one non-research ticket per session.
+Research is AFK, prototype and grilling are HITL, task is HITL or AFK depending on the blocker.
+Decision tickets differ from implementation tickets. Validate each invocation and the completed
+map separately under G-wayfinder. Research and prototype may use throwaway branches and context
+pointers without a project PR when authorized; do not apply the implementation PR contract to a
+disposable artifact.
 
 ## 4.3.1 Confirming the turn started after dispatch
 

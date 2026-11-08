@@ -6,7 +6,7 @@
 
 An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges when you authorize it; a PR-only request stays open. You interrupt for a decision or a one-way door — not between steps.
 
-The chain is his, unchanged. What this repository adds is what a chain needs to run unattended on Orca: which step runs next, where the worker lands, what an artifact must carry before the next step consumes it, when a merge is automatic, and where a human has to interrupt. Two commands answer the first and third from the record instead of from memory: `scripts/chain.py resume` and `scripts/chain.py exit-check`.
+The skills are his; this repository combines them into an opinionated Orca workflow with its own entry criteria and gates. It adds where the worker lands, what evidence is checked, when a merge is automatic, and when a human decides. `scripts/chain.py resume` and `scripts/chain.py exit-check` help inspect records and artifact shape, within the limits described below.
 
 ![Say it once: Matt Pocock's chain runs on Orca, and the human only interrupts at a gate](docs/demo/cover-en.png)
 
@@ -18,11 +18,13 @@ Two installable variants carry the same practice in two languages. The command a
 
 ## What it is
 
-The planning chain is Matt Pocock's and stays in the order he publishes. This repository adds only how each step runs on Orca: who invokes it, which worktree the worker lands in, when a merge is automatic, and when a human is asked.
+The planning route combines Matt Pocock's skills; the full sequence and its gates are this project's choices, not a mandatory upstream chain.
 
 | Skill | What that step does |
 | --- | --- |
+| [`grill-me`](https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md) | Runs `grilling` for an interactive interview without domain documentation |
 | [`grill-with-docs`](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) | Interviews against the codebase until this change is sharp; terms go to the glossary, hard decisions to ADRs |
+| [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) | Charts and works a dynamic decision map when planning is too large for one session and the path is unclear |
 | [`to-spec`](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-spec/SKILL.md) | Turns what is settled into a spec and publishes it to the issue tracker; it does not interview again |
 | [`to-tickets`](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md) | Splits a plan, spec or conversation into tickets with blocking edges — thin, complete tracer bullets |
 | [`implement`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement/SKILL.md) | Builds one settled piece of work; drives `tdd` at the agreed seams and runs `code-review` before committing |
@@ -136,8 +138,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 24,027 (−20.5%) | 7,552 → 6,006 |
-| Chinese | 24,359 → 21,044 (−13.6%) | 6,089 → 5,261 |
+| English | 30,208 → 24,175 (−20.0%) | 7,552 → 6,043 |
+| Chinese | 24,359 → 21,781 (−10.6%) | 6,089 → 5,445 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 

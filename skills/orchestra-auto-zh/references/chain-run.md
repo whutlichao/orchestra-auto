@@ -48,6 +48,9 @@ python3 scripts/chain.py resume --run-id <run_id> --ledger /path/to/ledger.jsonl
 `problems` 记录读的时候跳过了什么：末尾的半行会被丢弃，损坏的完整行会按行号报告。悄悄丢一条记录的续跑会声称错误的位置，比拒绝回答更糟。
 
 答案是一个位置，不是一次派活。它只说明从哪继续；怎么继续——通道、agent、worktree、spec——仍然由 §4 决定。
+这个脚本只按完整五位置链检查本 Run 的验收记录，不能识别直接实施、已有 spec/票的入口或仅设计的交付终点。
+这些路径中，早期门禁缺记录不等于必须补跑，也不能凭它的 `complete` 判定授权范围已经交付；
+对照模式声明、入口证据与实际交付终点判断，缺少依据时先核实。
 
 ## 出口检查：产物形状的地板
 
@@ -60,6 +63,10 @@ python3 scripts/chain.py exit-check --step to-tickets --artifact /path/to/ticket
 
 - **`to-spec`** —— spec 带一行 `Test tier:`（narrow 或 wide，附理由），并且有一个至少包含一条可验收条目的验收小节。被下一个标题切断的小节按空处理。
 - **`to-tickets`** —— 每个 `## ` 票块都带一行验收：`验收：`、`Acceptance:`、`Done when:` 或 `完成标准`。没有验收行的票没法演示，也就没法验收。
+
+票据检查只接受本项目的合并 `## <票名>` 格式，不能解析上游的一票一文件模板或 tracker issue 的
+章节：可能误报或把章节误当多张票。不要用它判定这些格式；按 G-tickets 核验真实票据及验收标准。
+spec 的格式地板也是本项目附加要求，并非上游默认模板。
 
 其余步骤会返回一句拒绝，并点名真正的信号（测试运行、review、PR 状态）——假装检查测试运行，比直说不查更糟。那些事实属于 `acceptance.py`（`verify`）和 `closeout.py`（`reconcile`）。
 

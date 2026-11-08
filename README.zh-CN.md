@@ -6,7 +6,7 @@
 
 这是一套把 [Matt Pocock 的工程 skill 链](https://github.com/mattpocock/skills) 放到 [Orca](https://www.onorca.dev/) 上**整条跑完**的 Agent Skill：你说一句要什么，coordinator 按格派 worker、每格落独立 worktree、产物过门禁，在获授权时合并 PR；只要求开 PR 时保留开放状态。你只在需要决定和单向门上被打断，不是在格与格之间。
 
-链是他的，一格没改。这个仓库补的是「一条链要在 Orca 上无人值守跑下去」所需的那些东西：下一格是哪格、worker 落在哪、产物进入下一格前必须带什么、什么时候合并是自动的、人必须在哪里插进来。其中两件事现在由命令回答，而不靠记忆：`scripts/chain.py resume` 和 `scripts/chain.py exit-check`。
+这些 skill 来自 Matt Pocock；本仓库将它们组合成带有自身入口判据和门禁的 Orca 工作流，规定 worker 落点、证据检查、自动合并和人工决策。`scripts/chain.py resume` 与 `scripts/chain.py exit-check` 辅助检查记录和产物形状，适用边界见下文。
 
 ![说一句，整条链自己跑完；人只在门禁处被打断](docs/demo/cover-zh.png)
 
@@ -18,11 +18,13 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto
 
 ## 这是什么
 
-规划链是 Matt Pocock 的，保持他发布的顺序。本仓库只写每一格在 Orca 里怎么跑：谁调用、worker 落在哪个 worktree、什么时候自动合并、什么时候问人。
+规划流程组合了 Matt Pocock 的 skill；完整顺序和门禁是本项目的选择，并非上游强制的唯一路径。
 
 | Skill | 这一格做什么 |
 | --- | --- |
+| [`grill-me`](https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md) | 调用 `grilling` 进行交互访谈，不附带领域文档 |
 | [`grill-with-docs`](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) | 对着代码库追问，直到这次改动说清；术语进术语表，难解释的决定进 ADR |
+| [`wayfinder`](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md) | 规划超过一个 session 且路径不明时，建立并逐票推进动态决策地图 |
 | [`to-spec`](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-spec/SKILL.md) | 把已经说清的内容收成 spec 并发到 issue tracker；这一格不再追问 |
 | [`to-tickets`](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md) | 把计划、spec 或对话拆成带阻塞关系的票——细而完整、能单独演示的 tracer bullet |
 | [`implement`](https://github.com/mattpocock/skills/blob/main/skills/engineering/implement/SKILL.md) | 做一块已经说清的工作；按约定的 seam 走 `tdd`，提交前跑 `code-review` |
@@ -136,8 +138,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 24,027（−20.5%） | 7,552 → 6,006 |
-| 中文 | 24,359 → 21,044（−13.6%） | 6,089 → 5,261 |
+| 英文 | 30,208 → 24,175（−20.0%） | 7,552 → 6,043 |
+| 中文 | 24,359 → 21,781（−10.6%） | 6,089 → 5,445 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
