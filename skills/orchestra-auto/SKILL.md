@@ -83,12 +83,10 @@ All six columns need **concrete values**; "TBD" is not allowed. When not dispatc
 type** (§4.3), written as its real absolute path, confirmed readable before dispatch. The worktree
 name is a slug you take at dispatch time; it is not part of the delivery endpoint.
 
-`worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is
-missing or unrecognized; pass the selected value explicitly. The routing table above points at the
+`worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is missing or unrecognized; pass the selected value explicitly. The routing table above points at the
 [dispatch loop](references/dispatch-loop.md) for the rationale and every flag.
 
-Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be
-unsupported, report per §9 and stop rather than guessing or substituting. §4.3's table gives
+Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be unsupported, report per §9 and stop rather than guessing or substituting. §4.3's table gives
 start/title criteria only, never defaults or disabled state.
 
 ## 1. Channel and delivery endpoint
@@ -97,11 +95,13 @@ Record what the user asked for and where they want it to stop. Project changes o
 
 | Request | Channel | Handling |
 | --- | --- | --- |
-| Explanation, status, discussion, or a verbal research conclusion | A | Answer directly; no worker, no writes |
+| Explanation, status, discussion, or a verbal research conclusion | A | Answer directly; follow an explicitly requested interview skill |
 | A clearly bounded small change, a bug fix, an existing spec or ticket | B | Read-only exploration, then dispatch an implementation worker; pre-skill `implement` (`diagnosing-bugs` first for a bug) |
 | Research, design, spec or tickets that must land on disk | B/C | The matching `research` / `grill-with-docs` / `to-spec` / `to-tickets`; stop at the named artifact |
 | A multi-ticket or not-yet-settled full implementation request | C | Converge on requirements and dependencies first; once G-tickets accepts a complete map, dispatch **one** long-horizon `implement-spec` worker |
 | External issues/PRs, conflicts, or terminology governance | B/C | The repository's triage, conflict-handling or `domain-modeling` flow |
+
+Select the entry using the evidence checks in [dispatch loop](references/dispatch-loop.md#entry-evidence).
 
 ### 1.1 Repository bootstrap gate
 
@@ -110,7 +110,7 @@ Before a planning or implementation stage, probe the repo rather than re-derive 
 [the dispatch loop](references/dispatch-loop.md) §4.3.0's criteria; both bundles ship it. Exit `0` → enter
 the stage skill directly. Exit `1` → **land the initialization first, then enter the stage**: pre-skill
 `<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable; `disable-model-invocation: true`
-means path-only), a worker lands it in an isolated worktree, the coordinator accepts it under G-docs, and
+means path-only), a worker lands it in an isolated worktree, the coordinator verifies the initialization artifacts, and
 re-runs the probe before the stage skill. Exit `2` → the probe could not decide (no `git`, no usable
 tracker CLI, an undocumented tracker): report per §9 with its evidence; `unknown` is not uninitialized
 and does not start setup. Record the report's `status` and the probed repo's `git rev-parse HEAD` in the

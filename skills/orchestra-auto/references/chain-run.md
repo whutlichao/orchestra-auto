@@ -59,6 +59,11 @@ claim the wrong position, which is worse than refusing to answer.
 
 The answer is a position, never a dispatch. It says where to continue; §4 still decides how —
 channel, agent, worktree and spec.
+The script checks the five-position full chain against this Run's acceptance records only. It
+cannot identify a direct-implementation entry, an existing spec or ticket, or a design-only
+endpoint. On those paths an earlier missing gate does not by itself require replay, and `complete`
+does not establish delivery of the authorized scope. Compare the mode declaration, entry evidence
+and actual delivery endpoint; resolve missing evidence before acting.
 
 ## Exit checks: the floor under an artifact
 
@@ -76,6 +81,12 @@ implements whatever it is handed:
 - **`to-tickets`** — every `## ` block carries an acceptance line: `验收：`, `Acceptance:`,
   `Done when:` or `完成标准`. A ticket without one cannot be demonstrated, so it cannot be
   accepted.
+
+The ticket check accepts this project's combined `## <ticket>` format only. It does not parse
+upstream's one-file-per-ticket template or the sections in a tracker issue: those can be rejected
+or misread as several tickets. Do not use this check as a verdict on those formats; verify the
+actual tickets and their acceptance criteria under G-tickets. The spec floor is also a project
+addition, not a claim about upstream's default template.
 
 Every other step returns a refusal naming the real signal (the test run, the review, the PR
 state), because pretending to check a test run would be worse than declining. Those facts belong

@@ -20,22 +20,24 @@ criteria must not be borrowed from each other).
 
 ## G-docs — requirement alignment (the grill-with-docs path: document structure completeness)
 
-**It only covers the design documents grill produces.** The wayfinder path goes through
-G-wayfinder.
+**Accept the outcome of grill.** The wayfinder path goes through G-wayfinder.
 
-- The spec/design file exists, and its sections are exactly the repository's effort-template
-  sections, with no freestyle sections and no leftover draft code blocks.
-- Terminology decisions are landed inline in `CONTEXT.md` (not left as a placeholder).
-- An ADR exists only when all its conditions are met; when they are not, there is no ADR
-  (**less is a pass**).
-- The design tree's frontier is empty: no open questions, no unresolved-decision placeholders.
-- The worker's Answer shows the grill rounds and where each round's answers went.
+- Record each round's questions, answers, rationale and destinations. Explore facts; a
+  recommendation cannot substitute for the user's decision.
+- The design tree's frontier is empty and the user confirms shared understanding. Unresolved
+  questions cannot pass the gate.
+- Record resolved terminology when needed, using the target repository's domain-doc conventions;
+  no new terminology means no file is required.
+- Offer an ADR only for a hard-to-reverse decision that is surprising without context and has
+  real trade-offs, following repository conventions.
+- When the user or repository requires a design document, verify its content and conventions;
+  upstream grill itself requires neither a fixed template nor a design file.
 
 ### G-docs is not the end of the line
 
 A full implementation request normally runs `grill-with-docs → to-spec → to-tickets →
-implement-spec`. G-docs accepts only the design stage; once the design file's PR passes G-merge and
-reaches the authorized endpoint, record the follow-up entry point and stop if this round asked only for design,
+implement-spec`. G-docs accepts only alignment; apply G-merge to authorized project changes. Record the
+follow-up entry point and stop if this round asked only for design,
 or continue into to-spec and to-tickets if this round includes implementation. See SKILL.md §7.
 
 ---
@@ -47,21 +49,25 @@ directions undecided)" and this round uses `wayfinder`. First check whether the 
 already has wayfinding conventions; do not invent labels or mappings when they are missing.
 
 **Read the repository's own wayfinding section first**, then run this section's criteria: the map
-and its child tickets, native blocking, frontier queries, claiming and resolving all live there.
+and its child tickets, blocking, frontier queries, claiming and resolving all live there.
 **This section only covers what to accept.**
 
+**Chart acceptance** is separate from map completion: check the agreed destination, breadth-first
+grill, map, typed tickets and blockers, fog and authorized research handoffs. Chart ends with open
+decisions; those do not fail chart acceptance. If there is no fog and the effort fits one session,
+ask how to proceed instead of forcing a map. **Work acceptance** checks a claimed ticket's resolution
+comment, closure and map pointer, newly specified tickets/fog updates, and real user participation
+for HITL. A work session resolves at most one non-research ticket. Only apply the completion checks
+below when the map is claimed complete.
+
 - **The map exists and is a single issue**, carries the map label, and its body has the four
-  sections: destination / notes / decisions so far / not yet specified (plus optional out of
-  scope).
+  sections: destination / notes / decisions so far / not yet specified / out of scope.
 - **Every child ticket is a decision ticket, not an implementation slice**: its body answers only
   "what has to be decided", and it carries a type label (research / prototype / grilling / task).
-  **Criterion**: the ticket's output is **one decision**, not a deliverable; if it says "do a
-  thing" (write code, change config), it is an SKILL.md §7 implementation ticket and does not
-  belong on this map.
-- **Blocking uses the tracker's native dependency relations**, not a hand-written line in the
-  body — only native relations let the tracker UI draw the frontier **visibly**, and that view is
-  how a human judges "which one do I take next". Bot/API work takes the database id, not the
-  issue number (commands are in the repository's wayfinding section).
+  Research can produce facts, and a task can do prerequisite work that unblocks a decision; neither
+  is an implementation slice delivering the destination.
+- **Blocking uses native dependencies when supported**, otherwise the tracker's documented fallback.
+  Verify that frontier queries account for that representation and that every edge is real.
 - **Sort every child ticket into one of four states before judging anything**: *takeable* (no open
   blocker, no assignee), *in progress* (assigned, decision not yet recorded), *blocked* (at least
   one open blocker), *done* (the decision is recorded and the tracker closed it). Write the four
@@ -71,7 +77,7 @@ and its child tickets, native blocking, frontier queries, claiming and resolving
   different situations produce it: every ticket assigned, every remaining ticket blocked, or the
   work genuinely finished. Only the last one closes this stage. The closing condition is: every
   required decision is *done*, no ticket is left in progress or blocked with work unfinished, and
-  **nothing in "not yet specified" can still become a ticket** (the fog has cleared). When the
+  **"not yet specified" contains no unresolved in-scope fog** (the fog has cleared). When the
   frontier is empty but tickets are in progress or blocked, the stage is **not** done: wait for
   them, unblock them, or report the blockage — do not accept the map.
 - **The two conditions are verified separately**: an empty frontier ≠ cleared fog (the first only

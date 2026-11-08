@@ -19,18 +19,18 @@
 
 ## G-docs — 需求对齐（grill-with-docs 那条路：文档结构完整性）
 
-**只管 grill 产出的设计文档。** wayfinder 那条路走 G-wayfinder。
+**验收 grill 的对齐结果。** wayfinder 那条路走 G-wayfinder。
 
-- spec/文档文件存在，章节严格等于 repo effort 模板的章节，无自由发挥章节、无草案代码块残留。
-- 术语决议已 inline 落进 `CONTEXT.md`（不是「待定」占位）。
-- ADR 只在三条件全满足时存在；不满足时不存在 ADR（**少即是过**）。
-- design tree 的 frontier 为空：没有悬而未决的问题、没有「open 决策」占位符。
-- worker Answer 里能看到 grill 轮次记录与每轮应答去向。
+- 记录每轮问题、回答、依据和落点；事实由探索取得，用户的决策不能由推荐答案替代。
+- design tree 的 frontier 为空，用户确认已达成共同理解；未解决的问题不能标成通过。
+- 确有需要记录的术语时，按目标仓库的领域文档约定及时落盘；没有新术语无需创建文件。
+- ADR 仅在难以撤销、缺少背景令人意外且存在真实取舍三条件均满足时提出，遵守仓库约定。
+- 用户或仓库要求设计文档时核验其内容与约定；上游 grill 本身不要求固定模板或必有设计文件。
 
 ### 过了 G-docs 之后还没完
 
 完整实施请求通常经过 `grill-with-docs → to-spec → to-tickets → implement-spec`。
-G-docs 只验收设计阶段；设计文件的 PR 通过 G-merge 并到达用户授权的交付终点后，若本轮只要求设计，
+G-docs 只验收对齐阶段；有授权落盘的项目改动时按 G-merge 处理。若本轮只要求设计，
 在报告里记录后续入口并停止；若本轮包含实施，继续 to-spec 与 to-tickets。见 SKILL.md §7。
 
 ---
@@ -40,25 +40,29 @@ G-docs 只验收设计阶段；设计文件的 PR 通过 G-merge 并到达用户
 **适用条件**：§1 把输入判成「大到装不进一个 session、fog 重（多方向未定）」且本轮
 使用 `wayfinder`。先检查目标仓库是否已有 Wayfinding 约定；缺失时不要自行假设标签和映射。
 
-**先读仓库自己的 Wayfinding 操作节**再跑本节的判据：map 与子票、原生阻塞、frontier 查询、
+**先读仓库自己的 Wayfinding 操作节**再跑本节的判据：map 与子票、阻塞、frontier 查询、
 认领、解决的具体命令都住在那里。**本节只管验收什么。**
 
+**建图验收**与地图完成验收分开：核对已对齐的目的地、广度追问、地图、类型化票与阻塞、fog 和
+获授权的研究交接。建图结束时有未解决票是正常的，不因此判失败。若无 fog 且一 session 可完成，
+询问如何继续，不强制建图。**逐票验收**核对先认领、resolution comment、关票与地图指针、
+新增票及 fog 更新；HITL 核对用户真实参与。每 session 最多解决一张非 research 票。
+只有声称整张地图完成时，才应用下列完成判据。
+
 - **map 存在且是单一个 issue**，挂 map 标签，正文含四节：destination / notes /
-  decisions so far / not yet specified（+ out of scope 可选）。
+  decisions so far / not yet specified / out of scope。
 - **每张子票是「决策票」而不是实施切片**：body 只回答「要定的是什么」，且带类型标签
   （`research` / `prototype` / `grilling` / `task`）。
-  **判据**：票的产出是**一个决定**，不是一段交付物；若它是「做一件事」（写代码、改配置），
-  那是 SKILL.md §7 的实施票，不属于这张 map。
-- **blocking 用 tracker 的原生依赖关系**，不是正文里手写一行——原生关系才能在 tracker UI 里
-  **看得见**地画出 frontier，而那正是人判断「下一张拿哪张」的界面。机器人线取 database id，
-  不是 issue 编号（命令见仓库的 Wayfinding 操作节）。
+  research 可以产出事实，task 可以完成解除决策阻塞的前置工作；它们不是交付目的地的实施切片。
+- **blocking 在支持时使用原生依赖**；不支持时按 tracker 记录的 fallback 表示。核对 frontier
+  查询能识别该表示，且每条依赖确实存在。
 - **下判断之前先把每张子票归入四种状态之一**：*可领取*（无开放阻塞、无 assignee）、*处理中*
   （已有 assignee、决定还没落盘）、*阻塞*（至少一个开放 blocker）、*完成*（决定已落盘且 tracker
   已关闭该票）。把这四个数写下来——过滤过的 tracker 视图会让第二、第三种状态隐形，
   而「frontier 为空」正是这样被误当成「图做完了」。
 - **frontier 为空不等于完成。** 它只说明当前没有票可拿，而三种不同情形都会产生它：全部票已分配、
   剩下的票全部阻塞、或工作真的做完了。只有最后一种能收口。收口条件是：所有需要的决定都已
-  *完成*，没有票停在「处理中」或「阻塞」且工作未完，且 **not yet specified 里没有再能成票的东西**
+  *完成*，没有票停在「处理中」或「阻塞」且工作未完，且 **not yet specified 没有范围内未解决的 fog**
   （fog 已散尽）。frontier 为空但有票在「处理中」或「阻塞」时，这一阶段 **没有** 结束：
   等它们、解它们的阻塞，或报告阻塞——不要验收这张图。
 - **两个条件分别验**：frontier 空 ≠ fog 散尽（前者只是当前无票可拿，后者要求所有能成形的问题

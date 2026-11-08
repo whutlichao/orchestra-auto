@@ -81,10 +81,13 @@ spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 ski
 
 | 本轮的阶段 | 前置 skill |
 | --- | --- |
-| 解释、状态、讨论 | 无（A 通道） |
+| 解释、状态、讨论 | 无（A 通道）；明确要求交互 skill 时除外 |
+| 明确要求非代码访谈 | `grill-me` → `grilling` |
 | 边界清楚的小改动、修 bug、已有 spec 或票 | `implement`（修 bug 先 `diagnosing-bugs`） |
 | 必须落盘的研究 | `research` |
 | 对着代码库把设计问尖锐 | `grill-with-docs` |
+| 跨 session 且路径不明：绘制或推进决策地图 | `wayfinder` |
+| 需要可运行的一次性原型来讨论 | `prototype` |
 | 规格 | `to-spec` |
 | 拆票 | `to-tickets` |
 | 实施完整票图 | `implement-spec` |
@@ -93,6 +96,17 @@ spec 里的 `前置 skill：` 写的是**你实际在跑的那个阶段**的 ski
 
 派活前确认所选路径可读，且本阶段的依赖齐备：`to-spec` / `to-tickets` 要 tracker 配置，
 `implement-spec` 要票图与 tracker，任一阶段都要它后续会用到的 skill。缺失 → 按 §9 带证据报告那次失败的解析。不凭记忆换一个路径，也不在本轮擅自安装。
+
+`grill-me` 包装 `grilling`；`grill-with-docs` 调用 `grilling` 与 `domain-modeling`。
+派活前解析并传递全部依赖路径，只读 wrapper 不等于执行依赖。跨新上下文传递用户原话、回答与约束；
+`grilling` 和 `prototype` 的决策或反馈须来自用户。遵守宿主对用户调用入口的限制，缺失时如实报告。
+
+`wayfinder` 要区分 **chart 建图** 与 **work 逐票推进**，传目的地或地图指针及 tracker 操作。
+建图先问清目的地、广度探索，创建可描述的决策票并连边；获授权时启动研究，然后停止。
+逐票模式先认领 frontier，按类型解决并更新地图；每 session 最多解决一张非 research 票。
+research 是 AFK，prototype 与 grilling 是 HITL，task 依阻塞内容判断。决策票不同于实施票；
+每次调用和最终地图分别按 G-wayfinder 验收。研究和原型在授权下可用一次性分支和上下文指针，
+无需给临时产物套用实施 PR 契约。
 
 初始化门的判据要现场取证，三项缺一即未初始化：`AGENTS.md` 或 `CLAUDE.md` 里有 `## Agent skills` 块
 （按 setup 自己的选择规则：有 `CLAUDE.md` 就改它，不要另建一份）；`docs/agents/issue-tracker.md` 与
@@ -104,7 +118,7 @@ GitHub / GitLab 时，在目标仓库内 `gh repo view` / `glab repo view` 能�
 `setup-matt-pocock-skills`
 带 `disable-model-invocation: true`，只能按路径点名，别指望它从技能清单里自己出现。它一次问一个问题
 （追踪器 / triage 标签词表 / 领域文档布局），问回来的按 SKILL.md §5 处理；产物属治理文档，仍走
-worker + G-docs 验收，不落 main。
+worker 落盘并核验初始化产物，不落 main；grill 专用的 G-docs 判据不用于 setup。
 
 ### 4.3.1 派活后确认 turn 开始
 

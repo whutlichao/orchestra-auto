@@ -81,7 +81,7 @@ worktree 名派活时再取 slug。
 
 | 请求 | 通道 | 处理 |
 | --- | --- | --- |
-| 解释、状态、讨论或口头研究结论 | A | 直接答复；不派 worker，不写仓库 |
+| 解释、状态、讨论或口头研究结论 | A | 直接答复；明确要求访谈 skill 时按其交互流程 |
 | 边界清楚的小改动、修 bug、已有 spec 或票 | B | 只读探索后派实施 worker；前置 skill 是 `implement`（修 bug 先 `diagnosing-bugs`） |
 | 必须落盘的研究、设计、规格或拆票 | B/C | 对应的 `research` / `grill-with-docs` / `to-spec` / `to-tickets`；停在约定产物 |
 | 多票或尚未收敛的完整实施请求 | C | 先收敛需求与依赖；G-tickets 验收完整票图后，只派 **一个** 长程 `implement-spec` worker |
@@ -90,6 +90,13 @@ worktree 名派活时再取 slug。
 前置 skill 是本阶段那个 skill，不是通道那个（§4.3）；缺失按 §9 带证据报告。
 具体对照表见[派活闭环](references/dispatch-loop.md)。
 
+入口判定先核对用户目标、可观察行为、范围、验收和关键方案是否已有依据。新需求存在尚未解决的
+取舍时，跨 session 且路径不明用 `wayfinder`；非代码访谈用 `grill-me`，涉及代码库和领域设计用
+`grill-with-docs`；记录哪些问题需要用户决定。已有 spec 或票只有在核对其适用
+当前请求、未过期且解决了这些问题后才可作为后续入口。直接实施的小改动或修复，在模式声明中
+记录范围、验收及已解决关键取舍的依据；发现新分叉时重新路由。没有 spec 本身不是跳过 grill 的理由。
+用户明确要求 grill 时按其要求进行，不以改动小为由跳过。
+
 ### 1.1 仓库初始化门
 
 进入规划或实施阶段前，coordinator 用脚本取证，不再手推判据：
@@ -97,7 +104,7 @@ worktree 名派活时再取 slug。
 报告的就是[派活闭环](references/dispatch-loop.md) §4.3.0 的判据）。退出 `0` → 直接进本阶段 skill。
 退出 `1` → **先落一次初始化，再进本阶段的 skill**：前置 skill 写
 `<绝对路径>/setup-matt-pocock-skills/SKILL.md`（派活前确认可读；它带 `disable-model-invocation: true`，
-只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 按 G-docs 验收后
+只能按路径点名，不会自己出现在清单里），worker 在独立 worktree 落盘，coordinator 核验初始化产物后
 复跑脚本，通过才进阶段 skill。退出 `2` → 脚本无法判定（没有 `git`、tracker CLI 不可用、追踪器未文档化）：
 按 §9 带脚本证据报告，不得把 `unknown` 当作「未初始化」去跑 setup。
 把报告里的 `status` 与被探仓库的 `git rev-parse HEAD` 写进模式声明与收口报告。
