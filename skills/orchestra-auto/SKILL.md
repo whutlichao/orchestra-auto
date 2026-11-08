@@ -110,7 +110,7 @@ Before a planning or implementation stage, probe the repo rather than re-derive 
 [the dispatch loop](references/dispatch-loop.md) §4.3.0's criteria; both bundles ship it. Exit `0` → enter
 the stage skill directly. Exit `1` → **land the initialization first, then enter the stage**: pre-skill
 `<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable; `disable-model-invocation: true`
-means path-only), a worker lands it in an isolated worktree, the coordinator accepts it under G-docs, and
+requires explicit naming; do not rely on automatic discovery), a worker lands it in an isolated worktree, the coordinator accepts it under G-docs, and
 re-runs the probe before the stage skill. Exit `2` → the probe could not decide (no `git`, no usable
 tracker CLI, an undocumented tracker): report per §9 with its evidence; `unknown` is not uninitialized
 and does not start setup. Record the report's `status` and the probed repo's `git rev-parse HEAD` in the
