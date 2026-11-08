@@ -9,18 +9,14 @@ The guide's five-element task-spec contract must be complete: **Target / Change 
 Ownership / Observable acceptance**. Plus a fixed first item:
 
 ```text
-Pre-skill: <absolute path> — read it in full before starting, follow its procedure, do not skip.
+Pre-skill:
+- Name: <skill for this stage>
+- Explicit invocation: <form supported by this agent; write unverified if unknown>
+- File location: <actual absolute path>/SKILL.md
+Skill execution: This task explicitly requires this skill. Prefer explicit invocation supported by the host; record failures or unsupported invocation. Read the file and follow it as a fallback only when host rules allow it; if the host forbids alternative execution, stop and report the blockage. Follow the skill's requirements for supporting files. Do not report direct reading as native invocation.
 ```
 
-**This line is the only entry point to the other skills.** Without it the worker never reads
-`grill-with-docs` / `tdd` / `diagnosing-bugs` / `code-review`, and the "we didn't use the other
-skills" failure reproduces itself. Put the path in the spec and let the worker read the whole
-file; do not paraphrase it for them. **The path is the skill of the stage this round is actually
-running** (SKILL.md §1), not a fixed one per channel: a round holding a valid spec names
-`to-tickets`, one with a complete map names `implement-spec`, a bug fix names `diagnosing-bugs`
-and `implement`. Confirm it resolves and is readable before writing it down; if it does not, report
-that with evidence instead of inventing a path or installing something this round was not
-authorized to install.
+**This block hands the stage skill to the worker.** Choose the skill for the actual stage, not the channel; for a bug fix name both `diagnosing-bugs` and `implement`. Confirm each path resolves and is readable before writing the spec. Specify an invocation form only when supported by the selected agent; otherwise mark it unverified. Do not assume a spec-internal command is parsed as a native invocation. Report missing paths with evidence rather than inventing paths or installing without authorization. Let the worker load the full instructions, not a paraphrase.
 
 Template for an implementation ticket on channel B; write only the gates that apply. Rewrite
 documentation tickets against their own documentation gates:
@@ -67,20 +63,24 @@ documentation tickets against their own documentation gates:
    file per the recovery reference. Configure a locally ignored formatter override before
    starting only when automatic reflow has been confirmed as a real risk in this repository.
 
-Pre-skill: <absolute path> — read it in full before starting, follow its procedure, do not skip.
+Pre-skill:
+- Name: <skill for this stage>
+- Explicit invocation: <form supported by this agent; write unverified if unknown>
+- File location: <actual absolute path>/SKILL.md
+Skill execution: This task explicitly requires this skill. Prefer explicit invocation supported by the host; record failures or unsupported invocation. Read the file and follow it as a fallback only when host rules allow it; if the host forbids alternative execution, stop and report the blockage. Follow the skill's requirements for supporting files. Do not report direct reading as native invocation.
 Target: <files/modules>
 Change: <the concrete result to produce>
 Constraints: <boundaries not to cross; use deep-module vocabulary for terms>
 Ownership: <what this ticket may edit; the canonical ticket lives in the worktree and you own its status transitions and Answer appends>
 Observable acceptance: <the applicable test commands and observable results; red→green evidence for fixes; the two-axis code-review section when needed. When project files change: parse and use the local pr skill to write the PR body, push the branch, create or update the PR with --body-file, then record the PR number, the body path and the CI reading in GitHub and the out-of-repo ledger with no project commit added for them (follow the user's or the repository's own rule when it explicitly requires those facts in the tree). Writing the PR target and base into the spec is part of this line: name the repository the PR lands in and the base branch there — for a fork that is the upstream repository's default branch, never the fork's own main — and do not leave either to gh's default resolution; the shape is `gh pr create --repo <upstream-owner/repo> --base <default branch> --head <fork-owner>:<branch>`. Finally send and verify the worker_done receipt>
+Skill execution evidence: <name and path; method: native invocation / direct read / not loaded; verifiable invocation or read record, or failure reason; key steps and artifacts>
 Question channel: orchestration ask (AskUserQuestion is banned).
 ```
 
 When the ticket needs Orca-rendered screenshots, add `Visual evidence: <plan path> → scripts/visual-evidence.py run --plan <plan> --report <report>` to the spec, forbid minimizing the window and `set frontmost`, and require the report's `restored` and `focusRestored` to be true; the protocol is [visual evidence](visual-evidence.md).
 
-For a long-horizon ticket map, `Pre-skill` is the absolute path to `implement-spec`. Add
-`Skill resolution:` (use the Skill tool for `tdd` / `code-review` when available, otherwise read
-their absolute paths), `PR skill:` (the absolute path to `pr`), `Tracker:`, `Spec:`, `Tickets:` and
+For a long-horizon ticket map, the `Pre-skill` block specifies `implement-spec`. Add
+`Skill resolution:` (name `tdd` / `code-review`, their invocation forms and absolute paths, applying the same invocation and fallback rules), `PR skill:` (the absolute path to `pr`), `Tracker:`, `Spec:`, `Tickets:` and
 `Integration branch:`. The worker must report the graph and frontier, each ticket's branch and
 commit, the integration branch, the single integration PR, `Closes` links, and the Door claim with
 evidence. Nested decision-class questions go up through the top-level worker; the worker must not

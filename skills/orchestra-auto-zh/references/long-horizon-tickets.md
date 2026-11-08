@@ -43,9 +43,9 @@ worker-start --spec "<长程 spec>" --worktree new-top-level \
 spec 是一组指针，不是票的副本。必须包含：
 
 ```text
-前置 skill：<绝对路径>/implement-spec/SKILL.md——开工前完整读。
-skill 解析：有 Skill tool 时用它调用 `tdd` / `code-review`；没有就直接读
-<绝对路径>/tdd/SKILL.md 与 <绝对路径>/code-review/SKILL.md，不许转述。
+前置 skill：名称 implement-spec；显式调用 <agent 支持的形式，未知写未确认>；文件位置 <绝对路径>/implement-spec/SKILL.md。
+skill 执行要求与执行证据：完整采用 [spec 契约](spec-contract.md) 的区块，写进派活 spec。
+skill 解析：为 `tdd` / `code-review` 写名称、调用形式和各自绝对路径；按同一调用及后备规则执行，不许转述。
 PR skill：<绝对路径>/pr/SKILL.md——用它写唯一的集成 PR 正文。
 Tracker：<docs/agents/issue-tracker.md 或本地票目录绝对路径>。
 Spec：<绝对路径或 issue URL>。

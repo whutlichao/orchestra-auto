@@ -50,9 +50,9 @@ worker-start --spec "<long-horizon spec>" --worktree new-top-level \
 The spec is a set of pointers, not a copy of the tickets. It must include:
 
 ```text
-Pre-skill: <absolute>/implement-spec/SKILL.md — read in full before starting.
-Skill resolution: use the Skill tool for `tdd` / `code-review` when available; otherwise read
-<absolute>/tdd/SKILL.md and <absolute>/code-review/SKILL.md directly. Never paraphrase them.
+Pre-skill: name implement-spec; explicit invocation <agent-supported form, or unverified>; file location <absolute>/implement-spec/SKILL.md.
+Skill execution and evidence: copy the complete blocks from the [spec contract](spec-contract.md) into the dispatched spec.
+Skill resolution: name `tdd` / `code-review`, their invocation forms and absolute paths; apply the same invocation and fallback rules. Never paraphrase them.
 PR skill: <absolute>/pr/SKILL.md — use it for the one integration PR body.
 Tracker: <docs/agents/issue-tracker.md or absolute local ticket directory>.
 Spec: <absolute path or issue URL>.
