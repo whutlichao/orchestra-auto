@@ -36,6 +36,7 @@ SCRIPT_FILES = (
     "acceptance.py",
     "chain.py",
     "closeout.py",
+    "flow.py",
     "health.py",
     "inbox-loop.py",
     "inbox-loop.sh",
@@ -49,7 +50,8 @@ SCRIPT_FILES = (
 )
 PYTHON_SCRIPTS = (
     "acceptance.py", "chain.py",
-    "closeout.py", "health.py", "inbox-loop.py", "init-check.py", "ledger.py", "preflight.py",
+    "closeout.py", "flow.py", "health.py", "inbox-loop.py", "init-check.py", "ledger.py",
+    "preflight.py",
     "progress-demo.py", "progress.py", "visual-evidence.py",
 )
 
@@ -114,6 +116,26 @@ NEW_EVAL_SCENARIOS = (
     "binding-loss",
 )
 CRASH_WINDOW_SCENARIO = "crash-window-reconciliation"
+
+#: The workflow-redesign scenarios, appended after the stability set by this round. They cover the
+#: routing table, the handoff record, the wayfinder branches, the explicit flow and the artifact
+#: formats. Kept as one ordered tuple so the two bundles cannot drift.
+ROUTING_EVAL_SCENARIOS = (
+    "route-grill-entry",
+    "small-fix-entry-evidence",
+    "stale-spec-recheck",
+    "wrapper-dependency-missing",
+    "handoff-fidelity",
+    "wayfinder-chart-open-decisions",
+    "wayfinder-work-claim-and-hitl",
+    "questionnaire-and-wizard-block",
+    "flow-resume-design-only",
+    "legacy-ledger-not-proof",
+    "flow-invalidation-downstream",
+    "issue-body-not-several-tickets",
+    "spec-native-vs-dispatch",
+    "triage-and-retro-governance",
+)
 
 # Phrases a scenario must never carry: a scenario is a prompt, so it cannot have run a test. The
 # match is a claim about execution, not a mention of testing in the abstract.
@@ -361,6 +383,30 @@ class ReferenceIntegrityTests(unittest.TestCase):
                 len(lines), 300,
                 f"{name}: SKILL.md is {len(lines)} lines; move detail into references",
             )
+
+    def test_the_entrypoint_indexes_every_route_family(self):
+        """A route that the always-loaded entrypoint never names is effectively invisible.
+
+        The routing table carries the conditions and return points, but an agent that reads only
+        SKILL.md must still see that wayfinder, the decision branches, triage, architecture work
+        and retro exist. Without this, the entrypoint silently narrows to the common chain and
+        those routes are only reachable if the reader happens to open the reference.
+        """
+        families = {
+            "orchestra-auto": ("grill-me", "grill-with-docs", "wayfinder", "research",
+                               "prototype", "to-questionnaire", "wizard", "to-spec",
+                               "to-tickets", "implement-spec", "triage", "diagnosing-bugs",
+                               "improve-codebase-architecture", "retro"),
+            "orchestra-auto-zh": ("grill-me", "grill-with-docs", "wayfinder", "research",
+                                  "prototype", "to-questionnaire", "wizard", "to-spec",
+                                  "to-tickets", "implement-spec", "triage", "diagnosing-bugs",
+                                  "improve-codebase-architecture", "retro"),
+        }
+        for name, expected in families.items():
+            entrypoint = (REPO_ROOT / "skills" / name / "SKILL.md").read_text()
+            for route in expected:
+                self.assertIn(route, entrypoint,
+                              f"{name}: SKILL.md never names the {route!r} route")
 
     def test_both_variants_keep_the_safety_invariants(self):
         """Every safety invariant the spec calls out must survive in both languages.
@@ -1200,24 +1246,31 @@ class NewEvalScenarioTests(unittest.TestCase):
         chinese = [entry["name"] for entry in self.evals_for("orchestra-auto-zh")]
         self.assertEqual(english, chinese,
                          "the two bundles must list the same scenarios in the same order")
+        stability_end = BASELINE_EVAL_COUNT + len(NEW_EVAL_SCENARIOS)
         self.assertEqual(
-            english[BASELINE_EVAL_COUNT:], list(NEW_EVAL_SCENARIOS),
+            english[BASELINE_EVAL_COUNT:stability_end], list(NEW_EVAL_SCENARIOS),
             "the new scenarios must be appended after the baseline set, in the declared order",
+        )
+        self.assertEqual(
+            english[stability_end:], list(ROUTING_EVAL_SCENARIOS),
+            "the routing scenarios must follow the stability set, in the declared order",
         )
 
     def test_the_eval_count_matches_the_declared_crash_window_choice(self):
         """The total is derived from the file, not remembered.
 
-        ONE crash-window scenario covering W1/W2/W3 makes the total 31 + 7 = 38. Choosing three
-        separate windows would make it 40; the constant below is the single place that records
-        which choice was made, and the assertion ties it to what actually ships.
+        ONE crash-window scenario covering W1/W2/W3 makes the stability total 31 + 7 = 38, and the
+        routing round appends its own declared set on top. Constants record the choices; the
+        assertion ties them to what actually ships.
         """
-        expected_total = BASELINE_EVAL_COUNT + len(NEW_EVAL_SCENARIOS)
+        expected_total = (BASELINE_EVAL_COUNT + len(NEW_EVAL_SCENARIOS)
+                          + len(ROUTING_EVAL_SCENARIOS))
         for name in SKILL_NAMES:
             self.assertEqual(
                 len(self.evals_for(name)), expected_total,
                 f"{name}: expected {expected_total} scenarios "
-                f"(31 baseline + {len(NEW_EVAL_SCENARIOS)} new); the file disagrees",
+                f"(31 baseline + {len(NEW_EVAL_SCENARIOS)} stability "
+                f"+ {len(ROUTING_EVAL_SCENARIOS)} routing); the file disagrees",
             )
 
     def test_the_crash_window_scenario_names_all_three_windows(self):

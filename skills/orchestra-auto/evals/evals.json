@@ -1015,6 +1015,340 @@
           "text": "Treats binding loss as an observation, never as a reason to retry an action"
         }
       ]
+    },
+    {
+      "id": 38,
+      "name": "route-grill-entry",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"I want to add an offline mode to this app -- not sure how sync should behave yet. Let's talk it through before doing anything.\"\n\nTwo situation variants are given below; answer each one.\nA) The session is in a working directory with this repository.\nB) The session has no working directory at all.\n\nOutput only:\n1. ROUTE_A: the routing-table row and the skill you enter for variant A\n2. ROUTE_B: the same for variant B\n3. DEPENDENCIES: the skills each entry depends on\n4. WHY: two sentences\nDo not run commands or dispatch a worker.",
+      "expected_output": "Both variants are row 3 / row 2 of the routing table: with a working directory the entry is `grill-with-docs`, which invokes `grilling` and `domain-modeling`; with no working directory it is `grill-me`, which invokes `grilling`. Both are user-invoked, so the coordinator records the entry and its dependencies rather than silently reaching for a path; the open trade-off (how sync behaves) stays with the user.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "repo_entry_is_grill_with_docs",
+          "text": "Variant A enters `grill-with-docs` for the codebase-sensitive interview"
+        },
+        {
+          "name": "no_dir_entry_is_grill_me",
+          "text": "Variant B enters `grill-me` when there is no working directory"
+        },
+        {
+          "name": "wrapper_dependencies_named",
+          "text": "Names `grilling` (and `domain-modeling` for A) as the dependencies each wrapper invokes"
+        },
+        {
+          "name": "open_tradeoff_not_answered",
+          "text": "Does not decide how sync should behave on the user's behalf"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "name": "small-fix-entry-evidence",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"Rename the DEPLOY_TIMEOUT constant to DEPLOY_TIMEOUT_SECONDS in the deploy module and its tests. Nothing else changes. Open a PR.\"\n\nOutput only:\n1. ROUTE: the routing-table row\n2. EVIDENCE: what the mode declaration must record to justify entering there\n3. GATES: the applicable type and gates line for the spec\n4. CHANNEL: the channel you advance on\nDo not dispatch anything.",
+      "expected_output": "Row 4 (bounded change / existing settled instruction), channel B. The mode declaration records the goal, the scope (deploy module and its tests), the acceptance (the build still passes and the rename is complete) and why no new interview was needed (the user named the change and the constraint). The spec's Type is implementation, gates G-impl, test tier narrow with a bounded-radius reason. A new fork during exploration re-routes instead of widening scope.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "bounded_change_route",
+          "text": "Selects row 4 for a bounded, fully specified change"
+        },
+        {
+          "name": "evidence_recorded",
+          "text": "Records scope, acceptance and why no interview was needed in the mode declaration"
+        },
+        {
+          "name": "no_forced_grill",
+          "text": "Does not force a full grill or a ticket map onto the bounded change"
+        },
+        {
+          "name": "reroute_on_new_fork",
+          "text": "Says a newly discovered fork re-routes the work instead of expanding scope"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "name": "stale-spec-recheck",
+      "prompt": "You are running orchestra-auto. The user's words this turn are:\n\n\"There is a spec at docs/specs/offline-mode.md from two months ago. Just implement it.\"\n\nYou read the spec: its user stories mention a sync API that has since been renamed twice, and one decision ('the queue keeps at most 100 items') contradicts the current product notes you also read.\n\nOutput only:\n1. ENTRY: whether the existing spec can be used as the entry, and why\n2. NEXT: what you do before any implementation\n3. ROUTE: the routing table row you move to\nDo not dispatch anything.",
+      "expected_output": "The spec cannot be used as the entry: it is stale (renamed API) and one of its decisions contradicts current evidence, so it does not resolve the open questions. The decision about the queue limit goes back to the user as a decision-class question; the route re-enters the planning rows (grill-with-docs or the shortest stage that settles the contradiction) before implementation.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "stale_spec_refused",
+          "text": "Refuses the old spec as an entry because it is stale and contradicts current evidence"
+        },
+        {
+          "name": "contradiction_to_human",
+          "text": "Raises the contradicting decision to the user instead of silently picking one"
+        },
+        {
+          "name": "reroute_before_implementation",
+          "text": "Re-routes to the planning rows before entering implementation"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "name": "wrapper-dependency-missing",
+      "prompt": "You are running orchestra-auto. The stage needs the codebase interview. The user-invoked entry skill `grill-with-docs` is installed, but `domain-modeling` is not present on this host, and the host forbids reading a skill file as a substitute for an unavailable skill.\n\nOutput only:\n1. BEFORE: what you confirm before dispatch\n2. MISSING: what you report and to whom\n3. CLAIM: what you refuse to claim\nDo not dispatch anything.",
+      "expected_output": "Before dispatch, confirm both dependency paths (`grilling` and `domain-modeling`) resolve and are readable, not just the wrapper's one-line body. Since `domain-modeling` cannot be resolved and the host forbids reading it as a substitute, the capability gap is reported per §9 with the failed resolution; the coordinator does not claim the interview ran, does not substitute a different skill, and does not install anything this round was not authorized to install.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "checks_dependency_paths",
+          "text": "Confirms each dependency path rather than treating the wrapper as proof"
+        },
+        {
+          "name": "reports_capability_gap",
+          "text": "Reports the missing dependency with the failed resolution"
+        },
+        {
+          "name": "no_substitute_claim",
+          "text": "Does not claim the skill ran, substitute another skill, or install one"
+        },
+        {
+          "name": "respects_host_rule",
+          "text": "Respects the host's rule against reading a replacement skill file"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "name": "handoff-fidelity",
+      "prompt": "You are running orchestra-auto and must move a settled planning stage to a fresh context. The planning conversation contains these user statements:\n\n- \"The retry backoff must cap at 30 seconds, never 60.\"\n- \"Do not touch the settings page.\"\n- \"We already decided to use the existing queue, not a new one.\"\n- \"Still open: whether the dashboard shows a banner.\"\n\nOutput only the handoff record fields you would write, and mark where each item comes from.\n1. DECISIONS\n2. CONSTRAINTS\n3. OPEN\n4. POINTERS",
+      "expected_output": "The handoff keeps the numeric cap (30 s, never 60) and the negative requirement (do not touch the settings page) verbatim, attributes the queue decision to the user as a settled decision, keeps the banner question open with who can answer it, and points at existing artifacts rather than copying them. A handoff that keeps the goal but drops the numbers or the negative requirement has restarted the work, not moved it.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "numeric_constraint_kept",
+          "text": "Keeps the 30 s cap and the explicit 'never 60'"
+        },
+        {
+          "name": "negative_constraint_kept",
+          "text": "Keeps 'do not touch the settings page' as a negative requirement"
+        },
+        {
+          "name": "settled_decision_attributed",
+          "text": "Records the queue decision as the user's settled decision, not as a recommendation"
+        },
+        {
+          "name": "open_question_preserved",
+          "text": "Keeps the banner question open and names who can answer it"
+        },
+        {
+          "name": "pointers_not_copies",
+          "text": "References existing artifacts instead of copying them into the handoff"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "name": "wayfinder-chart-open-decisions",
+      "prompt": "You are running orchestra-auto on a wayfinder chart session. The destination is agreed, the map and four decision tickets exist, two tickets are blocked by real edges, and one research ticket is running in the background. The user asks: \"Is the chart done? Some questions are still open.\"\n\nOutput only:\n1. VERDICT: whether the chart can be accepted and delivered now\n2. WHY: one or two sentences\n3. STOP: what the session must not do next\nDo not dispatch anything.",
+      "expected_output": "Yes: chart acceptance is separate from map completion. The map, typed decision tickets and real blockers exist, and open decisions do not fail chart acceptance. The chart session stops after charting and does not go on to resolve the tickets; work is claimed later, one non-research ticket per session.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "chart_accepts_with_open_decisions",
+          "text": "Accepts the chart even though decisions remain open"
+        },
+        {
+          "name": "chart_is_not_map_completion",
+          "text": "Does not equate chart delivery with map completion"
+        },
+        {
+          "name": "stops_after_chart",
+          "text": "Stops the chart session instead of resolving tickets in it"
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "name": "wayfinder-work-claim-and-hitl",
+      "prompt": "You are running orchestra-auto on a wayfinder work session. The frontier has two takeable tickets: one labelled `wayfinder:grilling` and one labelled `wayfinder:research`. The user is present and asks you to \"keep going\".\n\nOutput only:\n1. CLAIM: what you do before any work, and which ticket\n2. PARALLEL: whether the research ticket changes the session bound\n3. HITL: how the grilling ticket gets its decisions\n4. RESOLUTION: what must happen when the ticket is answered\nDo not run commands.",
+      "expected_output": "The session claims one ticket first (by assignment) before any work. It takes the grilling ticket as the single non-research ticket; research is AFK and may run in parallel in a fresh context, so it does not raise the per-session bound. The grilling ticket's decisions come from the live user exchange, never from the agent answering its own questions. On resolution: record the answer as a resolution comment, close the ticket, append a pointer and gist to the map's Decisions-so-far, and graduate any newly specifiable fog into fresh tickets.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "claim_before_work",
+          "text": "Claims the ticket before doing any work"
+        },
+        {
+          "name": "one_non_research_ticket",
+          "text": "Takes at most one non-research ticket in the session"
+        },
+        {
+          "name": "research_parallel_is_afk",
+          "text": "Treats research as AFK and parallel, not as a session-blocking HITL item"
+        },
+        {
+          "name": "user_answers_grilling",
+          "text": "Gets the grilling decisions from the user's real answers"
+        },
+        {
+          "name": "resolution_updates_map",
+          "text": "Records the resolution, closes the ticket and updates the map pointer"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "name": "questionnaire-and-wizard-block",
+      "prompt": "You are running orchestra-auto. One decision depends on a third-party account owner's answer; the user says the questionnaire has been sent but nothing has come back. A separate node needs the user to create cloud credentials with a wizard, and the user has not run it yet.\n\nOutput only:\n1. STATE: the state you record for each dependent node\n2. FILL: whether you or a worker may answer for the recipient or complete the wizard\n3. NEXT: what can and cannot advance\nDo not run commands.",
+      "expected_output": "Both dependent nodes stay blocked/pending on a human: the questionnaire node waits for a real recipient answer and the wizard node waits for the human to finish it. Nobody fills in the recipient's answer or performs the human's steps, and neither state is recorded as a failure. Independent work continues; the blocked nodes do not become ready merely because time passed.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "waits_for_real_answer",
+          "text": "Keeps the questionnaire node blocked until a real recipient answer arrives"
+        },
+        {
+          "name": "waits_for_human_wizard",
+          "text": "Keeps the wizard node pending until the human completes it"
+        },
+        {
+          "name": "no_substitution",
+          "text": "Does not answer for the recipient or perform the human's steps"
+        },
+        {
+          "name": "not_failure",
+          "text": "Does not record a human-blocked node as an execution failure"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "name": "flow-resume-design-only",
+      "prompt": "A Run wrote an explicit flow record: nodes `grill` (G-docs) and `spec` (G-spec, depends on grill). The authorized endpoint is a design artifact only. `grill` is accepted with task/attempt/artifact evidence; `spec` is recorded `not_applicable` with entry evidence that the user asked for design only.\n\nOutput only:\n1. RESUME: what a flow-based resume reports\n2. READY: the ready set\n3. AUTHORIZATION: whether this authorizes a merge or implementation\nDo not run commands.",
+      "expected_output": "The flow-based resume reports `complete`: every applicable node is satisfied (accepted or not_applicable with entry evidence), and the not-applicable node carries the reason it did not run. The ready set is empty. Completion covers the authorized design endpoint only; it is not merge authorization and does not authorize implementation, which would need a new authorized delivery endpoint.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "complete_ignores_inapplicable",
+          "text": "Reports complete when every applicable node is satisfied"
+        },
+        {
+          "name": "not_applicable_needs_evidence",
+          "text": "Accepts not_applicable only with its entry evidence"
+        },
+        {
+          "name": "completion_is_not_merge_authorization",
+          "text": "States that completion does not authorize a merge or further implementation"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "name": "legacy-ledger-not-proof",
+      "prompt": "A Run has no flow record, only an old ledger. Its ledger contains a passed G-docs acceptance record from a previous round. The current request is a new feature whose requirements have not been discussed.\n\nOutput only:\n1. MODE: how the resume answer is labelled and what it may conclude\n2. GRILL: whether the old G-docs record proves the new requirement is settled\n3. NEXT: what you do before implementing\nDo not run commands.",
+      "expected_output": "The resume answer is marked `legacy`: it is a five-position chain suggestion from an old ledger and cannot prove the current entry, gates or endpoint. The old G-docs record covers the previous round only; it is not evidence that the new requirement was grilled. The coordinator re-routes the new work (grill-with-docs or the shortest stage that settles the open decisions) before any implementation.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "legacy_label_limits_conclusion",
+          "text": "Labels the answer legacy and states what it cannot prove"
+        },
+        {
+          "name": "old_gdocs_not_current_grill",
+          "text": "Refuses to treat a previous round's G-docs record as the current grill"
+        },
+        {
+          "name": "reroutes_new_work",
+          "text": "Re-routes the new request instead of implementing on the old record"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "name": "flow-invalidation-downstream",
+      "prompt": "A Run's flow has nodes grill, spec and build, each accepted in order. The user then revises a requirement and the spec changes. A later acceptance attempt for build succeeds against the old spec.\n\nOutput only:\n1. RECORD: what you append for the spec change\n2. AFFECTED: which nodes are affected and how\n3. STALE: how the later build acceptance is treated\nDo not run commands.",
+      "expected_output": "An `invalidate` record with cause `spec-change` names the spec node; it invalidates the spec node and everything downstream (build), so those nodes no longer count as accepted. An acceptance of the old artifact version does not override the invalidation: the work re-enters the invalidated nodes against the new spec version and needs a fresh attempt binding. The append-only history is kept; nothing is rewritten.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "invalidate_names_spec",
+          "text": "Appends an invalidate record with cause spec-change for the spec node"
+        },
+        {
+          "name": "downstream_invalidated",
+          "text": "Invalidates the downstream build node as well"
+        },
+        {
+          "name": "stale_acceptance_not_override",
+          "text": "Does not let the old artifact's acceptance override the invalidation"
+        },
+        {
+          "name": "history_appended",
+          "text": "Keeps the history append-only instead of rewriting it"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "name": "issue-body-not-several-tickets",
+      "prompt": "You are running orchestra-auto and need to accept a `to-tickets` artifact. You fetched a GitHub issue body that contains `## What to build`, `## Acceptance criteria` with checked boxes, and `## Blocked by`. Separately, the user also handed you a directory with one Markdown file per ticket.\n\nOutput only:\n1. ISSUE: how the issue body is read\n2. FILES: how the directory is read\n3. CHECK: what the exit check can and cannot conclude\nDo not run commands.",
+      "expected_output": "The issue body is one ticket, not one ticket per `##` section: its acceptance is the acceptance section, and its `Blocked by` names real tickets. The directory is a collection: each file is one ticket, checked at its own file boundary. The exit check may be run per file or with repeated `--artifact`; it reports missing acceptance, unknown blockers and cycles, and it is a floor, not a verdict on requirement correctness or user approval.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "issue_is_one_ticket",
+          "text": "Reads the issue body as one ticket, not several sections"
+        },
+        {
+          "name": "file_boundary_per_ticket",
+          "text": "Reads each file in the directory as one ticket"
+        },
+        {
+          "name": "check_is_floor",
+          "text": "States the check is a floor and not a verdict on correctness or approval"
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "name": "spec-native-vs-dispatch",
+      "prompt": "You are running orchestra-auto and exit-check a spec. The spec has `## Problem Statement`, `## User Stories` and `## Acceptance criteria` with testable bullets, but no `Test tier:` line.\n\nOutput only:\n1. NATIVE: the native verdict\n2. DISPATCH: the project-addition verdict\n3. NEXT: what you report to the user and what you do about it\nDo not run commands.",
+      "expected_output": "Native passes: the spec has an acceptance section with a testable bullet. Dispatch fails: the project's `Test tier:` line is missing. The two are reported apart, so a valid upstream spec is never called invalid upstream; before entering implementation here the tier must be added, and the report says the check judges shape only, not whether the requirement is correct.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "native_passes",
+          "text": "Reports the upstream-native check as passing"
+        },
+        {
+          "name": "dispatch_fails",
+          "text": "Reports the project's test-tier addition as missing"
+        },
+        {
+          "name": "separate_report",
+          "text": "Reports the two verdicts apart instead of collapsing them"
+        },
+        {
+          "name": "no_correctness_claim",
+          "text": "Does not claim the check proves the requirement is correct"
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "name": "triage-and-retro-governance",
+      "prompt": "You are running orchestra-auto. Two things arrive in the same round: an external bug report on the tracker, and a retro whose candidates include 'add a lint rule'. A previous round's `to-tickets` output already produced three agent-ready tickets.\n\nOutput only:\n1. TRIAGE: what is triaged and what is not\n2. RETRO: what happens to the candidate\n3. GATES: which gates each item runs\nDo not run commands.",
+      "expected_output": "The external bug report goes through `triage`; the three agent-ready tickets produced by `to-tickets` are not re-triaged. The retro candidate is a proposal written outside the repository and needs human selection before a worker lands it; it does not widen the current scope by itself. The triaged issue and the landed retro change each run their own gates (G-impl for the issue; the retro candidate's own change type), not one universal suite.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "triage_only_external",
+          "text": "Triages the external report and leaves the agent-ready tickets alone"
+        },
+        {
+          "name": "retro_candidate_needs_human",
+          "text": "Keeps the retro candidate pending human selection"
+        },
+        {
+          "name": "no_scope_widening",
+          "text": "Does not let the retro candidate widen the current round's scope"
+        }
+      ]
     }
   ]
 }

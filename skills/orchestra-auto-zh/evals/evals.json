@@ -1015,6 +1015,340 @@
           "text": "把绑定丢失当作 observation，绝不作为重试动作的理由"
         }
       ]
+    },
+    {
+      "id": 38,
+      "name": "route-grill-entry",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「我想给这个应用加个离线模式——同步到底该怎么表现还没想好。先聊清楚再动手。」\n\n下面给出两种情形，各自回答。\nA) 会话处在一个有工作目录的仓库里。\nB) 会话完全没有工作目录。\n\n只输出：\n1. ROUTE_A：情形 A 进哪一行路由、进哪个 skill\n2. ROUTE_B：情形 B 同上\n3. DEPENDENCIES：两个入口各自依赖哪些 skill\n4. WHY：两句话\n不要运行命令，不要派 worker。",
+      "expected_output": "两种情形分别是路由表第 3 / 第 2 行：有工作目录时入口是 `grill-with-docs`，它调用 `grilling` 与 `domain-modeling`；没有工作目录时入口是 `grill-me`，它调用 `grilling`。两者都是用户调用型，coordinator 记录入口及其依赖，而不是悄悄去读一条路径；未决取舍（同步怎么表现）留给用户。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "repo_entry_is_grill_with_docs",
+          "text": "情形 A 进入 `grill-with-docs` 做对着代码库的访谈"
+        },
+        {
+          "name": "no_dir_entry_is_grill_me",
+          "text": "情形 B 在没有工作目录时进入 `grill-me`"
+        },
+        {
+          "name": "wrapper_dependencies_named",
+          "text": "点名每个 wrapper 调用的依赖 `grilling`（A 还有 `domain-modeling`）"
+        },
+        {
+          "name": "open_tradeoff_not_answered",
+          "text": "不替用户决定同步该怎么表现"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "name": "small-fix-entry-evidence",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「把 deploy 模块及其测试里的 DEPLOY_TIMEOUT 常量改名成 DEPLOY_TIMEOUT_SECONDS。别的都不动。开个 PR。」\n\n只输出：\n1. ROUTE：路由表哪一行\n2. EVIDENCE：模式声明必须记录什么才算有依据进入这一行\n3. GATES：spec 里适用的票型与门禁行\n4. CHANNEL：你按哪条通道推进\n不要派活。",
+      "expected_output": "第 4 行（边界清楚的改动 / 已定案的既有指令），通道 B。模式声明记录目标、范围（deploy 模块及其测试）、验收（构建仍通过且改名完整）以及为何无需重新访谈（用户点名了改动与约束）。spec 的票型是实施票、门禁 G-impl、测试档为窄档并写明影响面为何可圈定。探索中发现新分叉时重新路由，而不是扩大范围。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "bounded_change_route",
+          "text": "为边界清楚、指令完整的改动选择第 4 行"
+        },
+        {
+          "name": "evidence_recorded",
+          "text": "在模式声明中记录范围、验收以及为何无需访谈"
+        },
+        {
+          "name": "no_forced_grill",
+          "text": "不把完整 grill 或票图强加到这个小改动上"
+        },
+        {
+          "name": "reroute_on_new_fork",
+          "text": "说明发现新分叉时重新路由，而不是扩大范围"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "name": "stale-spec-recheck",
+      "prompt": "你正在跑 orchestra-auto。用户这一轮的原话是：\n\n「docs/specs/offline-mode.md 有一份两个月前的 spec，直接照着实施。」\n\n你读了这份 spec：里面的用户故事提到一个此后改过两次名的同步 API，而且其中一条决定（「队列最多保留 100 条」）与你读到的当前产品说明相矛盾。\n\n只输出：\n1. ENTRY：这份旧 spec 能不能作为入口，为什么\n2. NEXT：实施前你先做什么\n3. ROUTE：你移到路由表哪一行\n不要派活。",
+      "expected_output": "旧 spec 不能作为入口：它已经过期（API 改过名），且其中一条决定与当前证据矛盾，并未解决未决问题。队列上限这个决定属于决策类问题，交回用户；路由回到规划行（grill-with-docs，或能解决该矛盾的最短阶段），而不是直接进入实施。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "stale_spec_refused",
+          "text": "因为过期且与当前证据矛盾而拒绝把旧 spec 当入口"
+        },
+        {
+          "name": "contradiction_to_human",
+          "text": "把矛盾的决定交给用户，而不是悄悄挑一个"
+        },
+        {
+          "name": "reroute_before_implementation",
+          "text": "在进入实施前重新路由回规划行"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "name": "wrapper-dependency-missing",
+      "prompt": "你正在跑 orchestra-auto。本阶段需要对着代码库的访谈。用户调用型入口 `grill-with-docs` 已安装，但本机没有 `domain-modeling`，且宿主禁止用读取 skill 文件来替代一个不可用的 skill。\n\n只输出：\n1. BEFORE：派活前你确认什么\n2. MISSING：你报告什么、报告给谁\n3. CLAIM：你拒绝声称什么\n不要派活。",
+      "expected_output": "派活前确认两个依赖路径（`grilling` 与 `domain-modeling`）都能解析且可读，而不是把 wrapper 的一行正文当证据。由于 `domain-modeling` 无法解析、宿主又禁止读文件替代，按 §9 报告这次失败的能力解析；coordinator 不声称访谈跑过、不换一个 skill 顶替，也不安装本轮未获授权的任何东西。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "checks_dependency_paths",
+          "text": "逐个确认依赖路径，而不是把 wrapper 当证据"
+        },
+        {
+          "name": "reports_capability_gap",
+          "text": "带失败解析证据报告缺失的依赖"
+        },
+        {
+          "name": "no_substitute_claim",
+          "text": "不声称 skill 跑过、不换 skill、不擅自安装"
+        },
+        {
+          "name": "respects_host_rule",
+          "text": "遵守宿主关于不得读取替代 skill 文件的规则"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "name": "handoff-fidelity",
+      "prompt": "你正在跑 orchestra-auto，需要把一个已定案的规划阶段交给新上下文。规划对话里有这些用户原话：\n\n- 「重试退避上限必须是 30 秒，绝不能是 60。」\n- 「不要动设置页。」\n- 「我们已经定了用现有队列，不新建。」\n- 「还没定：看板要不要显示横幅。」\n\n只输出你会写下的交接记录字段，并标明每一项的来源。\n1. DECISIONS\n2. CONSTRAINTS\n3. OPEN\n4. POINTERS",
+      "expected_output": "交接保留数值上限（30 秒，绝不能 60）与否定要求（不要动设置页）的原话；把队列决定记为用户的已定决定，而不是推荐；把横幅问题保持开放并写明谁能回答；产物用指针引用而不是复制。只带走目标却丢掉数值或否定要求的交接没有移动工作，只是重新开始。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "numeric_constraint_kept",
+          "text": "保留 30 秒上限与「绝不能 60」"
+        },
+        {
+          "name": "negative_constraint_kept",
+          "text": "把「不要动设置页」作为否定要求保留"
+        },
+        {
+          "name": "settled_decision_attributed",
+          "text": "把队列决定记为用户的已定决定，而非推荐"
+        },
+        {
+          "name": "open_question_preserved",
+          "text": "保持横幅问题开放并点名谁能回答"
+        },
+        {
+          "name": "pointers_not_copies",
+          "text": "引用已有产物而不复制进交接记录"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "name": "wayfinder-chart-open-decisions",
+      "prompt": "你正在跑 orchestra-auto 的 wayfinder 建图会话。destination 已对齐，地图与四张决策票已存在，两张票被真实边阻塞，一张研究票在后台运行。用户问：「建图算完了吗？还有些问题没定。」\n\n只输出：\n1. VERDICT：现在能不能验收并交付建图\n2. WHY：一两句话\n3. STOP：这个 session 接下来不许做什么\n不要派活。",
+      "expected_output": "能：建图验收与地图完成是两回事。地图、类型化决策票与真实阻塞边都已存在，未决问题不影响建图验收。建图 session 到此停止，不得顺手去解决这些票；逐票 work 之后再领，每 session 最多一张非 research 票。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "chart_accepts_with_open_decisions",
+          "text": "即使还有未决决定也验收建图"
+        },
+        {
+          "name": "chart_is_not_map_completion",
+          "text": "不把建图交付等同于地图完成"
+        },
+        {
+          "name": "stops_after_chart",
+          "text": "建图 session 结束，不在其中解决票"
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "name": "wayfinder-work-claim-and-hitl",
+      "prompt": "你正在跑 orchestra-auto 的 wayfinder 逐票会话。frontier 上有两张可领取的票：一张标 `wayfinder:grilling`，一张标 `wayfinder:research`。用户在场，说「继续」。\n\n只输出：\n1. CLAIM：开工前做什么，领哪张\n2. PARALLEL：研究票会不会改变本 session 的票数上限\n3. HITL：grilling 票的决定从哪来\n4. RESOLUTION：票有答案后必须发生什么\n不要运行命令。",
+      "expected_output": "开工前先认领一张票（通过指派），这是本 session 的第一笔写。领 grilling 票作为唯一一张非 research 票；research 是 AFK、可在新上下文并行，因此不提高每 session 的票数上限。grilling 票的决定来自真实的用户交流，绝不是 agent 自问自答。解决后：把答案写成 resolution 评论、关闭票、在地图 Decisions-so-far 追加指针与要点，并把新能说清的 fog 毕业成新票。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "claim_before_work",
+          "text": "开工前先认领票"
+        },
+        {
+          "name": "one_non_research_ticket",
+          "text": "每 session 最多一张非 research 票"
+        },
+        {
+          "name": "research_parallel_is_afk",
+          "text": "把 research 当作可并行的 AFK 工作，而不是阻塞 session 的 HITL 项"
+        },
+        {
+          "name": "user_answers_grilling",
+          "text": "grilling 的决定来自用户真实回答"
+        },
+        {
+          "name": "resolution_updates_map",
+          "text": "写 resolution、关票并更新地图指针"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "name": "questionnaire-and-wizard-block",
+      "prompt": "你正在跑 orchestra-auto。一个决定依赖第三方账号所有者回答；用户说问卷已经发出，但还没有回音。另一个节点需要用户用向导创建云凭证，用户还没运行向导。\n\n只输出：\n1. STATE：你为每个依赖节点记录的状态\n2. FILL：你或 worker 能否替接收人回答、或替用户完成向导\n3. NEXT：什么能推进、什么不能\n不要运行命令。",
+      "expected_output": "两个依赖节点都停在人身上：问卷节点等真实回复，向导节点等人完成。没有谁替接收人填答，也没有谁替用户执行那一步，两者都不能记为执行失败。独立工作继续推进；阻塞节点不会因为时间过去就变成就绪。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "waits_for_real_answer",
+          "text": "问卷节点等到真实回复前保持阻塞"
+        },
+        {
+          "name": "waits_for_human_wizard",
+          "text": "向导节点等人类完成后才继续"
+        },
+        {
+          "name": "no_substitution",
+          "text": "不替接收人回答、不替用户完成操作"
+        },
+        {
+          "name": "not_failure",
+          "text": "不把等人处理的节点记为执行失败"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "name": "flow-resume-design-only",
+      "prompt": "一次 Run 写了显式流程记录：节点 `grill`（G-docs）与 `spec`（G-spec，依赖 grill）。授权交付终点只有设计产物。`grill` 已带 task/attempt/产物证据验收；`spec` 记为 `not_applicable`，并带「用户只要设计」的入口证据。\n\n只输出：\n1. RESUME：基于流程的续跑报什么\n2. READY：就绪集合\n3. AUTHORIZATION：这是否授权合并或实施\n不要运行命令。",
+      "expected_output": "流程续跑报 `complete`：所有适用节点都已满足（accepted，或带有入口证据的 not_applicable），不适用节点带着未运行的理由。就绪集合为空。完成只覆盖授权的设计终点，不是合并授权，也不授权实施；要实施需要有新的授权交付终点。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "complete_ignores_inapplicable",
+          "text": "所有适用节点满足时报完成"
+        },
+        {
+          "name": "not_applicable_needs_evidence",
+          "text": "仅为带入口证据的 not_applicable 放行"
+        },
+        {
+          "name": "completion_is_not_merge_authorization",
+          "text": "说明完成不授权合并或继续实施"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "name": "legacy-ledger-not-proof",
+      "prompt": "一次 Run 没有流程记录，只有旧账本。账本里有一条上一轮通过的 G-docs 验收记录。当前请求是一个尚未讨论需求的新功能。\n\n只输出：\n1. MODE：续跑答案怎么标注、能得出什么结论\n2. GRILL：旧 G-docs 记录能否证明新需求已经谈清\n3. NEXT：实施前你先做什么\n不要运行命令。",
+      "expected_output": "续跑答案标为 `legacy`：它只是旧账本给出的五位置链建议，不能证明当前入口、门禁或终点。旧 G-docs 记录只覆盖上一轮，不是新需求已经 grill 过的证据。coordinator 重新为新工作路由（grill-with-docs，或能解决未决问题的最短阶段），之后才允许实施。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "legacy_label_limits_conclusion",
+          "text": "标为 legacy 并说明它不能证明什么"
+        },
+        {
+          "name": "old_gdocs_not_current_grill",
+          "text": "拒绝把上一轮的 G-docs 记录当作当前 grill"
+        },
+        {
+          "name": "reroutes_new_work",
+          "text": "为新请求重新路由，而不是凭旧记录直接实施"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "name": "flow-invalidation-downstream",
+      "prompt": "一次 Run 的流程有 grill、spec、build 三个节点，依次验收。随后用户修改了需求，spec 随之变化。之后有一次针对旧 spec 的 build 验收尝试成功。\n\n只输出：\n1. RECORD：为 spec 变化追加什么记录\n2. AFFECTED：哪些节点受影响、怎样受影响\n3. STALE：后一次 build 验收怎么处理\n不要运行命令。",
+      "expected_output": "追加一条 cause 为 `spec-change` 的 `invalidate` 记录，点名 spec 节点；它让 spec 及其全部下游（build）失效，这些节点不再算已验收。针对旧产物版本的验收不能覆盖这次失效：工作要按新 spec 版本重新进入失效节点，并需要新的 attempt 绑定。只追加历史，不改写。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "invalidate_names_spec",
+          "text": "为 spec 节点追加 cause 为 spec-change 的 invalidate 记录"
+        },
+        {
+          "name": "downstream_invalidated",
+          "text": "同时让下游 build 节点失效"
+        },
+        {
+          "name": "stale_acceptance_not_override",
+          "text": "不让旧产物的验收覆盖失效"
+        },
+        {
+          "name": "history_appended",
+          "text": "只追加历史，不改写"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "name": "issue-body-not-several-tickets",
+      "prompt": "你正在跑 orchestra-auto，需要验收一份 `to-tickets` 产物。你取到一条 GitHub issue 正文，含 `## What to build`、带勾选框的 `## Acceptance criteria`，以及 `## Blocked by`。另外用户还给了你一个目录，里面每张票一个 Markdown 文件。\n\n只输出：\n1. ISSUE：issue 正文怎么读\n2. FILES：目录怎么读\n3. CHECK：exit-check 能得出什么、不能得出什么\n不要运行命令。",
+      "expected_output": "issue 正文是一张票，不是每个 `##` 章节一张：验收小节就是它的验收标准，`Blocked by` 指向真实票。目录是集合：每个文件是一张票，按文件边界检查。可以逐文件运行 exit-check，或重复 `--artifact`；它报告缺验收、未知阻塞与环，且只是地板，不是对需求正确性或用户批准的判决。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "issue_is_one_ticket",
+          "text": "把 issue 正文读作一张票，而不是多个章节"
+        },
+        {
+          "name": "file_boundary_per_ticket",
+          "text": "目录中每个文件按一张票读"
+        },
+        {
+          "name": "check_is_floor",
+          "text": "说明检查只是地板，不是对正确性或批准的判决"
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "name": "spec-native-vs-dispatch",
+      "prompt": "你正在跑 orchestra-auto，对一份 spec 运行 exit-check。spec 有 `## Problem Statement`、`## User Stories` 与带可验收条目的 `## Acceptance criteria`，但没有 `Test tier:` 行。\n\n只输出：\n1. NATIVE：原生检查结论\n2. DISPATCH：本项目附加项结论\n3. NEXT：你向用户报告什么、接下来做什么\n不要运行命令。",
+      "expected_output": "原生检查通过：spec 有验收小节且至少一条可验收条目。dispatch 检查失败：缺本项目的 `Test tier:` 行。两者分开报告，绝不把一份上游有效的 spec 说成上游无效；要在本项目进入实施，需补上测试档，并且报告要说明检查只判形状，不判需求是否正确。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "native_passes",
+          "text": "报告上游原生检查通过"
+        },
+        {
+          "name": "dispatch_fails",
+          "text": "报告本项目测试档附加项缺失"
+        },
+        {
+          "name": "separate_report",
+          "text": "两个结论分开报告，不合并"
+        },
+        {
+          "name": "no_correctness_claim",
+          "text": "不声称检查能证明需求正确"
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "name": "triage-and-retro-governance",
+      "prompt": "你正在跑 orchestra-auto。同一轮里来了两样东西：tracker 上的一条外部 bug 报告，以及一次 retro，其候选包括「加一条 lint 规则」。上一轮的 `to-tickets` 已经产出三张 agent-ready 票。\n\n只输出：\n1. TRIAGE：什么走 triage、什么不走\n2. RETRO：候选怎么处理\n3. GATES：各自运行哪些门禁\n不要运行命令。",
+      "expected_output": "外部 bug 报告走 `triage`；`to-tickets` 产出的三张 agent-ready 票不再重复 triage。retro 候选写在仓库外，需人类选定后才由 worker 落地，本身不扩大当前范围。被 triage 的 issue 与落地的 retro 改动各自运行自己的门禁（issue 走 G-impl；retro 改动按其改动类型），不是一套通用的全量。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "triage_only_external",
+          "text": "只 triage 外部报告，不动 agent-ready 票"
+        },
+        {
+          "name": "retro_candidate_needs_human",
+          "text": "retro 候选等待人类选定"
+        },
+        {
+          "name": "no_scope_widening",
+          "text": "不让 retro 候选扩大本轮范围"
+        }
+      ]
     }
   ]
 }

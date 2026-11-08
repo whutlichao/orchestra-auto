@@ -13,6 +13,7 @@ criteria must not be borrowed from each other).
 
 - [G-docs — requirement alignment (the grill-with-docs path: document structure completeness)](#g-docs--requirement-alignment-the-grill-with-docs-path-document-structure-completeness)
 - [G-wayfinder — the wayfinder path (map and decision tickets)](#g-wayfinder--the-wayfinder-path-map-and-decision-tickets)
+- [Decision branches: research, prototype, questionnaire, wizard, task](#decision-branches-research-prototype-questionnaire-wizard-task)
 - [G-spec — after to-spec lands](#g-spec--after-to-spec-lands)
 - [G-tickets — after to-tickets lands](#g-tickets--after-to-tickets-lands)
 
@@ -93,6 +94,31 @@ below when the map is claimed complete.
   to SKILL.md §7 for implementation tickets. **State in the report which of the two it is.**
 
 ---
+
+## Decision branches: research, prototype, questionnaire, wizard, task
+
+Each branch below returns to the decision that opened it; none of them may silently become the
+implementation. Accept one only when its own output exists and the decision it served is recorded
+back at the original question.
+
+| Branch | Mode | Input | Output and evidence | Return |
+| --- | --- | --- | --- | --- |
+| `research` | AFK | one decision question and its sources | a cited Markdown file; every claim traces to a primary source | the decision that asked, not the user's choice |
+| `prototype` | HITL | the one question a runnable artifact answers | the user reacted; the question and verdict are recorded; the prototype is kept on a throwaway branch or pointer | the asking stage |
+| `to-questionnaire` | HITL (async) | recipient, and what the user needs back | the questionnaire file exists and is handled through the named process; **writing it authorizes no sending** | the asking stage, once real answers arrive |
+| `wizard` | human executes | a step only a human can perform | an interactive script the human confirms step by step | the task that was blocked, with the values it captured |
+| `task` (wayfinder) | HITL or AFK | work needed before a decision | the work is done and its resulting facts are recorded on the ticket | the blocked decision ticket |
+
+Blocking rules that apply to all five:
+
+- A questionnaire with no recipient answer, and a wizard the human has not finished, leave the
+  dependent node **blocked**; the coordinator does not fill in answers or perform the human's side.
+- Research conclusions and prototype verdicts are input to a decision; they never replace the
+  user's decision, and they do not authorize implementation.
+- The dispatcher is the case that does *do* rather than decide; it earns its place only by
+  unblocking a decision, never by delivering the destination.
+- Throwaway branches and pointers are authorized temporary artifacts: apply the implementation PR
+  contract only when the user authorized a project change, not to the research or prototype.
 
 ## G-spec — after to-spec lands
 

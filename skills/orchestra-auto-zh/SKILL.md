@@ -37,7 +37,7 @@ description: >-
 | `references/dispatch-preflight.md` | 每次派活前（§4.0.1 打勾）、拿到回执后（§4.0.2 启动与隔离证据）、以及收尾时（§4.0.3 格式化噪声） |
 | `references/prose-contract.md` | 验收时、审查任一语言包时，或两份文档对「从某个信号能推出什么结论」看似不一致时 |
 | `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
-| `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型 |
+| `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型；或规划阶段要交给新上下文、需要交接记录时 |
 | `references/visual-evidence.md` | 票面要求 Orca 实际渲染截图（视觉证据）时：写 spec 的取证方式前，以及验收该证据前 |
 | `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
 | `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
@@ -50,7 +50,7 @@ description: >-
 | `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
 | `references/failed-dispatch-recovery.md` | `worker-start` 回执 `state: failed` |
 | `references/failure-and-reporting.md` | CLI 起不来、熔断触发、或 Orca app 运行中重启时 |
-| `references/chain-run.md` | 两轮之间、崩溃之后，或需要从台账续跑时：链条走到哪个位置、每格产物必须带什么 |
+| `references/chain-run.md` | 两轮之间、崩溃之后，或需要续跑时：显式流程记录，以及 flow 与 legacy 两种答案各能推出什么 |
 
 使用 Orca 前只解析一次可执行文件：优先 `ORCA_CLI_COMMAND`，否则 `ORCA_DEV_REPO_ROOT` 已设置时用 `orca-dev`，否则 Linux 非 Orca 管理的会话用 `orca-ide`，其余用 `orca`。以下示例的 `orca` 代表选定的可执行文件；整个会话复用它，失败时停止，不换程序。读取该程序同版本的 `skills get orchestration` 与 help。
 
@@ -75,27 +75,23 @@ worktree 名派活时再取 slug。
 更多理由与完整派活叙述见 [派活闭环](references/dispatch-loop.md)。若明确证实所选 agent 不受支持或被禁用，按 §9 报告并停止，不猜测或替换。
 §4.3 的表只记录启动/标题判据，不代表默认值或禁用状态。
 
-## 1. 通道与交付终点
+## 1. 通道、路由与交付终点
 
 记录用户要什么、停在哪里。项目改动创建 PR；只要求开 PR 时止于开放 PR，只有用户授权合并且门禁通过时才可合并。单向 Merge Danger 门保留开放 PR 给人类手动合并。用户后续指令优先；探索可改实现路径，不可擅自扩大工作范围。
 
-| 请求 | 通道 | 处理 |
+**通道**是监督与交付形态；**路由**是工作进入的 skill 路径。按这个顺序判定并同时记录两者。
+
+| 通道 | 什么时候 | 处理 |
 | --- | --- | --- |
-| 解释、状态、讨论或口头研究结论 | A | 直接答复；明确要求访谈 skill 时按其交互流程 |
-| 边界清楚的小改动、修 bug、已有 spec 或票 | B | 只读探索后派实施 worker；前置 skill 是 `implement`（修 bug 先 `diagnosing-bugs`） |
-| 必须落盘的研究、设计、规格或拆票 | B/C | 对应的 `research` / `grill-with-docs` / `to-spec` / `to-tickets`；停在约定产物 |
-| 多票或尚未收敛的完整实施请求 | C | 先收敛需求与依赖；G-tickets 验收完整票图后，只派 **一个** 长程 `implement-spec` worker |
-| 外部 issue/PR、冲突或术语治理 | B/C | 仓库的 triage、冲突处理或 `domain-modeling` 流程 |
+| A | 答复、报告或讨论留在这个会话里；不写项目文件 | 直接答复；用户点名访谈 skill 时按其交互流程 |
+| B | 一个可圈定的交付物落盘或落成 PR：小改动、修复、单张票，或一个产物（研究、设计、规格、拆票） | 只读探索后派一个 worker；前置 skill 取自路由 |
+| C | 多票或尚未收敛、需要长程执行的工作 | 先收敛需求与依赖；G-tickets 验收完整票图后，只派 **一个** 长程 `implement-spec` worker |
 
-前置 skill 是本阶段那个 skill，不是通道那个（§4.3）；缺失按 §9 带证据报告。
-具体对照表见[派活闭环](references/dispatch-loop.md)。
+**路由**从[路由表](references/dispatch-loop.md#入口证据)选：每行一个条件，带该行需要的输入、skill 与依赖、完成证据和回流点。**路由索引**——把每条路由族都列在这里，免得任何一条在本入口上不可见；条件、依赖与回流点只写在表里：原地答复（不建 Run）；未决取舍用 `grill-me`（无工作目录）或 `grill-with-docs`（有工作目录）→ `grilling`（+ `domain-modeling`）；边界清楚的改动、修复、续跑票或有效 spec/票用 `implement`（修 bug 先 `diagnosing-bugs`）；规划本身跨 session 且路线迷雾重时用 `wayfinder`（chart 或 work；先读仓库寻路约定，绝不发明标签）；决定需要资料、可运行产物、他人的回答或只有人能做的操作时，分别用 `research` / `prototype` / `to-questionnaire` / `wizard`；已对齐的多 session 构建走 `to-spec` → `to-tickets` → `implement` 或 `implement-spec`；外部原始 issue、难复现 bug、架构痛点分别用 `triage`、`diagnosing-bugs`、`improve-codebase-architecture`；交付完成、重复失误或流程故障时用 `retro`。
 
-入口判定先核对用户目标、可观察行为、范围、验收和关键方案是否已有依据。新需求存在尚未解决的
-取舍时，跨 session 且路径不明用 `wayfinder`；非代码访谈用 `grill-me`，涉及代码库和领域设计用
-`grill-with-docs`；记录哪些问题需要用户决定。已有 spec 或票只有在核对其适用
-当前请求、未过期且解决了这些问题后才可作为后续入口。直接实施的小改动或修复，在模式声明中
-记录范围、验收及已解决关键取舍的依据；发现新分叉时重新路由。没有 spec 本身不是跳过 grill 的理由。
-用户明确要求 grill 时按其要求进行，不以改动小为由跳过。
+在 §0 声明旁写路由记录——`路由 <行号>：<名称> | 入口证据 <什么证明适用这一行> | 阶段 <当前阶段> | 门禁 <适用门禁> | 未决问题 <有/无>`——探索发现新分叉、缺失 skill、过期 spec 或票时，重申两份记录。非第 1 行的路由会创建一个 Run。只要求开 PR 时，交付止于开放 PR（§0）。
+
+已有 spec 或票只有在核对过它适用当前请求、未过期且解决了未决问题后才能作为入口。已定案的单票走 B；只有完整票图用 `implement-spec`；只要设计的请求在该产物的授权交付终点收口；范围本身不清时按 §5 请人定夺。探索若发现多票、方案分叉或跨模块 seam，重新判定通道并重申两份记录；绝不把讨论请求转成实施授权。
 
 ### 1.1 仓库初始化门
 
@@ -112,13 +108,7 @@ worktree 名派活时再取 slug。
 （tracker 不可达时 `to-spec` 发不出去）；不静默跳过，也不由 coordinator 在 main 上手写治理文件。
 
 雾重到形不成稳定需求时，可用 `wayfinder` 产出地图与决策票；先读目标仓库的寻路约定，不要发明标签。
-若改动会推翻已有 ADR 或计划决策，先定夺该决策。完整实施请求通常走
-`grill-with-docs → to-spec → to-tickets → implement-spec`；已有有效 spec 或票时从对应阶段进入。
-已定案的单票仍走 B 通道；只有完整票图才用 `implement-spec`。只要设计就到该产物的授权交付终点后收口；
-只要求开 PR 时，交付止于开放 PR（见 §0）。
-
-若 §4.1 只读探索发现多票、方案分叉或跨模块 seam，重新判定通道并重申模式声明。
-范围本身不清时按 §5 请人定夺；绝不把讨论请求转成实施授权。
+若改动会推翻已有 ADR 或计划决策，先定夺该决策。
 
 ## 2. 角色边界：coordinator 规划与验收，worker 编辑与提交
 
@@ -218,13 +208,14 @@ coordinator 自行核验可观察结果与证据，失败就列明缺项打回�
 
 ## 7. 落盘、实施与收口
 
-每轮以 §0 声明的工作范围为准。完整实施请求在需求尚不明确时依次走
+每轮以 §0 声明的工作范围与 §1 记录的路由为准。完整实施请求在需求尚不明确时依次走
 `grill-with-docs → to-spec → to-tickets → implement-spec`；已有清楚 spec 或已开票时从对应阶段进入。
 只要设计、规格或票据的请求就在该阶段产物的授权交付终点收口，不擅自进入实施。
 用户只要求开 PR 时止于开放 PR（见 §0）。
 
-两轮之间，`scripts/chain.py resume` 从台账报出下一个位置，`exit-check` 施加两道产物地板；
-各自能推出什么、不能推出什么，见 [链条与续跑](references/chain-run.md)。
+两轮之间，显式流程记录（`scripts/flow.py`）就是计划：`chain.py resume` 优先读它，报出下一个就绪节点、
+阻塞项、等人处理项或证据缺口；只有没有 flow 记录的 Run 才回退到旧账本链，答案标为 `legacy`。
+`exit-check` 施加两道产物地板；各自能推出什么、不能推出什么，见 [链条与续跑](references/chain-run.md)。
 
 - 设计票按 G-docs 或 G-wayfinder 验收。若本轮包含 to-spec / to-tickets，继续落盘并核对 tracker；否则报告记录后续入口，不把未授权阶段标成缺陷。
 - 完整票图只派一个长程 worker；它拥有 frontier 与并发。逐票回退（一票一个 worker，默认 3 个）

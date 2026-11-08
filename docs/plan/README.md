@@ -6,6 +6,7 @@
 - [分析](analysis/skill-workflow.md)：模块与跨模块集成关系。
 - `tasks/`：每个独立交付单元的范围和验证；执行前从批准基线创建隔离分支。
 - `reviews/`：独立审阅记录，区分规划审阅与后续实现验证。
+  [实施记录](reviews/skill-workflow-implementation.md) 是实施者自述，不等于独立 verify。
 - [backlog](backlog.md)：未纳入当前范围的改善。
 
 状态规则：pending 为前置未完成；ready 为依赖已验收；in-progress 为正在执行；blocked 记录实际阻塞；done 必须附产物、验证及独立审阅证据。编写任务文件不会使任务自动完成。

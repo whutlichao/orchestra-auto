@@ -21,6 +21,7 @@ written, so never treat an effect as authorized, or a gate as passed, on a faile
 - [Crash windows and classification](#crash-windows-and-classification)
 - [Fixed dispatch order](#fixed-dispatch-order)
 - [Action matrix](#action-matrix)
+- [The flow record is the plan, not another ledger](#the-flow-record-is-the-plan-not-another-ledger)
 - [Two hard rules](#two-hard-rules)
 - [Progress projection](#progress-projection)
 - [Authority snapshot](#authority-snapshot)
@@ -217,6 +218,15 @@ failure (`unproven_retry`, and `unknown_outcome` when the recorded outcome is un
 a release or retain of a worker whose settlement is not proven (`unsettled_release`). A
 missing reply is `send_reply_no_resend`: no reply is not proof of failure. A stop or
 abandon with a running worker is `stop_abandon_no_retry`.
+
+## The flow record is the plan, not another ledger
+
+The ledger records observations; it does not say which stages this Run chose. The explicit flow
+(`flow.py`, see [chain-run](chain-run.md)) holds that plan and is the resume authority when it
+exists; the ledger keeps its own meaning and is never converted. A flow `accepted` state needs the
+same evidence discipline as a ledger acceptance: task/attempt/artifact/evidence, append-only, and
+a later state overrides an earlier one for the same node. Do not copy flow states into ledger
+records to make an old resume see them, and do not infer flow nodes from ledger history.
 
 ## Two hard rules
 

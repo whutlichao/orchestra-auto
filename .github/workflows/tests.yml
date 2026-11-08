@@ -51,6 +51,7 @@ jobs:
           python -m unittest \
             tests.test_package_content \
             tests.test_chain \
+            tests.test_flow \
             tests.test_ledger \
             tests.test_preflight \
             tests.test_health \
