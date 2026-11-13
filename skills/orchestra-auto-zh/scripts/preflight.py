@@ -131,8 +131,8 @@ OBSERVATIONS = ("review-exemption-recheck", "dashboard-backfill", "inbox-health"
 #: and guide recorded here; a different Orca version may differ, so a read that does not
 #: match fails and reports instead of guessing or falling back.
 LIVE_SETTINGS_VERIFICATION = {
-    "source": "Orca CLI 1.4.244 on macOS",
-    "verified_at": "2026-10-29",
+    "source": "Orca CLI 1.4.258 on macOS",
+    "verified_at": "2026-11-13",
     "scope": "version-scoped; verify against the current CLI and guide before reuse",
 }
 LIVE_SETTINGS_TABLE = "profile_state_documents"
@@ -547,8 +547,9 @@ def _read_live_settings(database):
     unrelated settings, and the ledger carries no credentials.
     """
     try:
-        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
-    except sqlite3.Error as error:
+        uri = database.resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+    except (OSError, sqlite3.Error) as error:
         return None, f"cannot open the state database read-only: {error}"
     try:
         rows = connection.execute(
@@ -645,27 +646,47 @@ def _check_live_settings(runner):
             f"cannot list the profile directory: {error}; " + NO_FALLBACK_NOTE,
         )
     observed["profile_directory"] = str(profile_dir)
-    observed["databases"] = [path.name for path in candidates]
-    if len(candidates) != 1:
+    # A profile directory holds unrelated SQLite files (caches, a not-yet-created store),
+    # so the file count proves nothing. Probe each non-backup candidate read-only and keep
+    # only the one whose schema answers with exactly one usable settings document. The
+    # filename is never a rule; a candidate that cannot be opened is simply not usable.
+    probes = []
+    usable = []
+    for candidate in candidates:
+        values, problem = _read_live_settings(candidate)
+        if problem:
+            probes.append({"database": candidate.name, "usable": False, "reason": problem})
+            continue
+        probes.append({
+            "database": candidate.name,
+            "usable": True,
+            "reason": "one settings document with a defaultTuiAgent and disabledTuiAgents",
+        })
+        usable.append((candidate, values))
+    observed["database_probes"] = probes
+    if len(usable) != 1:
+        detail = "; ".join(
+            f"{probe['database']}: {probe['reason']}" for probe in probes
+        ) or "no non-backup .db file in the profile directory"
         return _item(
             "live-settings", "fail", command, observed,
-            f"expected exactly one non-backup state database, found {len(candidates)}; "
-            + NO_FALLBACK_NOTE,
+            f"expected exactly one usable state database, found {len(usable)} among "
+            f"{len(candidates)} non-backup candidates; {detail}; " + NO_FALLBACK_NOTE,
         )
-    database = candidates[0]
+    database, values = usable[0]
     observed["database"] = database.name
-    values, problem = _read_live_settings(database)
     evidence = str(database)[:2048]
-    if problem:
-        return _item(
-            "live-settings", "fail", command, observed,
-            problem + "; " + NO_FALLBACK_NOTE, evidence,
-        )
     observed.update(values)
+    others = len(candidates) - 1
+    rejected = (
+        f"{others} other non-backup candidate(s) were probed and rejected"
+        if others else "no other non-backup candidate was present"
+    )
     return _item(
         "live-settings", "pass", command, observed,
-        "read defaultTuiAgent and disabledTuiAgents from the current profile's single "
-        "non-backup state database; the schema verification is version-scoped",
+        "read defaultTuiAgent and disabledTuiAgents from the single non-backup state "
+        "database whose schema exposes one settings document; " + rejected
+        + "; the schema verification is version-scoped",
         evidence,
     )
 
