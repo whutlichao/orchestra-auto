@@ -78,32 +78,70 @@ twelve §4.0.1 lines. It is recorded in the receipt like every other item. An un
 database, table, field or value fails it and stops the dispatch, and no fallback source is
 read.
 
-Read the settings from the profile's **live state database** — the one SQLite file in that directory
-that is not a retained backup. Recovery snapshots also end in `.db`, so select the database instead of
-naming it, and never pass several files to `sqlite3`: zero or several candidates means stop and report
-rather than guess, and a backup would answer with stale settings. In the current schema, settings
-are stored as JSON in the `payload` column of the `profile_state_documents` row where
-`domain = 'settings'`. The top-level `defaultTuiAgent` and `disabledTuiAgents` fields hold the default
-TUI agent and disabled-agent list. For example:
+Read the settings from the profile's **live state database**: the one non-backup `.db` file in that
+directory whose schema is a usable settings store. The directory normally holds several unrelated
+SQLite files — caches such as `orca-github-cache.db`, and a zero-byte `state.db` that is not a store
+— so neither the file count nor a filename selects the database; a retained backup also ends in
+`.db` and would answer with stale settings. Select by schema instead: probe each candidate
+read-only and accept only one that has a `profile_state_documents` table with exactly one
+`domain = 'settings'` row whose `payload` parses as JSON with a non-empty `defaultTuiAgent` string
+and a `disabledTuiAgents` array of strings. Those top-level fields hold the default TUI agent and
+the disabled-agent list. Exactly one usable candidate is the answer; zero or several means stop and
+report, naming every candidate and whether it was accepted or why it was rejected, rather than
+guess. For example:
 
 ```bash
 PROFILE_DIR="$(dirname "$SETTINGS_PATH")"
-STATE_DB="$(find "$PROFILE_DIR" -maxdepth 1 -name '*.db' ! -name '*.backup.*')"
-[ "$(printf '%s\n' "$STATE_DB" | grep -c .)" = "1" ] || { echo "expected exactly one profile state database"; exit 1; }
-sqlite3 -readonly "$STATE_DB" \
-  "SELECT json_object(
-     'defaultTuiAgent', json_extract(payload, '$.defaultTuiAgent'),
-     'disabledTuiAgents', json_extract(payload, '$.disabledTuiAgents')
-   ) FROM profile_state_documents WHERE domain = 'settings';"
+python3 - "$PROFILE_DIR" <<'PY'
+import json, pathlib, sqlite3, sys
+
+usable = []
+for candidate in sorted(pathlib.Path(sys.argv[1]).glob("*.db")):
+    if ".backup." in candidate.name or not candidate.is_file():   # skip snapshots and directories
+        continue
+    try:
+        connection = sqlite3.connect(candidate.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT payload FROM profile_state_documents WHERE domain = 'settings'"
+            ).fetchall()
+        finally:
+            connection.close()
+        document = json.loads(rows[0][0]) if len(rows) == 1 else None
+    except (sqlite3.Error, TypeError, ValueError) as error:
+        print(f"ignored {candidate.name}: {error}", file=sys.stderr)
+        continue
+    if len(rows) != 1:
+        print(f"ignored {candidate.name}: expected one settings row, found {len(rows)}",
+              file=sys.stderr)
+        continue
+    if not isinstance(document, dict):
+        print(f"ignored {candidate.name}: the settings payload is not a JSON object",
+              file=sys.stderr)
+        continue
+    agent, disabled = document.get("defaultTuiAgent"), document.get("disabledTuiAgents")
+    if (not isinstance(agent, str) or not agent.strip() or not isinstance(disabled, list)
+            or not all(isinstance(value, str) for value in disabled)):
+        print(f"ignored {candidate.name}: the settings payload is unusable", file=sys.stderr)
+        continue
+    usable.append((candidate.name, agent, disabled))
+if len(usable) != 1:
+    sys.exit(f"expected exactly one usable state database, found {len(usable)}")
+name, agent, disabled = usable[0]
+print(json.dumps({"database": name, "defaultTuiAgent": agent, "disabledTuiAgents": disabled}))
+PY
 ```
 
-Confirm that `defaultTuiAgent` is non-empty and `disabledTuiAgents` is an array (an empty array is
-valid). If the database, table, fields, or values cannot be read, check the current CLI help and Orca
-guide for the profile-state schema; if it still cannot be confirmed, stop and report. Do not fall
-back to `orca-data.json`, stale exports, snapshots, backups, skill text, eval fixtures, or old logs.
+The snippet prints the selected database and the only two fields it accepts; `defaultTuiAgent` must
+be non-empty and `disabledTuiAgents` an array (an empty array is valid). If the database, table,
+fields, or values cannot be read, check the current CLI help and Orca guide for the profile-state
+schema; if it still cannot be confirmed, stop and report. Do not fall back to `orca-data.json`, stale
+exports, snapshots, backups, skill text, eval fixtures, or old logs.
 
-The table and field names above were verified with Orca CLI 1.4.244 on macOS on 2026-10-29.
-That is a version-scoped observation, not a stable contract: the receipt records the
+The table and field names above were verified with Orca CLI 1.4.244 on macOS on 2026-10-29, and this
+schema-based selection was re-verified with Orca CLI 1.4.258 on macOS on 2026-11-13, where the live
+profile held three non-backup `.db` files (the state database, a GitHub cache, and a zero-byte
+placeholder). Those are version-scoped observations, not a stable contract: the receipt records the
 verification source and timestamp, tests use fixtures, and a different Orca version must be
 re-verified against its own CLI help and guide before its table or field names are trusted.
 

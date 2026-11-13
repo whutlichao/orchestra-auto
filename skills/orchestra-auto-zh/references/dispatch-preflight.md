@@ -68,30 +68,63 @@ item id 与 class。`live-settings` 与 `message-capability` 是独立的阻断�
 它和其他 item 一样写入回执。数据库、表、字段或值任一不可读即该项失败并停止派活，绝不读取
 任何回退来源。
 
-从该 profile 目录下**活动的状态数据库**只读查询设置——即该目录里唯一不是保留备份的那个 SQLite 文件。
-恢复快照同样以 `.db` 结尾，所以要「选」而不是「按名写死」，且绝不把多个文件一起交给 `sqlite3`：
-候选为 0 个或多个时停止并报告，不要猜；读到备份只会得到过期设置。当前 schema 将设置保存在
-`profile_state_documents` 表中 `domain = 'settings'` 的 `payload` JSON，默认 TUI agent 和禁用列表分别是
-payload 顶层的 `defaultTuiAgent` 与 `disabledTuiAgents`。例如：
+从该 profile 目录下**活动的状态数据库**只读读取设置——即该目录里唯一一个不是保留备份、且 schema 是可用的设置存储的 `.db` 文件。
+该目录通常会有多个互不相关的 SQLite 文件——例如 `orca-github-cache.db` 这类缓存，以及一个零字节、还不是存储的 `state.db`——
+所以文件数量不能作为依据，文件名也不能当作规则；保留备份同样以 `.db` 结尾，读到它只会得到过期设置。应当按 schema 选择：逐个只读
+探测候选文件，只有同时具备 `profile_state_documents` 表、该表中恰好一行 `domain = 'settings'`、且该行 `payload` 能解析为带
+非空 `defaultTuiAgent` 字符串和 `disabledTuiAgents` 字符串数组的 JSON 的候选才算可用。这两个顶层字段分别是默认 TUI agent 与
+禁用列表。恰好一个可用候选才是答案；0 个或多个都必须停止并报告，逐个列出候选以及它被接受或被拒绝的原因，不得猜测。例如：
 
 ```bash
 PROFILE_DIR="$(dirname "$SETTINGS_PATH")"
-STATE_DB="$(find "$PROFILE_DIR" -maxdepth 1 -name '*.db' ! -name '*.backup.*')"
-[ "$(printf '%s\n' "$STATE_DB" | grep -c .)" = "1" ] || { echo "expected exactly one profile state database"; exit 1; }
-sqlite3 -readonly "$STATE_DB" \
-  "SELECT json_object(
-     'defaultTuiAgent', json_extract(payload, '$.defaultTuiAgent'),
-     'disabledTuiAgents', json_extract(payload, '$.disabledTuiAgents')
-   ) FROM profile_state_documents WHERE domain = 'settings';"
+python3 - "$PROFILE_DIR" <<'PY'
+import json, pathlib, sqlite3, sys
+
+usable = []
+for candidate in sorted(pathlib.Path(sys.argv[1]).glob("*.db")):
+    if ".backup." in candidate.name or not candidate.is_file():   # 跳过备份与目录
+        continue
+    try:
+        connection = sqlite3.connect(candidate.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT payload FROM profile_state_documents WHERE domain = 'settings'"
+            ).fetchall()
+        finally:
+            connection.close()
+        document = json.loads(rows[0][0]) if len(rows) == 1 else None
+    except (sqlite3.Error, TypeError, ValueError) as error:
+        print(f"ignored {candidate.name}: {error}", file=sys.stderr)
+        continue
+    if len(rows) != 1:
+        print(f"ignored {candidate.name}: expected one settings row, found {len(rows)}",
+              file=sys.stderr)
+        continue
+    if not isinstance(document, dict):
+        print(f"ignored {candidate.name}: the settings payload is not a JSON object",
+              file=sys.stderr)
+        continue
+    agent, disabled = document.get("defaultTuiAgent"), document.get("disabledTuiAgents")
+    if (not isinstance(agent, str) or not agent.strip() or not isinstance(disabled, list)
+            or not all(isinstance(value, str) for value in disabled)):
+        print(f"ignored {candidate.name}: the settings payload is unusable", file=sys.stderr)
+        continue
+    usable.append((candidate.name, agent, disabled))
+if len(usable) != 1:
+    sys.exit(f"expected exactly one usable state database, found {len(usable)}")
+name, agent, disabled = usable[0]
+print(json.dumps({"database": name, "defaultTuiAgent": agent, "disabledTuiAgents": disabled}))
+PY
 ```
 
-确认结果中 `defaultTuiAgent` 非空，且 `disabledTuiAgents` 是数组（空数组有效）。若数据库、表、字段或值不可读，
-先依据当前 CLI help 与 Orca guide 核对 profile-state schema；仍无法确认时停止并报告，不能回退到
+该片段只打印被选中的数据库和它接受的这两个字段；`defaultTuiAgent` 必须非空，`disabledTuiAgents` 必须是数组（空数组有效）。
+若数据库、表、字段或值不可读，先依据当前 CLI help 与 Orca guide 核对 profile-state schema；仍无法确认时停止并报告，不能回退到
 `orca-data.json`、过期导出、快照、备份、本 skill 文本、eval 夹具或旧日志。
 
-上面的表名与字段名于 2026-10-29 在 macOS 上用 Orca CLI 1.4.244 验证过。这是版本范围内的
-观察（version-scoped），不是稳定契约：回执会记录验证来源与时间戳，测试使用夹具，换一个
-Orca 版本必须先用它自己的 CLI help 与 guide 重新验证，才能信任其表名或字段名。
+上面的表名与字段名于 2026-10-29 在 macOS 上用 Orca CLI 1.4.244 验证过；这种按 schema 的选择方式又于 2026-11-13 在 macOS 上用
+Orca CLI 1.4.258 重新验证过：当时该 profile 目录里有三个非备份 `.db` 文件（状态库、GitHub 缓存和一个零字节占位文件）。这些都是
+版本范围内的观察（version-scoped），不是稳定契约：回执会记录验证来源与时间戳，测试使用夹具，换一个 Orca 版本必须先用它自己的
+CLI help 与 guide 重新验证，才能信任其表名或字段名。
 
 用户点名 agent 时优先使用点名值，否则使用实时默认值；两种情况都核对实时禁用列表，并查当前 `worker-start --help` 的 agent 契约。help 中的「such as」示例不是穷举：未列出不等于不受支持。若有当前版本权威的完整列表，按该列表核对；否则将已选且未禁用的值原样显式传给 `worker-start`，由 Orca 校验。若明确证实被禁用或不受支持，或设置不可读，停止派活。若启动回执报 `agent_unconfigured` 或其他失败，按失败派活恢复流程取证，停止而不替换 agent 或盲目重试。
 

@@ -143,9 +143,10 @@ def make_state_database(profile_dir, rows=None, create_table=True, name="state.d
                         payload=None):
     """Write a temporary settings fixture; never a live Orca database.
 
-    The table and column names are the version-scoped schema recorded in the ticket's
-    verification notes (Orca CLI 1.4.244, 2026-10-29). A test may deliberately break any
-    of them to prove that an unreadable database fails instead of falling back.
+    The table and column names are the version-scoped schema first recorded with Orca CLI
+    1.4.244 on 2026-10-29 and re-verified with Orca CLI 1.4.258 on 2026-11-13. A test may
+    deliberately break any of them to prove that an unreadable database fails instead of
+    falling back.
     """
     profile_dir.mkdir(parents=True, exist_ok=True)
     database = profile_dir / name
@@ -164,6 +165,28 @@ def make_state_database(profile_dir, rows=None, create_table=True, name="state.d
                     "INSERT INTO profile_state_documents (domain, payload) VALUES (?, ?)",
                     (domain, payload if payload is not None else text),
                 )
+        connection.commit()
+    finally:
+        connection.close()
+    return database
+
+
+def make_unrelated_database(profile_dir, name="orca-github-cache.db",
+                            tables=("meta", "rows")):
+    """Write a profile SQLite file that is not a settings state database.
+
+    A live profile keeps such files beside the state database, so selection has to be a
+    schema probe, never a filename rule: the table names below are chosen to be unlike
+    the settings schema, not to assert anything about the real cache file.
+    """
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    database = profile_dir / name
+    connection = sqlite3.connect(database)
+    try:
+        for table in tables:
+            connection.execute(
+                f"CREATE TABLE {table} (key TEXT NOT NULL, value TEXT)"
+            )
         connection.commit()
     finally:
         connection.close()
@@ -569,15 +592,17 @@ class LiveSettingsTests(PreflightTestCase):
         self.assertEqual(item["observed"]["database"], "state.db")
         self.assertEqual(item["observed"]["defaultTuiAgent"], "claude")
         self.assertEqual(item["observed"]["disabledTuiAgents"], [])
+        self.assertIn("no other non-backup candidate was present", item["note"])
 
-    def test_zero_or_two_databases_stop_the_dispatch(self):
+    def test_zero_or_two_usable_databases_stop_the_dispatch(self):
         empty_profile = self.root / "empty-profile"
         empty_profile.mkdir()
         runner = settings_runner(empty_profile)
         receipt = self.check(runner=runner)
         item = self.item(receipt, "live-settings")
         self.assertEqual(item["result"], "fail")
-        self.assertIn("exactly one non-backup state database", item["note"])
+        self.assertIn("exactly one usable state database", item["note"])
+        self.assertIn("found 0", item["note"])
         self.assertIn("no fallback", item["note"])
         self.assertFalse(receipt["blocking"]["allowed"])
 
@@ -588,6 +613,8 @@ class LiveSettingsTests(PreflightTestCase):
         item = self.item(receipt, "live-settings")
         self.assertEqual(item["result"], "fail")
         self.assertIn("found 2", item["note"])
+        self.assertIn("first.db", item["note"])
+        self.assertIn("second.db", item["note"])
         self.assertFalse(receipt["blocking"]["allowed"])
 
     def test_an_unreadable_database_never_falls_back_to_orca_data_json(self):
@@ -643,8 +670,8 @@ class LiveSettingsTests(PreflightTestCase):
             if item["id"] == "live-settings"
         )
         verification = item["observed"]["schema_verification"]
-        self.assertIn("1.4.244", verification["source"])
-        self.assertEqual(verification["verified_at"], "2026-10-29")
+        self.assertIn("1.4.258", verification["source"])
+        self.assertEqual(verification["verified_at"], "2026-11-13")
         self.assertIn("version-scoped", verification["scope"])
         self.assertIn("version-scoped", item["note"])
 
@@ -676,6 +703,82 @@ class LiveSettingsTests(PreflightTestCase):
             ["defaultTuiAgent", "disabledTuiAgents"],
         )
         self.assertNotIn("payload", observed)
+
+
+class MultipleProfileDatabaseTests(PreflightTestCase):
+    """Selection is a schema probe, not a filename rule or a file count.
+
+    Orca 1.4.258 keeps unrelated SQLite files beside the settings state database, so a
+    profile directory with three ``.db`` files is normal. Exactly one of them exposes the
+    settings schema; the others are named in the receipt as ignored candidates with the
+    reason they were rejected.
+    """
+
+    def probe_by_name(self, item):
+        return {probe["database"]: probe for probe in item["observed"]["database_probes"]}
+
+    def test_the_live_three_file_profile_selects_the_state_database(self):
+        """The 1.4.258 shape: a state database, an unrelated cache and an empty file.
+
+        The state database does not have the convenient name and the empty file does, so
+        this also proves the conventional filename is not the rule.
+        """
+        profile = self.root / "three-file-profile"
+        make_state_database(profile, name="local-default.db")
+        make_unrelated_database(profile)
+        (profile / "state.db").write_bytes(b"")
+        receipt = self.check(runner=settings_runner(profile))
+        item = self.item(receipt, "live-settings")
+        self.assertEqual(item["result"], "pass", item["note"])
+        self.assertEqual(item["observed"]["database"], "local-default.db")
+        self.assertEqual(item["observed"]["defaultTuiAgent"], "claude")
+        self.assertEqual(item["observed"]["disabledTuiAgents"], [])
+        probes = self.probe_by_name(item)
+        self.assertEqual(
+            sorted(probes), ["local-default.db", "orca-github-cache.db", "state.db"]
+        )
+        self.assertTrue(probes["local-default.db"]["usable"])
+        for ignored in ("orca-github-cache.db", "state.db"):
+            self.assertFalse(probes[ignored]["usable"], ignored)
+            self.assertIn("profile_state_documents", probes[ignored]["reason"])
+        self.assertIn("2 other non-backup candidate(s) were probed and rejected", item["note"])
+        self.assertTrue(receipt["blocking"]["allowed"])
+
+    def test_no_usable_state_database_names_every_candidate_and_reason(self):
+        profile = self.root / "no-state-profile"
+        make_unrelated_database(profile)
+        (profile / "empty.db").write_bytes(b"")
+        receipt = self.check(runner=settings_runner(profile))
+        item = self.item(receipt, "live-settings")
+        self.assertEqual(item["result"], "fail")
+        self.assertIn("exactly one usable state database", item["note"])
+        self.assertIn("found 0", item["note"])
+        for candidate in ("empty.db", "orca-github-cache.db"):
+            self.assertIn(candidate, item["note"])
+        self.assertIn("no such table", item["note"])
+        self.assertIn("no fallback", item["note"])
+        self.assertNotIn("database", item["observed"])
+        self.assertFalse(receipt["blocking"]["allowed"])
+
+    def test_an_unreadable_unrelated_database_still_allows_one_state_database(self):
+        (self.profile / "orca-github-cache.db").write_bytes(b"not a database")
+        receipt = self.check()
+        item = self.item(receipt, "live-settings")
+        self.assertEqual(item["result"], "pass", item["note"])
+        self.assertEqual(item["observed"]["database"], "state.db")
+        probes = self.probe_by_name(item)
+        self.assertFalse(probes["orca-github-cache.db"]["usable"])
+        self.assertIn("not a database", probes["orca-github-cache.db"]["reason"])
+
+    def test_a_state_shaped_database_with_unreadable_settings_is_not_selected(self):
+        make_state_database(self.profile, name="broken.db", payload="{not json")
+        receipt = self.check()
+        item = self.item(receipt, "live-settings")
+        self.assertEqual(item["result"], "pass", item["note"])
+        self.assertEqual(item["observed"]["database"], "state.db")
+        probes = self.probe_by_name(item)
+        self.assertFalse(probes["broken.db"]["usable"])
+        self.assertIn("not JSON", probes["broken.db"]["reason"])
 
 
 class ReviewExemptionTests(PreflightTestCase):
