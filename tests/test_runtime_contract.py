@@ -46,6 +46,7 @@ class ExecutableResolution(unittest.TestCase):
             for script in ("preflight.py", "ledger.py", "visual-evidence.py"):
                 path = ROOT / "skills" / package / "scripts" / script
                 spec = importlib.util.spec_from_file_location("contract_test", path)
+                assert spec is not None and spec.loader is not None
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 for environment, platform, expected in scenarios:
@@ -61,6 +62,7 @@ class PreflightNativeWake(unittest.TestCase):
         for package in PACKAGES:
             path = ROOT / "skills" / package / "scripts" / "preflight.py"
             spec = importlib.util.spec_from_file_location("preflight_contract", path)
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             legacy = module._inbox_observation({"inbox": {"installed": True, "healthy": True}})
@@ -71,6 +73,57 @@ class PreflightNativeWake(unittest.TestCase):
             self.assertEqual(malformed["outcome"], "unhealthy")
 
 class MessagingCapabilityTests(unittest.TestCase):
+    def test_live_terminal_binding_uses_current_runtime_contract(self):
+        """The TUI agent terminal shape proves identity from Orca's own inventory."""
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        handle, pane = 'term_1', 'tab-1:leaf-2'
+
+        class Runner:
+            def __init__(self, leaf='leaf-2', contract=True, mailbox=True):
+                self.leaf, self.contract, self.mailbox = leaf, contract, mailbox
+
+            def run(self, argv, timeout=None):
+                guide = (
+                    'Orca wakes you. A wake\n  that names a `check` command (a terminal, or one\n'
+                    '  message too large for a chat message) means run that command.'
+                )
+                outputs = {
+                    ('--version',): '1.4.258\n',
+                    ('skills', 'get', 'orchestration'): guide if self.contract else 'Orca wakes you.',
+                    ('orchestration', 'check', '--help'): "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full",
+                    ('orchestration', 'inbox', '--help'): '--terminal --full',
+                    ('terminal', 'list', '--json'): json.dumps({'ok': True, 'result': {'terminals': [
+                        {'handle': handle, 'tabId': 'tab-1', 'leafId': self.leaf,
+                         'connected': True, 'orphaned': False}]}}),
+                    ('orchestration', 'inbox', '--terminal', handle, '--limit', '1', '--json'):
+                        json.dumps({'ok': self.mailbox, 'result': {'messages': []}}),
+                }
+                return {'returncode': 0, 'stdout': outputs.get(tuple(argv[1:]), ''), 'stderr': ''}
+
+        context = {'messaging': {'legacy_migration_complete': True,
+                                 'migration_evidence_ref': 'inventory'}}
+        environment = {'ORCA_TERMINAL_HANDLE': handle, 'ORCA_AGENT_PANE': pane,
+                       'ORCA_STRUCTURED_SESSION': '', 'ORCA_AGENT_SESSION_ID': ''}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location(
+                'terminal_binding_preflight', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            assert spec is not None and spec.loader is not None
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(package=package), patch.dict(os.environ, environment):
+                item = module._check_messaging(context, Runner())
+                self.assertEqual(item['result'], 'pass')
+                self.assertEqual(item['observed']['session_source'], 'live_terminal_binding')
+                self.assertTrue(item['observed']['terminal_probe']['contract'])
+                self.assertEqual(module._check_messaging(context, Runner(leaf='leaf-9'))['result'], 'fail')
+                self.assertEqual(module._check_messaging(context, Runner(contract=False))['result'], 'fail')
+                self.assertEqual(module._check_messaging(context, Runner(mailbox=False))['result'], 'fail')
+                self.assertEqual(module._check_messaging({}, Runner())['result'], 'fail')
+
     def test_live_structured_chat_uses_current_runtime_contract(self):
         import importlib.util
         import json
@@ -94,6 +147,7 @@ class MessagingCapabilityTests(unittest.TestCase):
         context = {'messaging': {'legacy_migration_complete': True, 'migration_evidence_ref': 'inventory'}}
         for package in PACKAGES:
             spec = importlib.util.spec_from_file_location('live_chat_preflight', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             with self.subTest(package=package), patch.dict(os.environ, {'ORCA_STRUCTURED_SESSION': '1', 'ORCA_AGENT_SESSION_ID': 'session-1'}, clear=True):
@@ -121,6 +175,7 @@ class MessagingCapabilityTests(unittest.TestCase):
                    'migration_evidence_ref': 'fixture'}}
         for package in PACKAGES:
             spec = importlib.util.spec_from_file_location('preflight_14250', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             with self.subTest(package=package):
@@ -139,6 +194,7 @@ class MessagingCapabilityTests(unittest.TestCase):
         for package in PACKAGES:
             path = ROOT / 'skills' / package / 'scripts' / 'preflight.py'
             spec = importlib.util.spec_from_file_location('preflight_message_test', path)
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             class Runner:
@@ -210,6 +266,7 @@ class MessagingVersionAdaptationTests(unittest.TestCase):
                                             'retry_recovery': True, 'inbox_recovery': True}}
         for package in PACKAGES:
             spec = importlib.util.spec_from_file_location('version_probe', ROOT / 'skills' / package / 'scripts/preflight.py')
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             with self.subTest(package=package):

@@ -13,7 +13,7 @@ A plain `check` marks its returned oldest unread FIFO batch handled immediately,
 - **Structured sessions / supervised workers**: `orca status --json`'s
   `result.caller.orcaSessionId`, which the CLI resolves from the injected
   `ORCA_AGENT_SESSION_ID`. Only these sessions carry it.
-- **A TUI agent terminal Orca launched directly** (the usual shape for pi / omp here):
+- **A TUI agent terminal Orca launched directly**:
   `ORCA_TERMINAL_HANDLE` in the environment. That is the runtime handle Orca issued to this
   terminal; match `ORCA_AGENT_PANE` (`<tabId>:<leafId>`) against the row in
   `orca terminal list --json` to confirm it is yours, then write it to the ledger.
@@ -34,7 +34,7 @@ print(handle)
 '
 ```
 
-If identity cannot be verified, do not guess from a title or the newest terminal. The agent executes a check when the native wake names it; for example `--terminal "$ORCA_TERMINAL_HANDLE"` must name its own handle.
+If identity cannot be verified, do not guess from a title or the newest terminal. Preflight accepts this verified handle as session evidence (`session_source: live_terminal_binding`): the pane binding plus a readable `inbox --terminal <handle>` replaces the structured caller for a TUI agent terminal, and neither shape replaces the legacy-consumer migration check. The agent executes a check when the native wake names it; for example `--terminal "$ORCA_TERMINAL_HANDLE"` must name its own handle.
 
 
 ## Recovery and audit

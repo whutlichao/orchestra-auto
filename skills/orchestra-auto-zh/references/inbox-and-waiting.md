@@ -12,7 +12,7 @@
 
 - **结构化会话 / 受监督 worker**：`orca status --json` 的 `result.caller.orcaSessionId`，
   CLI 从注入的 `ORCA_AGENT_SESSION_ID` 解出，只有这类会话才有。
-- **Orca 直接启动的 TUI agent 终端**（本机 pi / omp 的常见形态）：环境里的
+- **Orca 直接启动的 TUI agent 终端**：环境里的
   `ORCA_TERMINAL_HANDLE`。这是 Orca 发给这个终端的运行时句柄；用 `ORCA_AGENT_PANE`
   （`<tabId>:<leafId>`）与 `orca terminal list --json` 的行精确对上，确认它属于你，再写台账。
 
@@ -31,7 +31,7 @@ print(handle)
 '
 ```
 
-如果没有可核验身份，不猜终端标题或最新终端。只有实时唤醒指定 check 时 agent 才执行它；例如参数 `--terminal "$ORCA_TERMINAL_HANDLE"` 必须指自己的 handle。
+如果没有可核验身份，不猜终端标题或最新终端。预检接受这个已核验的 handle 作为会话证据（`session_source: live_terminal_binding`）：对 TUI agent 终端而言，pane 绑定加上可读的 `inbox --terminal <handle>` 替代结构化 caller，两种形态都不替代旧消费者迁移核验。只有实时唤醒指定 check 时 agent 才执行它；例如参数 `--terminal "$ORCA_TERMINAL_HANDLE"` 必须指自己的 handle。
 
 
 ## 恢复与审计

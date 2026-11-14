@@ -31,6 +31,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIRS = (
@@ -193,13 +194,19 @@ def make_unrelated_database(profile_dir, name="orca-github-cache.db",
     return database
 
 
-def settings_runner(profile_dir, status=None, command_surface=None):
-    """The happy-path runner for the three mechanical probes."""
+def settings_runner(profile_dir, status=None, command_surface=None, guide=None,
+                    terminals=None, inbox=None):
+    """The happy-path runner for the mechanical probes.
+
+    ``terminals`` and ``inbox`` answer the TUI-agent-terminal probes; they are scripted
+    but unused unless a test puts a runtime terminal handle in the environment.
+    """
     return FakeRunner([
         (lambda argv: argv[1:] == ["--version"],
          {"returncode": 0, "stdout": "1.4.248\n", "stderr": ""}),
         (lambda argv: argv[1:] == ["skills", "get", "orchestration"],
-         {"returncode": 0, "stdout": "Orca wakes you.", "stderr": ""}),
+         {"returncode": 0, "stdout": "Orca wakes you." if guide is None else guide,
+          "stderr": ""}),
         (lambda argv: argv[1:] == ["orchestration", "check", "--help"],
          {"returncode": 0, "stdout": "default: return the bound Run's oldest unread FIFO batch and mark it handled. --retry-request If a check response was lost, rerun it with the --retry-request it printed to get the same batch. To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full", "stderr": ""}),
         (lambda argv: argv[1:] == ["orchestration", "inbox", "--help"],
@@ -212,6 +219,10 @@ def settings_runner(profile_dir, status=None, command_surface=None):
          command_surface if command_surface is not None else ok(
              {"workers": [], "page": {"hasMore": False, "nextCursor": None}}
          )),
+        (lambda argv: argv[:3] == ["orca", "terminal", "list"],
+         terminals if terminals is not None else ok({"result": {"terminals": []}})),
+        (lambda argv: argv[:3] == ["orca", "orchestration", "inbox"],
+         inbox if inbox is not None else ok({"result": {"messages": []}})),
     ])
 
 
@@ -484,12 +495,152 @@ class ReceiptTests(PreflightTestCase):
 
 class MessageCapabilityGateTests(PreflightTestCase):
     def test_missing_session_evidence_cannot_be_waived(self):
-        receipt = self.check(messaging={}, overrides=[
-            {"item": "message-capability", "by": "human", "reason": "skip"}])
+        with self.terminal_environment(handle="", pane=""):
+            receipt = self.check(messaging={}, overrides=[
+                {"item": "message-capability", "by": "human", "reason": "skip"}])
         self.assertFalse(receipt["blocking"]["allowed"])
         self.assertIn("message-capability", receipt["blocking"]["failed_items"])
         self.assertFalse(receipt["overrides"][0]["applied"])
         self.assertTrue(receipt["record"]["written"])
+
+    #: The live guide's terminal-wake sentence, wrapped the way the markdown guide wraps
+    #: it: a line break is a rendering detail, never a semantic change.
+    TERMINAL_GUIDE = (
+        "Orca wakes you. A wake\n  that names a `check` command (a terminal, or one message too\n"
+        "  large for a chat message) means run that command."
+    )
+
+    #: Both delivery shapes described in one guide: the precedence test needs the chat
+    #: contract present, or the structured path has nothing to recognize.
+    BOTH_SHAPES_GUIDE = (
+        TERMINAL_GUIDE + " In a chat, each message arrives whole as its own message."
+    )
+
+    HANDLE = "term_0000-1111"
+    PANE = "tab-1:leaf-2"
+
+    def terminal_environment(self, handle=HANDLE, pane=PANE):
+        """Patch only the Orca identity variables, so the ambient shell cannot leak in."""
+        return patch.dict(os.environ, {
+            "ORCA_TERMINAL_HANDLE": handle,
+            "ORCA_AGENT_PANE": pane,
+            "ORCA_STRUCTURED_SESSION": "",
+            "ORCA_AGENT_SESSION_ID": "",
+        })
+
+    def terminal_row(self, **overrides):
+        row = {"handle": self.HANDLE, "tabId": "tab-1", "leafId": "leaf-2",
+               "connected": True, "orphaned": False}
+        row.update(overrides)
+        return ok({"result": {"terminals": [row]}})
+
+    def migration_evidence(self, **overrides):
+        messaging = {"legacy_migration_complete": True,
+                     "migration_evidence_ref": "fixture inventory"}
+        messaging.update(overrides)
+        return messaging
+
+    def terminal_receipt(self, runner, messaging=None):
+        with self.terminal_environment():
+            receipt = self.check(
+                runner=self.runner(guide=self.TERMINAL_GUIDE, **runner),
+                messaging=self.migration_evidence() if messaging is None else messaging,
+            )
+        return receipt, self.item(receipt, "message-capability")
+
+    def test_a_bound_terminal_passes_without_a_human_review(self):
+        runner = {"terminals": self.terminal_row(),
+                  "inbox": ok({"result": {"messages": []}})}
+        receipt, item = self.terminal_receipt(runner)
+        self.assertTrue(receipt["blocking"]["allowed"])
+        self.assertEqual(item["result"], "pass")
+        observed = item["observed"]
+        self.assertEqual(observed["session_source"], "live_terminal_binding")
+        self.assertTrue(observed["session_confirmed"])
+        self.assertTrue(observed["terminal_probe"]["bound"])
+        self.assertTrue(observed["terminal_probe"]["mailbox_ok"])
+        self.assertTrue(observed["terminal_probe"]["contract"])
+        self.assertEqual(observed["semantic_basis"], "documented_contract")
+        self.assertIn(self.HANDLE, item["evidence_ref"])
+
+    def test_a_terminal_still_needs_the_migration_attestation(self):
+        runner = {"terminals": self.terminal_row(),
+                  "inbox": ok({"result": {"messages": []}})}
+        _receipt, item = self.terminal_receipt(runner, messaging={})
+        self.assertEqual(item["result"], "fail")
+        self.assertFalse(item["observed"]["migration_confirmed"])
+        self.assertTrue(item["observed"]["terminal_probe"]["bound"])
+
+    def test_a_handle_bound_to_another_pane_fails(self):
+        runner = {"terminals": self.terminal_row(leafId="leaf-9"),
+                  "inbox": ok({"result": {"messages": []}})}
+        _receipt, item = self.terminal_receipt(runner)
+        self.assertEqual(item["result"], "fail")
+        self.assertFalse(item["observed"]["terminal_probe"]["bound"])
+        self.assertIn("another pane", item["observed"]["terminal_probe"]["reason"])
+
+    def test_an_unknown_detached_or_orphaned_terminal_fails(self):
+        for label, terminals in (
+            ("unknown", self.terminal_row(handle="term_9999")),
+            ("detached", self.terminal_row(connected=False)),
+            ("orphaned", self.terminal_row(orphaned=True)),
+        ):
+            with self.subTest(terminal=label):
+                runner = {"terminals": terminals,
+                          "inbox": ok({"result": {"messages": []}})}
+                _receipt, item = self.terminal_receipt(runner)
+                self.assertEqual(item["result"], "fail")
+                self.assertFalse(item["observed"]["terminal_probe"]["bound"])
+
+    def test_an_unreadable_mailbox_fails(self):
+        runner = {"terminals": self.terminal_row(),
+                  "inbox": {"returncode": 0, "stdout": json.dumps({"ok": False}),
+                            "stderr": ""}}
+        _receipt, item = self.terminal_receipt(runner)
+        self.assertEqual(item["result"], "fail")
+        self.assertTrue(item["observed"]["terminal_probe"]["bound"])
+        self.assertFalse(item["observed"]["terminal_probe"]["mailbox_ok"])
+
+    def test_a_guide_without_the_terminal_wake_contract_fails(self):
+        with self.terminal_environment():
+            receipt = self.check(
+                runner=self.runner(guide="Orca wakes you.",
+                                   terminals=self.terminal_row(),
+                                   inbox=ok({"result": {"messages": []}})),
+                messaging=self.migration_evidence(),
+            )
+        item = self.item(receipt, "message-capability")
+        self.assertEqual(item["result"], "fail")
+        self.assertFalse(item["observed"]["terminal_probe"]["contract"])
+
+    def test_a_structured_chat_is_never_reprobed_as_a_terminal(self):
+        runner = self.runner(
+            guide=self.BOTH_SHAPES_GUIDE,
+            status=ok({"ok": True, "result": {"caller": {
+                "live": True, "orcaSessionId": "session-1"}}}),
+            terminals=self.terminal_row(),
+            inbox=ok({"result": {"messages": []}}))
+        with patch.dict(os.environ, {
+                "ORCA_TERMINAL_HANDLE": self.HANDLE, "ORCA_AGENT_PANE": self.PANE,
+                "ORCA_STRUCTURED_SESSION": "1", "ORCA_AGENT_SESSION_ID": "session-1"}):
+            receipt = self.check(runner=runner, messaging=self.migration_evidence())
+        item = self.item(receipt, "message-capability")
+        self.assertEqual(item["result"], "pass")
+        self.assertEqual(item["observed"]["session_source"], "live_structured_chat")
+        self.assertEqual(item["observed"]["terminal_probe"], {})
+        self.assertNotIn(["orca", "terminal", "list", "--json"], runner.calls)
+
+    def test_without_a_runtime_terminal_the_inventory_is_not_probed(self):
+        runner = self.runner(guide=self.TERMINAL_GUIDE,
+                             terminals=self.terminal_row(),
+                             inbox=ok({"result": {"messages": []}}))
+        with self.terminal_environment(handle="", pane=""):
+            receipt = self.check(runner=runner, messaging=self.migration_evidence())
+        item = self.item(receipt, "message-capability")
+        self.assertEqual(item["result"], "fail")
+        self.assertEqual(item["observed"]["terminal_probe"]["reason"],
+                         "no runtime terminal handle and pane in this environment")
+        self.assertNotIn(["orca", "terminal", "list", "--json"], runner.calls)
 
 
 class MechanicalItemTests(PreflightTestCase):
@@ -583,6 +734,17 @@ class MechanicalItemTests(PreflightTestCase):
 
 class LiveSettingsTests(PreflightTestCase):
     """The live-settings item is blocking, version-scoped and has no fallback source."""
+
+    def test_the_settings_read_spells_the_documented_table_literally(self):
+        """No identifier is interpolated into SQL, so the literal and the name must agree."""
+        for skill_dir in SKILL_DIRS:
+            source = (skill_dir / "scripts" / "preflight.py").read_text()
+            with self.subTest(skill=skill_dir.name):
+                read = re.search(
+                    r"SELECT payload FROM (\w+) WHERE domain = \?", source)
+                if read is None:
+                    self.fail(f"{skill_dir.name}: the settings read is not a literal statement")
+                self.assertEqual(read.group(1), self.preflight.LIVE_SETTINGS_TABLE)
 
     def test_a_backup_database_is_not_a_candidate(self):
         (self.profile / "state.backup.1.db").write_bytes(b"not a database")

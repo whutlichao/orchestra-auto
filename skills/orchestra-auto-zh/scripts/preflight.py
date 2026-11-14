@@ -24,16 +24,21 @@ so both bundles share one schema implementation.
 """
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import NoReturn
+
+#: Python 3.10 is the supported floor and has no ``datetime.UTC`` alias, so the zone is
+#: named once here instead of being spelled out at every timestamp.
+UTC = timezone.utc  # noqa: UP017
 
 SCHEMA_VERSION = 1
 LEDGER_KIND = "preflight"
@@ -135,6 +140,8 @@ LIVE_SETTINGS_VERIFICATION = {
     "verified_at": "2026-11-13",
     "scope": "version-scoped; verify against the current CLI and guide before reuse",
 }
+#: The documented settings table. The read below spells it literally so no identifier is
+#: ever interpolated into SQL; a test keeps the literal and this name in step.
 LIVE_SETTINGS_TABLE = "profile_state_documents"
 LIVE_SETTINGS_DOMAIN = "settings"
 LIVE_SETTINGS_FIELDS = ("defaultTuiAgent", "disabledTuiAgents")
@@ -143,12 +150,12 @@ NO_FALLBACK_NOTE = (
 )
 
 
-def _invalid(message):
+def _invalid(message) -> NoReturn:
     raise ValueError(message)
 
 
 def _now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_timestamp(value):
@@ -161,11 +168,11 @@ def parse_timestamp(value):
         return None
     if moment.tzinfo is None:
         return None
-    return moment.astimezone(timezone.utc)
+    return moment.astimezone(UTC)
 
 
 def _timestamp_text(value):
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
 
@@ -340,12 +347,96 @@ def _check_command_surface(runner, run_id):
     )
 
 
+#: The guide sentence that separates the two delivery shapes: a chat receives each
+#: message whole, a terminal is woken with a check command it must run itself.
+TERMINAL_WAKE_MARKERS = (
+    "a wake that names a",
+    "(a terminal, or one message too large for a chat message)",
+    "means run that command",
+)
+
+
+def _collapse(text):
+    """Collapse whitespace so a wrapped guide line still matches its sentence.
+
+    The guide is markdown, so a sentence it publishes is wrapped across lines. Comparing
+    wrapped text literally reports a line break as changed wording, which is neither.
+    """
+    return " ".join(text.split())
+
+
+def _terminal_binding(runner, guide):
+    """Probe whether this pane's runtime terminal handle is this agent's mailbox.
+
+    This is the TUI-terminal counterpart of the structured-session probe: identity comes
+    from Orca's own terminal inventory (the handle it injected beside the pane it injected
+    into), addressability from the mailbox that handle owns, and the wake shape from the
+    guide. Like the structured probe it establishes identity and the documented contract,
+    never an end-to-end wake test. No message content is recorded, only a digest.
+    """
+    handle = os.environ.get("ORCA_TERMINAL_HANDLE", "").strip()
+    pane = os.environ.get("ORCA_AGENT_PANE", "").strip()
+    tab, _, leaf = pane.partition(":")
+    probe = {
+        "handle": handle,
+        "pane": pane,
+        "contract": all(marker in guide for marker in TERMINAL_WAKE_MARKERS),
+        "bound": False,
+        "mailbox_ok": False,
+        "reason": "",
+    }
+    if not handle or not tab or not leaf:
+        probe["reason"] = "no runtime terminal handle and pane in this environment"
+        return probe
+    listing = _run(runner, ["orca", "terminal", "list", "--json"])
+    reply, problem = _command_reply(listing, "orca terminal list --json")
+    container = reply.get("result") if isinstance(reply, dict) else None
+    rows = container.get("terminals") if isinstance(container, dict) else None
+    rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    matches = [row for row in rows if row.get("handle") == handle]
+    probe["terminal_count"] = len(rows)
+    if problem or len(matches) != 1:
+        probe["reason"] = problem or (
+            "the runtime terminal handle is not one row of the terminal inventory"
+            if not matches else
+            "the runtime terminal handle is ambiguous in the terminal inventory"
+        )
+        return probe
+    row = matches[0]
+    if (row.get("tabId"), row.get("leafId")) != (tab, leaf):
+        probe["reason"] = "the runtime terminal handle belongs to another pane"
+        return probe
+    if row.get("connected") is not True or row.get("orphaned") is not False:
+        probe["reason"] = "the bound terminal is not connected or is orphaned"
+        return probe
+    probe["bound"] = True
+    inbox = _run(runner, ["orca", "orchestration", "inbox", "--terminal", handle,
+                          "--limit", "1", "--json"])
+    inbox_problem = _command_reply(
+        inbox, "orca orchestration inbox --terminal <handle> --json")[1]
+    probe["mailbox"] = {
+        "returncode": inbox["returncode"],
+        "sha256": hashlib.sha256(inbox["stdout"].encode("utf-8")).hexdigest(),
+    }
+    probe["mailbox_ok"] = not inbox_problem
+    if inbox_problem:
+        probe["reason"] = inbox_problem
+    return probe
+
+
 def _check_messaging(context, runner):
-    """Fail closed unless this session and its selected CLI support recovery."""
+    """Fail closed unless this session and its selected CLI support recovery.
+
+    Orca delivers to two shapes and this gate accepts both: a structured chat, whose
+    session the CLI resolves, and a TUI agent terminal, whose handle the CLI can prove is
+    this pane's and whose mailbox it can read. Neither path proves an end-to-end wake, and
+    both still require the legacy-consumer migration attestation.
+    """
     messaging = context.get("messaging")
     if not isinstance(messaging, dict):
         messaging = {}
     evidence = messaging.get("evidence_ref")
+    evidence = evidence if isinstance(evidence, str) else ""
     confirmed = (messaging.get("native_wake_confirmed") is True
                  and messaging.get("source") in ("live_preamble", "verified_session")
                  and isinstance(evidence, str) and bool(evidence.strip()))
@@ -376,9 +467,10 @@ def _check_messaging(context, runner):
                                       for row in observations)
     # Match the documented behavior, independent of the release number. This
     # recognizes precise wording, not arbitrary paraphrases or runtime behavior.
-    guide = outputs["skills/get/orchestration"].lower()
-    check = outputs["orchestration/check/--help"].lower()
+    guide = _collapse(outputs["skills/get/orchestration"]).lower()
+    check = _collapse(outputs["orchestration/check/--help"]).lower()
     status_observation = {}
+    terminal_probe = {}
     session_source = messaging.get("source")
     if not confirmed and os.environ.get("ORCA_STRUCTURED_SESSION") == "1" and os.environ.get("ORCA_AGENT_SESSION_ID"):
         status_result = _run(runner, ["orca", "status", "--json"])
@@ -389,7 +481,8 @@ def _check_messaging(context, runner):
         session_id = caller.get("orcaSessionId")
         chat_contract = ("orca wakes you." in guide and
                          "in a chat, each message arrives whole as its own message" in guide)
-        confirmed = (not problem and status.get("ok") is True and caller.get("live") is True
+        confirmed = (not problem and status is not None and status.get("ok") is True
+                     and caller.get("live") is True
                      and isinstance(session_id, str) and bool(session_id.strip()) and chat_contract)
         status_observation = {"returncode": status_result["returncode"],
                               "sha256": hashlib.sha256(status_result["stdout"].encode("utf-8")).hexdigest(),
@@ -399,6 +492,15 @@ def _check_messaging(context, runner):
         if confirmed:
             session_source = "live_structured_chat"
             evidence = "orca status --json + version-matched orchestration guide"
+    if not confirmed:
+        terminal_probe = _terminal_binding(runner, guide)
+        if terminal_probe["bound"] and terminal_probe["mailbox_ok"] and terminal_probe["contract"]:
+            confirmed = True
+            session_source = "live_terminal_binding"
+            evidence = ("orca terminal list --json bound "
+                        f"{terminal_probe['handle']} to this pane; "
+                        "orca orchestration inbox --terminal "
+                        f"{terminal_probe['handle']} --json reached its mailbox")
     known = ("orca wakes you." in guide
              and "default: return the bound run's oldest unread fifo batch and mark it handled." in check
              and "if a check response was lost, rerun it with the --retry-request it printed to get the same batch." in check
@@ -406,7 +508,7 @@ def _check_messaging(context, runner):
     review = messaging.get("human_verification")
     review = review if isinstance(review, dict) else {}
     hashes = {"/".join(argv[1:]): row["sha256"]
-              for (argv, _required), row in zip(probes, observations)}
+              for (argv, _required), row in zip(probes, observations, strict=True)}
     reviewer = review.get("reviewed_by")
     review_ref = review.get("evidence_ref")
     reviewed = (isinstance(reviewer, str) and bool(reviewer.strip())
@@ -417,9 +519,11 @@ def _check_messaging(context, runner):
                         ("native_wake", "handled_check", "retry_recovery", "inbox_recovery")))
     passed = confirmed and migration_ready and available and (known or reviewed)
     return _item("message-capability", "pass" if passed else "fail",
-                 "read selected CLI version, orchestration guide and check/inbox help",
+                 "read selected CLI version, orchestration guide, check/inbox help and the "
+                 "terminal inventory",
                  {"session_confirmed": confirmed, "session_source": session_source,
                   "session_probe": status_observation,
+                  "terminal_probe": terminal_probe,
                   "migration_confirmed": migration_ready,
                   "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
                   "version": version, "probes": observations,
@@ -428,7 +532,7 @@ def _check_messaging(context, runner):
                   "review_evidence_ref": review_ref if reviewed else ""},
                  "native delivery and recovery confirmed" if passed else
                  "native delivery or recovery unverified; do not dispatch",
-                 evidence if isinstance(evidence, str) else "")
+                 evidence)
 
 
 def _check_guide(context):
@@ -445,7 +549,7 @@ def _check_guide(context):
             path_exists = candidate.is_file()
             if path_exists:
                 mtime = _timestamp_text(
-                    datetime.fromtimestamp(candidate.stat().st_mtime, timezone.utc)
+                    datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
                 )
         except OSError:
             path_exists = False
@@ -459,8 +563,8 @@ def _check_guide(context):
         "version": guide.get("version", ""),
         "fetch_command": guide.get("command", ""),
     }
-    command = guide.get("command") if isinstance(guide.get("command"), str) else ""
-    evidence = path if path_exists else ""
+    command = str(guide.get("command") or "")
+    evidence = str(path) if path_exists else ""
     if fetched_at is None:
         return _item(
             "guide-freshness", "fail", command, observed,
@@ -553,7 +657,7 @@ def _read_live_settings(database):
         return None, f"cannot open the state database read-only: {error}"
     try:
         rows = connection.execute(
-            f"SELECT payload FROM {LIVE_SETTINGS_TABLE} WHERE domain = ?",
+            "SELECT payload FROM profile_state_documents WHERE domain = ?",
             (LIVE_SETTINGS_DOMAIN,),
         ).fetchall()
     except sqlite3.Error as error:
@@ -702,8 +806,8 @@ def _check_judgment(item_id, context):
         )
     result = entry.get("result")
     observed = {"recorded_result": result}
-    note = entry.get("note") if isinstance(entry.get("note"), str) else ""
-    evidence = entry.get("evidence_ref") if isinstance(entry.get("evidence_ref"), str) else ""
+    note = str(entry.get("note") or "")
+    evidence = str(entry.get("evidence_ref") or "")
     if result not in ("pass", "fail"):
         return _item(
             item_id, "fail", "", observed,
@@ -1037,7 +1141,8 @@ def _review_recheck(ticket, context, runner, checked_at):
             "the real diff changed unexpected files: " + ", ".join(unexpected)
         )
         return detail
-    limit = provisional.get("max_changed_lines")
+    raw_limit = provisional.get("max_changed_lines")
+    limit = int(raw_limit) if isinstance(raw_limit, int) else None
     if limit is not None and total_added + total_deleted > limit:
         detail["reason"] = (
             f"the real diff is {total_added + total_deleted} changed lines, above the "
@@ -1136,7 +1241,7 @@ def post_dispatch(ticket, context, runner=None):
     review_detail = _review_recheck(ticket, context, runner, checked_at)
     review_record = _append_observation(
         "observation", ticket, context, checked_at, review_detail,
-        context.get("worktree") if isinstance(context.get("worktree"), str) else "",
+        str(context.get("worktree") or ""),
     )
     writes.append(review_record)
     observations.append({
