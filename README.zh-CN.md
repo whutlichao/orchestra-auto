@@ -4,11 +4,13 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml/badge.svg)](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
+![说一句，整条链自己跑完；人只在门禁处被打断](docs/demo/cover-zh.png)
+
 这是一套把 [Matt Pocock 的工程 skill 链](https://github.com/mattpocock/skills) 放到 [Orca](https://www.onorca.dev/) 上**整条跑完**的 Agent Skill：你说一句要什么，coordinator 按格派 worker、每格落独立 worktree、产物过门禁，在获授权时合并 PR；只要求开 PR 时保留开放状态。你只在需要决定和单向门上被打断，不是在格与格之间。
 
-这些 skill 来自 Matt Pocock；本仓库将它们组合成带有自身入口判据和门禁的 Orca 工作流，规定 worker 落点、证据检查、自动合并和人工决策。`scripts/chain.py resume` 与 `scripts/chain.py exit-check` 辅助检查记录和产物形状，适用边界见下文。
+> **需要 [Orca](https://www.onorca.dev/) 与 [Matt Pocock 的 skill](https://github.com/mattpocock/skills)。** 本仓库驱动 Orca CLI，不是通用编排层。安装前请读 [前提与能力边界](#前提与能力边界)。
 
-![说一句，整条链自己跑完；人只在门禁处被打断](docs/demo/cover-zh.png)
+这些 skill 来自 Matt Pocock；本仓库将它们组合成带有自身入口判据和门禁的 Orca 工作流，规定 worker 落点、证据检查、自动合并和人工决策。`scripts/chain.py resume` 与 `scripts/chain.py exit-check` 辅助检查记录和产物形状，适用边界见下文。
 
 ```bash
 npx skills add whutlichao/orchestra-auto --skill orchestra-auto
