@@ -4,11 +4,13 @@
 
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-4B32C3)](https://skills.sh/whutlichao/orchestra-auto) [![tests](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml/badge.svg)](https://github.com/whutlichao/orchestra-auto/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
+![Say it once: Matt Pocock's chain runs on Orca, and the human only interrupts at a gate](docs/demo/cover-en.png)
+
 An Agent Skill that runs [Matt Pocock's engineering chain](https://github.com/mattpocock/skills) on [Orca](https://www.onorca.dev/) as one continuous flow: you say what you want, a coordinator dispatches one worker per step into its own worktree, the step's artifact passes its gate, and the PR merges when you authorize it; a PR-only request stays open. You interrupt for a decision or a one-way door — not between steps.
 
-The skills are his; this repository combines them into an opinionated Orca workflow with its own entry criteria and gates. It adds where the worker lands, what evidence is checked, when a merge is automatic, and when a human decides. `scripts/chain.py resume` and `scripts/chain.py exit-check` help inspect records and artifact shape, within the limits described below.
+> **Requires [Orca](https://www.onorca.dev/) and [Matt Pocock's skills](https://github.com/mattpocock/skills).** It drives the Orca CLI; it is not a general orchestrator. Read [Prerequisites and capability boundary](#prerequisites-and-capability-boundary) before installing.
 
-![Say it once: Matt Pocock's chain runs on Orca, and the human only interrupts at a gate](docs/demo/cover-en.png)
+The skills are his; this repository combines them into an opinionated Orca workflow with its own entry criteria and gates. It adds where the worker lands, what evidence is checked, when a merge is automatic, and when a human decides. `scripts/chain.py resume` and `scripts/chain.py exit-check` help inspect records and artifact shape, within the limits described below.
 
 ```bash
 npx skills add whutlichao/orchestra-auto --skill orchestra-auto
