@@ -34,9 +34,9 @@
 | 当前本项目规则 | 对照上游的判断 |
 | --- | --- |
 | [通道 B](../../skills/orchestra-auto-zh/SKILL.md) 对边界清楚的小改动直接实施；完整实施通常才 grill | 比上游 README 的建议更宽松。若执行者只凭“小”推断清楚、未核验已知决定及未决问题，就可能静默略过对齐。这是风险推断，不能据此断定某次运行实际漏做。 |
-| [应答协议](../../skills/orchestra-auto-zh/references/reply-protocol.md) 决策问人、实现细节代答 | 与避免让用户代查事实的方向一致；但任何未由用户授权的实际设计决策不能由 coordinator 自答。worker 的推荐不是用户确认。须特别保护最终共同理解确认及 `to-spec` 的 seam、`to-tickets` 的票图确认。 |
-| [G-docs](../../skills/orchestra-auto-zh/references/gates-docs-planning.md) 要求模板设计文档和 `CONTEXT.md` | 上游 `grill-with-docs` 只组合两个 skill，不保证固定设计文档；当前上游领域术语为 `GLOSSARY.md`，且按需创建。固定文件、模板是项目附加合同，应明确其来源和无产物时的通过方式，避免与上游实际行为冲突。 |
-| [阶段映射](../../skills/orchestra-auto-zh/references/dispatch-loop.md) 把 `implement` 用于边界清楚的小改动 | 上游描述输入为 spec 或票；若本项目允许用户原话构成工作说明，应明确其证据及与上游的适配，不应暗示上游明确允许无上下文直接实施。 |
+| [应答协议](../../skills/orchestra-auto-zh/references/dispatch-and-comms.md) 决策问人、实现细节代答 | 与避免让用户代查事实的方向一致；但任何未由用户授权的实际设计决策不能由 coordinator 自答。worker 的推荐不是用户确认。须特别保护最终共同理解确认及 `to-spec` 的 seam、`to-tickets` 的票图确认。 |
+| [G-docs](../../skills/orchestra-auto-zh/references/preflight-and-spec.md) 要求模板设计文档和 `CONTEXT.md` | 上游 `grill-with-docs` 只组合两个 skill，不保证固定设计文档；当前上游领域术语为 `GLOSSARY.md`，且按需创建。固定文件、模板是项目附加合同，应明确其来源和无产物时的通过方式，避免与上游实际行为冲突。 |
+| [阶段映射](../../skills/orchestra-auto-zh/references/dispatch-and-comms.md) 把 `implement` 用于边界清楚的小改动 | 上游描述输入为 spec 或票；若本项目允许用户原话构成工作说明，应明确其证据及与上游的适配，不应暗示上游明确允许无上下文直接实施。 |
 | 线性链 grill → spec → tickets → build | 是本项目选择的常见执行路线；上游 `to-tickets` 允许直接消费已充分讨论的对话或计划，也有 wayfinder 等分支。resume 台账的顺序不应成为证明实际发生过用户对齐的替代证据。 |
 
 以上是文档与原文对照，不是对实际历史运行的审计，也不证明任何特定 worker 做过或没做过 grill。

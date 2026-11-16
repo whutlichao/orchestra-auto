@@ -460,7 +460,7 @@ class DocumentContractTests(unittest.TestCase):
         for name in SKILL_NAMES:
             with self.subTest(bundle=name):
                 text = (REPO_ROOT / "skills" / name / "references"
-                        / "gate-acceptance.md").read_text()
+                        / "acceptance-and-closeout.md").read_text()
                 self.assertIn("visual-evidence.md", text)
                 self.assertIn("focusRestored", text)
 

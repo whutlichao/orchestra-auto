@@ -13,285 +13,74 @@ description: >-
   editing this skill do not start an orchestration run.
 ---
 
-# Orchestra Auto — the fully automatic dispatch loop
+# Orchestra Auto — Supervised Multi-Agent Orchestration Loop
 
-You are the coordinator. Follow the user's scope and delivery endpoint. A request only to open or provide a PR ends with the PR open; it does not authorize merging. For authorized end-to-end delivery, a worker commits, pushes and opens the PR, and the coordinator may merge after the gates pass and the door is two-way. The user's explicit instructions take precedence over this default; repository rules and failed gates also stop merging. Pure Q&A and reports that write no repository files create no PR.
+You are the coordinator: automate the **process** (routing, dispatch, gates, closeout), never human **decisions**. Explicit user scope overrides defaults — **A PR-only request stops with the PR open**; never auto-merge unless authorized and gates pass. Pure Q&A or non-repo analysis spawns no workers and no PRs. Missing `WORK_SCOPE` in `AGENTS.md` never stops a Run.
 
-A human appears at three moments: they said one sentence when the task started; a worker asks
-a decision-class question and the human is invited to settle it (§5); or something genuinely
-requires a human (credentials, third party, approval). **What auto automates is the process
-(dispatch / gates / sending back), not the decisions** — a worker's recommended answer is
-reference input only. For anything §5 classifies as decision-class, attach your own leaning, ask
-the human, and only then reply to the worker.
+## Core Guardrails (Non-Negotiable)
 
-This skill supplies the orchestration procedure; the user's request, the repository's conventions
-and the current tool contract decide this round's scope and execution. Channel and route selection
-are §1, role boundaries §2, and dispatch parameters §4. It does **not** depend on the target repo's
-`AGENTS.md` having a `WORK_SCOPE` section — **a missing section is never a reason to stop**.
+1. **Isolation & Main Boundary (§2)**: coordinator never edits target project files, never enters nested worker worktrees, and never runs workers in `current` or `new-child`. Workers always use `--worktree new-top-level` and explicit `--agent` (missing or unknown raises `agent_unconfigured`; Help examples are not an exhaustive allowlist — pass live-enabled value and let Orca validate it). Ledger, flow, and progress files stay strictly **outside** every repository (`$ORCA_LEDGER_HOME`, `$ORCA_FLOW_HOME`, `$ORCA_PROGRESS_HOME`).
+2. **Evidence & Start Proof (§4.3.1)**: `state: ready` is **not** `turnStart`; accept `turnStart: observed` (or attempt artifact/status projection) as start evidence. `worker_done` proves settlement only, never acceptance.
+3. **Human Decisions (§5)**: never answer decision-class questions (shape, approach fork, scope, or the escalation five: credentials, third party, paid service, manual approval, irreversible live data) on the user's behalf — pause and ask via the human channel; workers use `orchestration ask` (`AskUserQuestion` banned).
+4. **Native Wake & Single-Command Tooling**: never run background polling or `inbox-loop`; Orca wakes you natively. Use the `--compact` CLIs under `scripts/` to avoid fragile hand-built JSON and save tokens.
 
-```text
-user input → §1 pin the delivery endpoint, channel and route → §2 hard-rule self-check → §4 dispatch a worker if edits are needed
-              → §4.5 end the turn for Orca native wake; handle delivered messages
-              ⇄ §5 answer (decisions go to the human) → §6 gate acceptance
-              → send back or advance → when merge is authorized and the project PR passes G-merge, §6.5 auto-merge → teardown
-              (worker-release, reclaimable drained) → §7 closing report; stop at the agreed delivery endpoint
+## 4-Phase Execution Workflow
+
+### Phase 1 — Route, Initialize & Open Sidecar (§1)
+
+Explore read-only if unclear, resolve Orca via `ORCA_CLI_COMMAND` (`orca` / `orca-dev` / `orca-ide`), fetch `<ORCA> skills get orchestration > /tmp/orchestration-guide.md`, and pick one route/channel:
+- **Channel A (Direct)**: Q&A, verbal status, small research without edits → answer directly.
+- **Channel B (Single ticket / bounded stage)**: 1 worker in `--worktree new-top-level`.
+- **Channel C (Long-horizon map)**: `to-tickets` → 1 integration worker running `implement-spec` on `--name <feature>-integration`.
+
+Route families: `grill-me`, `grill-with-docs`, `wayfinder`, `research`, `prototype`, `to-questionnaire`, `wizard`, `to-spec`, `to-tickets`, `implement-spec`, `triage`, `diagnosing-bugs`, `improve-codebase-architecture`, `retro`.
+
+```bash
+SCRIPTS="<installed-skill-root>/orchestra-auto/scripts"
+python3 "$SCRIPTS/init-check.py" check --repo "$PWD"
+python3 "$SCRIPTS/flow.py" init-route --run-id "$RUN" --route full-chain --goal "..." --compact
+python3 "$SCRIPTS/chain.py" resume --run-id "$RUN" --ledger-home "$ORCA_LEDGER_HOME" --compact
 ```
 
-Files under `references/` are read conditionally; SKILL.md keeps the routing and the core constraints. Each reference states its own trigger in its opening lines:
+**Before the first dispatch** of every REAL Run, initialize and open the dashboard automatically (`python3 "$SCRIPTS/progress.py" --state "$STATE" init ...` then `open`); sidecar failures log a ledger gap and never block dispatch.
 
-| File | When to read it |
-| --- | --- |
-| `references/dispatch-preflight.md` | Before every dispatch (§4.0.1 tick sheet), right after the receipt (§4.0.2 start and isolation evidence), and at teardown (§4.0.3 formatter noise) |
-| `references/prose-contract.md` | During acceptance or a review of either bundle, or when two documents seem to disagree about what may be concluded from a signal |
-| `references/dispatch-loop.md` | Every B/C dispatch for the full worker-start flags, turn-start confirmation, guide fetch, or communication-loop detail |
-| `references/spec-contract.md` | When writing a worker's spec, on any channel and for any ticket type; or when a planning stage moves to a fresh context and the handoff record is needed |
-| `references/visual-evidence.md` | When a ticket needs Orca-rendered screenshots (visual evidence): before writing the spec's capture method, and before accepting that evidence |
-| `references/reply-protocol.md` | When classifying or answering a worker question, or deciding whether to escalate vs auto-answer |
-| `references/gate-acceptance.md` | When a ticket closes and you pick a gate; when merging a project PR or settling a worker |
-| `references/long-horizon-tickets.md` | G-tickets accepted a complete ticket map and this round implements it; or a process error calls for a retro |
-| `references/inbox-and-waiting.md` | Before the first dispatch or when recovering identity, messages or lost contact |
-| `references/ledger.md` | Before the action a record protects and after it; `ledger reconcile` after a crash window, and the action matrix it applies |
-| `references/run-health.md` | After every wake, before reporting a Run's state, or when a worker goes quiet: evaluate health, the signal table and the transition rules |
-| `references/worker-start-and-recovery.md` | `turnStart` unconfirmed, a permission prompt, or a worker gone silent |
-| `references/gates-docs-planning.md` | This ticket is a design / spec / ticket-splitting ticket heading for G-docs / G-wayfinder / G-spec / G-tickets |
-| `references/reformat-noise-recovery.md` | §4.0.3 finds tens of thousands of lines of uncommitted change (formatter reflow noise) |
-| `references/failed-dispatch-recovery.md` | `worker-start` returns `state: failed` |
-| `references/failure-and-reporting.md` | The CLI will not start, a breaker trips, or the Orca app restarts mid-run |
-| `references/chain-run.md` | Between two laps, after a crash, or when resuming a Run: the explicit flow record, and what the flow and legacy answers may conclude |
+### Phase 2 — Write Spec & Run Preflight Gate (§4)
 
-Before using Orca, resolve the executable once: `ORCA_CLI_COMMAND` when set, else `orca-dev` when `ORCA_DEV_REPO_ROOT` is set, else `orca-ide` on Linux outside an Orca-managed session, else `orca`. Reuse it for every example below; `orca` in examples denotes that selected executable. If it fails, stop without fallback. Read its version-matched `skills get orchestration` and help.
+Choose `Pre-skill` by actual stage/ticket type (never by channel) and verify its `SKILL.md` path exists on disk. Include Ticket Type, Gates, `Test tier:` (for impl), the 5 elements, and `BEHAVIOR RULE`. Validate mechanically and record the `preflight` receipt in one command:
 
-## 0. Initialize only when executing orchestration; editing this skill does not start a run
-
-Enter the flow below only when the current task actually asks for Orca orchestration. When the
-user asks to modify or review this skill, it is material to be edited: create no Run, dispatch
-no worker, and do not switch roles just because you read the body text. Use §1 to decide whether
-this round needs a worker.
-
-Read live Orca settings only when about to dispatch; record the default TUI agent and the disabled TUI agent list.
-A user-named agent wins, otherwise the recorded default. A disabled agent, or a failed, missing or empty read, stops the run.
-Never infer settings from stale exports, this skill, or evals. `worker-start` requires an explicit `--agent`
-absent from the disabled list. Help examples are not an exhaustive list of supported agents.
-Lookup: [dispatch preflight](references/dispatch-preflight.md).
-
-```text
-mode orchestra-auto | channel <A|B|C> | intent <task type> | pre-skill <actual path / none> | worker <actual agent / none> | delivery endpoint <answer / report / merged project change / other endpoint the user named>
+```bash
+python3 "$SCRIPTS/preflight.py" check --run-id "$RUN" --ticket-id "$T" --type impl --gate G-impl \
+  --origin "$ORIGIN" --spec /tmp/spec.md --guide /tmp/orchestration-guide.md \
+  --guide-fetched-at "$TS" --round-started-at "$ROUND_TS" --channel-note "channel B" \
+  --worktree-note "new-top-level" --long-horizon-note "single" --main-rule-note "clean" \
+  --canonical-note "worktree" --legacy-migrated --migration-ref "native" --compact
 ```
 
-All six columns need **concrete values**; "TBD" is not allowed. When not dispatching, write
-"none" for worker. When dispatching, the pre-skill column is the skill of **this stage and ticket
-type** (§4.3), written as its real absolute path, confirmed readable before dispatch. The worktree
-name is a slug you take at dispatch time; it is not part of the delivery endpoint.
+Non-zero exit blocks dispatch (`message-capability` is non-waivable). Check fork base refs (`orca repo show`) before dispatching.
 
-`worker-start` does not consult the local default and raises `agent_unconfigured` if `--agent` is missing or unrecognized; pass the selected value explicitly. The routing table above points at the
-[dispatch loop](references/dispatch-loop.md) for the rationale and every flag.
+### Phase 3 — Dispatch, Wait & Handle Messages (§4.5 / §5)
 
-Before dispatch, confirm the selected agent is enabled; if it is explicitly known to be unsupported, report per §9 and stop rather than guessing or substituting. §4.3's table gives
-start/title criteria only, never defaults or disabled state.
+1. Append ledger `intent` (`ledger.py append`) → run `<ORCA> orchestration worker-start --spec ... --worktree new-top-level --name <slug> --setup run --agent <agent> --retry-request <id> --json` → append ledger `result` → record `progress.py` & `preflight.py post-dispatch --compact`.
+2. Confirm start evidence (`turnStart: observed` or terminal/worker-read check per reference); end turn and wait for Orca's native wake.
+3. Classify every worker question before replying (`reply --id <msg>`): pause decision-class items for the human; answer detail-class locally; freeze only the blocked ticket.
+4. On silence, stalled rounds, or failed `worker-start`: run `python3 "$SCRIPTS/health.py" collect --run-id "$RUN" --evaluate --compact` or `ledger.py status --run-id "$RUN" --compact`; follow recovery procedures before any retry or release.
 
-## 1. Channel, route and delivery endpoint
+### Phase 4 — Verify, Reconcile, Merge & Release (§6 / §7 / §9)
 
-Record what the user asked for and where they want it to stop. Project changes open a PR; merge only within the user’s delivery authorization and after the gates pass. A one-way Merge Danger door stays open for a human. Exploration may change the implementation path; it may not widen the work.
+1. Verify gate deliverables (`git status`/`diff --numstat` reflow check, `Test tier:` red→green logs, two-axis `code-review`, or `visual-evidence.py` report; re-verify PR `Door` against actual diff). Persist `acceptance.py record`. Send back concretely (2 consecutive same-gate failures on one ticket → ask user; 5 cumulative send-backs → stop dispatching).
+2. Merge authorized two-way green PRs (`§6.5`), fast-forward local main (or upstream for forks, `§6.5.1`), and reconcile tracker states after merge. Leave one-way or PR-only requests open and log `pending_type: human_merge`.
+3. Close out & release: persist `python3 "$SCRIPTS/closeout.py" reconcile --run-id "$RUN" --live --answer-location "$ANS" --compact`. Run `worker-release` **only** after settled `worker-show` and durable closeout (failures follow `failure-record` → `failure-plan` → `worker-release`).
+4. Deliver structured report (`stage`, `verified evidence`, `Q -> A log`, `next action` / pending one-way doors). On harness/process errors, run `retro` read-only outside the repo.
 
-**Channel** is the supervision and delivery shape; **the route** is the skill path the work enters. Decide them in that order and record both.
+## Reference Index (Read On Demand by Task Stage)
 
-| Channel | When | Handling |
-| --- | --- | --- |
-| A | The answer, the report or the discussion stays in this session; no project file changes | Answer directly; when the user names an interview skill, follow its interactive flow |
-| B | One bounded deliverable lands on disk or as a PR: a small change, a fix, one ticket, or one artifact (research, design, spec, ticket split) | Read-only exploration, then one worker; the pre-skill is the route's |
-| C | A multi-ticket or not-yet-settled effort needs a long-horizon run | Converge on requirements and dependencies first; once G-tickets accepts a complete map, dispatch **one** long-horizon `implement-spec` worker |
-
-Select the **route** from [the routing table](references/dispatch-loop.md#entry-evidence): one row per condition, carrying its input, skill and dependencies, completion evidence and return point. **Route index** — every route family, so none is invisible from this entrypoint; the conditions, dependencies and return points live only in the table: answer in place (no Run); `grill-me` (no working directory) or `grill-with-docs` (with one) → `grilling` (+ `domain-modeling`) for unresolved trade-offs; `implement` (`diagnosing-bugs` first for a bug) for a bounded change, fix, continuation or valid spec/ticket; `wayfinder` (chart or work; read the repo's wayfinding conventions, never invent labels) when planning itself spans sessions and the route is foggy; `research` / `prototype` / `to-questionnaire` / `wizard` when a decision needs sources, a runnable artifact, someone else's answer, or only a human's hands; `to-spec` → `to-tickets` → `implement` or `implement-spec` for an aligned multi-session build; `triage`, `diagnosing-bugs`, `improve-codebase-architecture` for raw external issues, hard bugs and architecture pain; `retro` when delivery finished, a mistake repeated, or the process failed.
-
-Write the route record next to §0's declaration — `route <row #>: <name> | entry evidence <what proves this row applies> | stage <current stage> | gates <applicable gates> | open decisions <unresolved / none>` — and restate both records when exploration reveals a new fork, a missing skill, or a stale spec or ticket. A route other than row 1 creates a Run. A PR-only request stops with the PR open (§0).
-
-An existing spec or ticket is an entry only after checking that it applies to this request, is current and resolves the open decisions. A single settled ticket stays on B; only a complete map uses `implement-spec`; a design-only request closes at that artifact's authorized delivery endpoint; a scope that is itself unclear goes to a human per §5. If exploration turns up multiple tickets, forked approaches or a cross-module seam, re-judge the channel and restate both records; never convert a discussion request into implementation authorization.
-
-### 1.1 Repository bootstrap gate
-
-Before a planning or implementation stage, probe the repo rather than re-derive the criteria:
-`python3 <bundle>/scripts/init-check.py check --repo <target repo> --json`, which reports exactly
-[the dispatch loop](references/dispatch-loop.md) §4.3.0's criteria; both bundles ship it. Exit `0` → enter
-the stage skill directly. Exit `1` → **land the initialization first, then enter the stage**: pre-skill
-`<absolute path>/setup-matt-pocock-skills/SKILL.md` (confirm readable; `disable-model-invocation: true`
-requires explicit naming; do not rely on automatic discovery), a worker lands it in an isolated worktree, the coordinator verifies the initialization artifacts, and
-re-runs the probe before the stage skill. Exit `2` → the probe could not decide (no `git`, no usable
-tracker CLI, an undocumented tracker): report per §9 with its evidence; `unknown` is not uninitialized
-and does not start setup. Record the report's `status` and the probed repo's `git rev-parse HEAD` in the
-mode declaration and closeout report. If the user says this round skips it, record "uninitialized"
-there instead and report its effect on later stages per §9 (`to-spec` cannot publish to an unreachable
-tracker); do not skip silently and do not have the coordinator write governance files on main.
-
-A route that would overturn an existing ADR or a planned decision settles that decision first.
-
-## 2. Role boundary: the coordinator plans and accepts, workers edit and commit
-
-- The coordinator does read-only exploration, task splitting, dispatch, message handling,
-  answering questions, running acceptance, and executing authorized PR merges.
-- With a long-horizon map, nested implementers are the top-level worker's subagents. The
-  coordinator talks only to that worker, never enters a nested worktree, and treats the worker as
-  accountable for nested branches, merges and cleanup.
-- Every addition, edit, format, restore, conflict resolution, stage, commit, push, and PR body
-  for a project file is done by a worker inside that ticket's worktree; this includes governance
-  documents, ticket status and Answer text, and one-line fixes. **The coordinator must never edit
-  or commit inside a worker's worktree, and must never bypass this boundary with a script or
-  another agent.**
-- The coordinator may write task specs, communication ledgers, evidence and reports outside the
-  repository; `/tmp` is for process artifacts and a persistent audit directory under the user's
-  home is for durable audit. Landing files inside the project is the worker's job.
-- Check who is writing and where before every write. If project files, the index, or branch
-  content would change ⇒ dispatch a worker. Acceptance caches and artifacts go in a temporary
-  acceptance directory and never update the user's main working copy.
-- The coordinator may create an isolated acceptance worktree, fetch, run checks and merge PRs,
-  and after each merge **pull the merged main branch** per §6.5.1 — syncing accepted work, not
-  implementing it. Only a clean main working copy may run `git pull --ff-only`; do not reset, do
-  not auto-stash, and do not switch the user's current branch.
-- On a missed change, formatter noise, a missing commit/PR, or a merge conflict: list the evidence
-  and send it back to the worker. If a worker is unreachable, confirm its state and resume or
-  replace it per the communication recovery protocol; the coordinator does not take over the
-  implementation.
-
-## 3. Lightweight implementation
-
-A single ticket whose approach is settled and whose blast radius can be bounded goes down
-channel B: one isolated worktree, a short spec, and verification proportionate to the risk. Bug
-fixes need regression evidence that reproduces on the old code and passes on the new. Pure copy,
-style or configuration changes are accepted with an applicable check and an observable result; do
-not manufacture red-green tests for them. Project file changes are committed to a PR and
-merged only when the user authorized merge.
-
-A two-axis review may be omitted for a small bounded change when the reason is recorded in the
-spec and Answer; a cross-ticket or shared-interface change gets wider G-impl verification.
-Documentation tickets run their own gates. Small size never changes the role boundary.
-
-## 4. Dispatch (channels B / C)
-
-### 4.0 Pre-dispatch preflight
-
-Before the first dispatch of every actual Run, initialize the progress record and open the dashboard automatically per [progress dashboard](references/progress-dashboard.md), then keep recording at the later checkpoints; failures warn and continue without blocking dispatch or the single inbox, and pure Q&A or skill edits do not start it.
-
-Every pre-dispatch run writes a durable ledger `kind: preflight` receipt first through `scripts/preflight.py check`. A failed blocking item rejects the dispatch unless an override records `by` and `reason`; a receipt that cannot be written rejects it too, and no `worker-start` runs.
-
-[Dispatch preflight](references/dispatch-preflight.md) has three checkpoints; only the first blocks a dispatch. **§4.0.1 pre-dispatch**: tick every line (mechanical criteria: the `Test tier:` line, the `code-review` mention, the base-commit check per baseline number). **§4.0.2 after the receipt**: start evidence, the review-exemption recheck, dashboard backfill/gap, inbox health and isolation. **§4.0.3 at teardown**: formatter noise. Post-dispatch facts never redden §4.0.1.
-
-### 4.1 Read-only exploration
-
-Gather the facts needed to write the spec on main first (three parallel reads at most). **Exploration's endpoint is the spec, not the edit** — "I could just change this line myself" is the signal to dispatch, not a licence to skip it.
-
-### 4.2 Fetch the orchestration guide
-
-Fetch it once to `/tmp`, then grep the on-disk file; never repeatedly re-slice the same output.
-Pull `--reference references/<file>.md` at a specific action gate. Commands and rationale:
-[dispatch loop](references/dispatch-loop.md).
-
-### 4.3 ★ Hard override: worktree placement and explicit agent
-
-Orca's default places a worker in the current (= main) workspace; **orchestra-auto overrides that.
-Every task worker must be started as an isolated top-level worktree with an explicit agent**:
-
-```text
---worktree new-top-level --name <ticket slug> --setup run --agent <§0's worker>
-```
-
-- `--worktree new-top-level` only. **Never `current` (= main), never `new-child`** (may land in a
-  subdirectory of main). If the session cwd is not the target repo, add `--repo <selector>`.
-- **Base ref: the fork decides it, once per repository.** `orca repo show --repo <selector> --json`
-  → `result.repo.upstream` null: default base ref, no `--base-branch`; non-null: `git fetch upstream`
-  and `--base-branch upstream/<default branch>`, or fork main's private commits gap the upstream PR.
-  Judge by **delivery endpoint**, not size or type; exceptions and the `search-refs` check:
-  [dispatch loop](references/dispatch-loop.md) §4.3.
-- **A fork's main stays a pure mirror**, so §6.5.1's ff-only sync always holds: clear accumulated private commits upstream or drop them, never hide them behind a base choice.
-- `--agent` is **required and explicit**; there is no "use the default" form — `worker-start`
-  raises `agent_unconfigured` when it is missing or unrecognized. Its value comes from §0's live
-  read; judge usability from the live disabled list, not `which`.
-- Full flags, per-agent notes and narrative: [dispatch loop](references/dispatch-loop.md).
-
-### 4.3.1 Confirming the turn started after dispatch
-
-`state: ready` is **not** `turnStart`; it only means the Dispatch is ready. `turnStart: observed`
-is start evidence — accept it. When it is `unsupported`, `unobserved`, or absent, follow
-[start and recovery](references/worker-start-and-recovery.md) and confirm the start with evidence
-that agent supports. Never force `terminal show` onto a worker with no terminal; if you cannot
-prove it, gather evidence per §9 rather than blind-waiting.
-
-### 4.4 The spec contract
-
-Write the spec from the template in [the spec contract](references/spec-contract.md); every element
-there is required — behaviour rules, this stage's pre-skill path, the ticket-type and gate line, an
-implementation ticket's `Test tier:` line (narrow/wide, with the bounded-radius reason for narrow),
-and the `Not run this ticket` line. A worker sees only the spec, so anything left out is not done.
-
-### 4.5 Communication loop
-
-Read [communication and recovery](references/inbox-and-waiting.md). Use Orca's native wake; end the turn after dispatch and act on each delivered message. Only the agent consumes its own mailbox. Keep an out-of-repo ledger of message IDs, handling and evidence, and recover lost responses with the version-matched retry and inbox commands. Never run the retired background consumer or assume a current `check` waits for an ack.
-
-## 5. Reply protocol: decisions go to the human, details are answered for them
-
-For every worker question (grill / wayfinder / prototype and so on), classify first, then decide
-who answers — the flow must not stall, but "never ask the human" is not the default.
-
-- **Decision-class** (shape / user-observable behaviour, approach forks, scope boundaries, or the
-  escalation five: credentials, third-party accounts, payment, manual approval, irreversible
-  live-data ops): attach your own leaning and ask the human. A worker's `➡️ <recommended>` is
-  reference only — no question goes straight from recommendation to answer.
-- **Detail-class** (naming, placement, implementation technique, test style, in-library API use):
-  the coordinator answers, grounded in project context, an ADR, the spec, or the user's words.
-- Merging an already-authorized project change is an execution step of §6, not a product decision
-  needing re-approval.
-
-Classification criteria, how to ask the human, and record/reply details:
-[reply protocol](references/reply-protocol.md).
-
-## 6. Gate acceptance
-
-Verify observable results and evidence yourself, and on failure list what is missing and send it back.
-Choose the gate by ticket type and follow [gate acceptance](references/gate-acceptance.md). That file
-also covers G-impl item by item, the G-merge composition rules, §6.5 merge execution and §6.5.1's local
-main sync, plus the worker lifecycle and send-back protocol. For a long-horizon integration PR,
-verify the Merge Danger door against the diff: a one-way door never auto-merges, and an uncertain
-claim is treated as one-way.
-
-## 7. Landing work, implementation, and closing
-
-Each round is bounded by the scope declared in §0 and the route recorded in §1. A full
-implementation request with unclear requirements runs `grill-with-docs → to-spec → to-tickets →
-implement-spec` in order; with a clear spec or existing tickets you enter at the matching stage. A
-design-only, spec-only or tickets-only request closes at that stage's authorized delivery endpoint,
-and you do not drift into implementation on your own. If the user asked only for a PR, stop with it
-open (§0).
-
-Between laps, the explicit flow record (`scripts/flow.py`) is the plan: `chain.py resume` reads it
-first and names the next ready node, the blockers, the human-waiting items or the evidence gap; only
-a Run with no flow record falls back to the legacy ledger chain, whose answer is marked `legacy`.
-`exit-check` applies the two artifact-shaped floors; [chain run](references/chain-run.md) says what
-each answer may conclude.
-
-- Design tickets are accepted under G-docs or G-wayfinder. If this round also includes to-spec /
-  to-tickets, keep landing and reconcile the tracker: labels/states follow repository conventions,
-  implementation tickets exist, and dependencies are queryable. Otherwise the report records the
-  follow-up entry point and does not mark the unauthorized stages as defects.
-- A complete map runs through one long-horizon worker; it owns the frontier and its concurrency.
-  The per-ticket fallback (one worker per ticket, default 3) is for a degraded run, recorded in the
-  ledger. Accept the integration PR once, not per ticket.
-- Per-ticket TDD and evidence are the worker's contract; the final integration PR is the
-  coordinator's gate. When the same field or interface changes across call sites, the Answer
-  enumerates every location and its disposition.
-
-The closing report goes in a durable directory outside the repository, readable without `/tmp`. Record the
-request and endpoint, each artifact's commit/PR/merge state, acceptance results and evidence, the decisions
-the human made and those answered for them, unfinished items and the worker count. For project changes list
-each PR's merge SHA, the local sync and the final main HEAD, and say why a merge did not happen.
-
-## 8. Planning dependency initialization (on demand)
-
-The gate's criteria, landing path and acceptance live in §1.1 and are not repeated here. When this round
-needs `grill-with-docs`, `to-spec`, `to-tickets` or `triage` and the dependency is missing, go through that
-gate first; when the repo is already bootstrapped, reuse the existing tracker, labels and domain docs
-instead of re-running or rewriting them. Confirm new governance files, labels or PRs belong to the round.
-
-## 9. Failure and reporting discipline
-
-When the CLI will not start, a `worker-start` receipt is `state: failed`, a breaker trips, or the Orca
-app restarts, follow [failure and reporting](references/failure-and-reporting.md) instead of
-improvising: gather evidence before deciding, report the exact error, and never relaunch
-unconditionally. A process error — not a product bug — also triggers a read-only retro; its candidates need human selection before a worker lands them. See [long-horizon tickets](references/long-horizon-tickets.md) §6. Dashboard initialization, automatic opening and recording are documented in [progress dashboard](references/progress-dashboard.md); errors warn and continue, with no extra inbox receiver.
+| Reference | When to Read |
+| :--- | :--- |
+| [references/routing-and-chains.md](references/routing-and-chains.md) | Choosing among the 14 routes, `init-check.py`, `flow.py init-route`, `chain.py resume` / `exit-check` |
+| [references/preflight-and-spec.md](references/preflight-and-spec.md) | Worker spec / slim `BEHAVIOR RULE`, `preflight.py` (§4.0.1–§4.0.3), planning gates (`G-docs`/`wayfinder`/`spec`/`tickets`), 6-clause prose contract |
+| [references/dispatch-and-comms.md](references/dispatch-and-comms.md) | Worktree/fork flags, `turnStart` recovery, `ORCA_TERMINAL_HANDLE`/`SESSION_ID`, `orchestration ask`/reply rules, legacy `inbox-loop` migration |
+| [references/acceptance-and-closeout.md](references/acceptance-and-closeout.md) | `G-impl` / `G-merge`, authoritative one-way-door trigger list, 4-level `acceptance.py`, 10-row `closeout.py`, escalation/blocker reporting |
+| [references/long-horizon.md](references/long-horizon.md) | Multi-ticket `implement-spec` integration branch model, frontier isolation, `pending` one-way doors, `retro` governance |
+| [references/recovery-and-health.md](references/recovery-and-health.md) | Failed `worker-start` recovery (`failure-record`→`failure-plan`→`release`), `health.py` state machine/11 signals, reflow noise recovery |
+| [references/ledger-and-dashboard.md](references/ledger-and-dashboard.md) | `ledger.py` (`status`/`reconcile`, W1–W3 windows, action matrix) and `progress.py` `open` / `progress_record()` / Protocol v2 checkpoints |
+| [references/visual-evidence.md](references/visual-evidence.md) | Quiet Orca UI screenshot batches via `visual-evidence.py` (`restored`, `focusRestored`, no minimize / `set frontmost`) |

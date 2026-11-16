@@ -44,6 +44,7 @@ defaults come from the environment. Tests never touch a real window.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -52,6 +53,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_visual_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
 
 SCHEMA_VERSION = 1
 #: Patched by tests so the whole suite runs on Linux CI without a real window.
@@ -64,20 +71,9 @@ EXIT_WINDOW_CHANGED = 3
 EXIT_BUDGET = 4
 
 DEFAULT_MAX_SECONDS = 60.0
-CLI_ENV = "ORCA_CLI_COMMAND"
-DEFAULT_CLI = "orca"
-
-
-def resolve_orca_cli():
-    """Follow the version-matched Orca discovery stub without fallback."""
-    if CLI_ENV in os.environ:
-        return os.environ[CLI_ENV]
-    if os.environ.get("ORCA_DEV_REPO_ROOT"):
-        return "orca-dev"
-    if sys.platform.startswith("linux") and not (
-            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
-        return "orca-ide"
-    return DEFAULT_CLI
+CLI_ENV = _COMMON.CLI_ENV
+DEFAULT_CLI = _COMMON.DEFAULT_CLI
+resolve_orca_cli = _COMMON.resolve_orca_cli
 
 OSASCRIPT_ENV = "ORCA_VISUAL_EVIDENCE_OSASCRIPT"
 DEFAULT_OSASCRIPT = "osascript"

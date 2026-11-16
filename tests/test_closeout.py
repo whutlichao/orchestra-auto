@@ -1729,7 +1729,7 @@ class ReferenceParityTests(unittest.TestCase):
     }
 
     def flat(self, name):
-        text = (REPO_ROOT / "skills" / name / "references" / "gate-acceptance.md").read_text()
+        text = (REPO_ROOT / "skills" / name / "references" / "acceptance-and-closeout.md").read_text()
         return "".join(text.split())
 
     def test_the_two_bundles_carry_the_same_closeout_contract(self):
@@ -1737,7 +1737,7 @@ class ReferenceParityTests(unittest.TestCase):
             flat = self.flat(name)
             for key, anchor in expected.items():
                 self.assertIn("".join(anchor.split()), flat,
-                              f"{name}: gate-acceptance.md lost the closeout anchor {key!r}")
+                              f"{name}: acceptance-and-closeout.md lost the closeout anchor {key!r}")
             for anchor in self.ROW_ANCHORS[name]:
                 self.assertIn("".join(anchor.split()), flat,
                               f"{name}: the ten-row table lost the {anchor!r} row")
@@ -1753,7 +1753,7 @@ class ReferenceParityTests(unittest.TestCase):
         }
         for name, anchors in expectations.items():
             text = (REPO_ROOT / "skills" / name / "references"
-                    / "long-horizon-tickets.md").read_text()
+                    / "long-horizon.md").read_text()
             flat = "".join(text.split())
             for anchor in anchors:
                 self.assertIn("".join(anchor.split()), flat,
@@ -1986,6 +1986,116 @@ class SchemaDiscoveryTests(unittest.TestCase):
         path = Path(tempfile.mkdtemp()).resolve() / name
         path.write_text(json.dumps(payload))
         return str(path)
+
+
+class LiveAuthorityAndCompactTests(unittest.TestCase):
+    """Live closeout collector, graceful degradation, and --compact CLI flags."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.root)]))
+        self.home = self.root / "ledger-home"
+        self.home.mkdir()
+        self.closeout = load_module(SKILL_DIRS[0], "closeout.py")
+        self.ledger = load_module(SKILL_DIRS[0], "ledger.py")
+
+    def test_collect_live_authority_builds_sections_and_degrades_on_failures(self):
+        record = {
+            "schema_version": 1,
+            "record_id": ACCEPTANCE_RECORD_ID,
+            "kind": "acceptance",
+            "run_id": RUN_ID,
+            "subject": {"ticket": "39", "pr": 12},
+            "action": "accept",
+            "request_id": "",
+            "idempotency": "none",
+            "state": "observed",
+            "evidence_ref": "answer.md",
+            "observed_at": utc_now(),
+            "actor": "coordinator",
+            "detail": acceptance_record(levels={
+                "implemented": {
+                    "value": True, "evidence_ref": "answer.md",
+                    "at": utc_now(), "start": {"turn_start": "observed"},
+                },
+                "merged": {
+                    "value": True, "evidence_ref": "gh:pr:12", "at": utc_now(),
+                    "pr_state": "MERGED", "merge_sha": MERGE,
+                    "ancestry": "merged", "read_back": "verified",
+                },
+            }),
+        }
+
+        def fake_runner(argv, cwd=None):
+            if argv[:3] == ["gh", "pr", "view"]:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "number": 12, "state": "MERGED",
+                    "mergeCommit": {"oid": MERGE}, "baseRefName": "main",
+                })}
+            if argv[:3] == ["gh", "issue", "view"]:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "state": "CLOSED", "closedAt": utc_now(),
+                })}
+            if argv[:2] == ["git", "-C"]:
+                sub = argv[3:]
+                if sub[:2] == ["status", "--porcelain"]:
+                    return {"returncode": 0, "stdout": "", "stderr": ""}
+                if sub[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return {"returncode": 0, "stdout": "main\n", "stderr": ""}
+                if sub[:2] == ["rev-parse", "HEAD"] or sub[:2] == ["rev-parse", "main@{u}"]:
+                    return {"returncode": 0, "stdout": MAIN_HEAD + "\n", "stderr": ""}
+                if sub[:3] == ["rev-parse", "--abbrev-ref", "main@{u}"]:
+                    return {"returncode": 0, "stdout": "origin/main\n", "stderr": ""}
+                if sub[:2] == ["merge-base", "--is-ancestor"]:
+                    return {"returncode": 0, "stdout": "", "stderr": ""}
+            if "worker-list" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True, "result": {"workers": []},
+                })}
+            return {"returncode": 1, "stdout": "", "stderr": "unexpected command"}
+
+        collected = self.closeout.collect_live_authority(
+            str(self.root), run_id=RUN_ID, records=[record], runner=fake_runner,
+        )
+        self.assertEqual(collected["pr_host"]["state"], "ok")
+        self.assertEqual(collected["git"]["state"], "ok")
+        self.assertEqual(collected["tickets"]["tickets"][0]["integrated"], True)
+        self.assertEqual(collected["tracker"]["tickets"][0]["state"], "closed")
+        self.assertEqual(collected["workers"]["state"], "ok")
+
+        # Unavailable external binaries degrade gracefully to unknown rather than raising.
+        degraded = self.closeout.collect_live_authority(
+            str(self.root), run_id=RUN_ID, records=[record],
+            runner=lambda *_args, **_kw: {"returncode": 127, "stdout": "", "stderr": "missing"},
+        )
+        self.assertEqual(degraded["pr_host"]["state"], "unknown")
+        self.assertEqual(degraded["git"]["state"], "unknown")
+        self.assertEqual(degraded["tracker"]["state"], "unknown")
+        self.assertEqual(degraded["workers"]["state"], "unknown")
+
+    def test_reconcile_live_compact_cli_outputs_compact_summary(self):
+        auth_file = self.root / "auth.json"
+        auth_file.write_text(json.dumps({
+            "pr_host": {"state": "unknown", "reason": "offline"},
+            "git": {"state": "unknown", "reason": "offline"},
+            "tickets": {"state": "unknown", "reason": "offline"},
+            "tracker": {"state": "unknown", "reason": "offline"},
+            "workers": {"state": "unknown", "reason": "offline"},
+        }))
+        env = {**os.environ, "ORCA_LEDGER_HOME": str(self.home)}
+        res = subprocess.run(
+            [sys.executable, str(SKILL_DIRS[0] / SCRIPT_RELATIVE),
+             "reconcile", "--run-id", RUN_ID, "--live",
+             "--authority", str(auth_file),
+             "--answer-location", "docs/answer.md", "--compact"],
+            env=env, cwd=str(self.root), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(len(res.stdout.strip().splitlines()), 1)
+        payload = json.loads(res.stdout)
+        self.assertIn("checklist_summary", payload)
+        self.assertIn("closeout_summary", payload)
+        self.assertNotIn("checklist", payload)
 
 
 if __name__ == "__main__":

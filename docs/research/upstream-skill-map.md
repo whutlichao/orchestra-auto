@@ -53,7 +53,7 @@
 
 HITL 决策必须来自真实用户交流，agent 自问自答破坏该类型。frontier 空只说明当前没有可领取票，不证明全部问题完成；应区分已领取、被阻塞、已解决以及仍在 fog 的内容。地图收敛后，通常用 `to-spec` 收拢链接的决定，再 `to-tickets` 形成实施图；只有工作最终确实很小，`ask-matt` 才建议可直接进入 `implement`。
 
-**本项目差异与验证点**：项目已在 [SKILL.md](../../skills/orchestra-auto-zh/SKILL.md) 和 [G-wayfinder](../../skills/orchestra-auto-zh/references/gates-docs-planning.md) 提到 wayfinder，不能说完全不存在；但需要逐项检验入口可发现性、chart/work 两种模式、按标签分派、研究分支处理、每 session 一票、用户参与和地图完成后的 spec 交接是否都真正落地。将其只当作 `grill → spec → tickets` 前的一句可选提示，会遮蔽这套动态路由。它的决策票图和 `to-tickets` 的实施图的 frontier、完成信号与授权不同，不能互换。
+**本项目差异与验证点**：项目已在 [SKILL.md](../../skills/orchestra-auto-zh/SKILL.md) 和 [G-wayfinder](../../skills/orchestra-auto-zh/references/preflight-and-spec.md) 提到 wayfinder，不能说完全不存在；但需要逐项检验入口可发现性、chart/work 两种模式、按标签分派、研究分支处理、每 session 一票、用户参与和地图完成后的 spec 交接是否都真正落地。将其只当作 `grill → spec → tickets` 前的一句可选提示，会遮蔽这套动态路由。它的决策票图和 `to-tickets` 的实施图的 frontier、完成信号与授权不同，不能互换。
 
 ## 上游上下文与权限约定
 

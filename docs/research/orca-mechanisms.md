@@ -21,7 +21,7 @@
 ## 对象和放置
 
 - **Run** 是协调范围和 coordinator 邮箱；**Task** 保存工作及依赖；**Dispatch** 是某次派发尝试；worker 是受监督的执行者。`worker-start --spec` 可一起创建 Task 和尝试；未绑定 Run 时该版本可以自动创建。对于已有依赖图先 `run-create`、`task-create --deps`，再从 `task-list --ready` 选可执行任务。来源：本机 `coordinator-loop.md`、`worker-start --help`、[官方 CLI 文档](https://github.com/stablyai/orca/blob/main/docs/site/content/docs/cli/orchestration.mdx)。
-- Orca 的示例优先 `--worktree current`，只有用户要求或共享会冲突时才新建。当前项目要求所有受监督 worker 放在 `new-top-level`，这是项目的隔离政策，代价是更多 worktree、设置和分支管理。新建 worktree 的 lineage 与 Git base 是不同维度；不能从是否为 child 推断分支基线。来源：本机 `orchestration`、`orca-cli` 指南；本项目 [派活闭环](../../skills/orchestra-auto/references/dispatch-loop.md)。
+- Orca 的示例优先 `--worktree current`，只有用户要求或共享会冲突时才新建。当前项目要求所有受监督 worker 放在 `new-top-level`，这是项目的隔离政策，代价是更多 worktree、设置和分支管理。新建 worktree 的 lineage 与 Git base 是不同维度；不能从是否为 child 推断分支基线。来源：本机 `orchestration`、`orca-cli` 指南；本项目 [派活与通信](../../skills/orchestra-auto/references/dispatch-and-comms.md)。
 - 新 workspace 默认运行 setup；repo 配置决定 agent 与 setup 并行还是等 setup。当前或既有 worktree 不会重新运行 setup。新 worker 可能是结构化 chat，也可能是 terminal；使用 `worker-show` / `worker-read --source auto` 和 orchestration 消息，不假设一定有 terminal。来源：`worker-start --help`。
 - Task spec 至少包含目标、要做的变更、限制、允许编辑范围、完成证据，并明确非零退出是失败还是需要采集的结果。它不等同于产品 spec：前者是给 worker 的自包含委派说明，即使任务是生成产品 spec 也需要它。来源：本机 `orchestration` 指南的 Task spec 小节。
 
@@ -38,7 +38,7 @@
 
 - `worker_done` 结算 Task；失败报告不能标成功。Task 已结算不等同于物理进程已退出，也不等同于产物已通过项目验收。收到通知后仍需要按项目门禁核对真实产物与证据。来源：本机 `orchestration`、`recovery-and-cleanup.md`。
 - 沉默、超时、不可验证 liveness 本身不证明 agent 已退出，也不允许自动停止、放弃、重试或释放。失败启动应查看 `failedStage`、副作用、保留资源并按版本匹配恢复指南处理；重试同一 Task 用 `--retry-of` 且显式重选放置，不应制造新 Task 绕过熔断。三次失败启动后的 breaker 需要用户明确要求重试或重新分配，且仍在原 Task 上处理。来源：`worker-start --help`、`recovery-and-cleanup.md`。
-- `worker-start` 的成功/ready 或 input accepted 不能简单解释成 turn 已启动：按回执 `next`、turnStart 及 worker 的实际能力核验，不能基于静默重复派发。来源：本机 `worker-start --help` 和本项目 [启动与恢复](../../skills/orchestra-auto/references/worker-start-and-recovery.md)。
+- `worker-start` 的成功/ready 或 input accepted 不能简单解释成 turn 已启动：按回执 `next`、turnStart 及 worker 的实际能力核验，不能基于静默重复派发。来源：本机 `worker-start --help` 和本项目 [派活与恢复](../../skills/orchestra-auto/references/dispatch-and-comms.md)。
 - 新 worktree worker 默认保留供用户使用；其他已完成 worker 通常自动关闭，具体按 `worker-list` 和回执 `next`，用户保留的 session 不要擅自关闭。来源：`worker-start --help`、本机 `orchestration` 指南。
 
 ## 对重新设计通道的启示与待验证项

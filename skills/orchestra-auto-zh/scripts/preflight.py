@@ -24,21 +24,28 @@ so both bundles share one schema implementation.
 """
 
 import argparse
+from datetime import datetime
 import hashlib
-import importlib.util
 import json
 import os
-import sqlite3
-import subprocess
-import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+import re
+import sqlite3
+import sys
 from typing import NoReturn
+import uuid
+
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+import importlib.util  # noqa: E402
+
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_preflight_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
 
 #: Python 3.10 is the supported floor and has no ``datetime.UTC`` alias, so the zone is
 #: named once here instead of being spelled out at every timestamp.
-UTC = timezone.utc  # noqa: UP017
+UTC = _COMMON.UTC
 
 SCHEMA_VERSION = 1
 LEDGER_KIND = "preflight"
@@ -47,23 +54,12 @@ LEDGER_ACTION = "preflight"
 ITEM_CLASSES = ("mechanical", "judgment")
 ITEM_RESULTS = ("pass", "fail", "waived")
 TICKET_FIELDS = ("id", "type", "gate", "origin")
-CLI_TIMEOUT_SECONDS = 30
+CLI_TIMEOUT_SECONDS = _COMMON.CLI_TIMEOUT_SECONDS
 
 #: The Orca CLI resolves through the same variable the rest of the skill uses.
-CLI_ENV = "ORCA_CLI_COMMAND"
-DEFAULT_CLI = "orca"
-
-
-def resolve_orca_cli():
-    """Follow the version-matched Orca discovery stub without fallback."""
-    if CLI_ENV in os.environ:
-        return os.environ[CLI_ENV]
-    if os.environ.get("ORCA_DEV_REPO_ROOT"):
-        return "orca-dev"
-    if sys.platform.startswith("linux") and not (
-            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
-        return "orca-ide"
-    return DEFAULT_CLI
+CLI_ENV = _COMMON.CLI_ENV
+DEFAULT_CLI = _COMMON.DEFAULT_CLI
+resolve_orca_cli = _COMMON.resolve_orca_cli
 
 
 #: The twelve §4.0.1 tick-sheet lines, in order. ``items`` are the receipt items each line
@@ -154,43 +150,15 @@ def _invalid(message) -> NoReturn:
     raise ValueError(message)
 
 
-def _now():
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def parse_timestamp(value):
-    """Return an aware UTC ``datetime`` for an RFC3339 timestamp, or ``None``."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if moment.tzinfo is None:
-        return None
-    return moment.astimezone(UTC)
-
-
-def _timestamp_text(value):
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
-    )
-
-
-def _json_object(text):
-    try:
-        value = json.loads(text)
-    except (TypeError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+_now = _COMMON.utc_now
+parse_timestamp = _COMMON.parse_utc
+_timestamp_text = _COMMON.timestamp_text
+_json_object = _COMMON.json_object
 
 
 # ---------------------------------------------------------------------------
 # The ledger seam
 # ---------------------------------------------------------------------------
-
-
-_LEDGER_MODULE = None
 
 
 def ledger_module():
@@ -200,16 +168,7 @@ def ledger_module():
     into a package. A missing or broken ledger is a receipt-write failure, which blocks
     the dispatch.
     """
-    global _LEDGER_MODULE
-    if _LEDGER_MODULE is None:
-        path = Path(__file__).resolve().with_name("ledger.py")
-        spec = importlib.util.spec_from_file_location("preflight_ledger", path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"cannot load the ledger module from {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _LEDGER_MODULE = module
-    return _LEDGER_MODULE
+    return _COMMON.load_sibling(__file__, "ledger.py", alias="preflight_ledger")
 
 
 # ---------------------------------------------------------------------------
@@ -231,17 +190,7 @@ class LocalRunner:
         command = list(argv)
         if command and command[0] == "orca":
             command[0] = self.orca
-        try:
-            completed = subprocess.run(
-                command, capture_output=True, text=True, timeout=timeout
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            return {"returncode": 127, "stdout": "", "stderr": str(error)}
-        return {
-            "returncode": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-        }
+        return _COMMON.run_command(command, timeout=timeout)
 
 
 def _run(runner, argv):
@@ -424,6 +373,38 @@ def _terminal_binding(runner, guide):
     return probe
 
 
+_HANDLED_NEGATIONS = (
+    "does not mark it handled",
+    "do not mark it handled",
+    "not mark it handled",
+    "not marked handled",
+    "never marks it handled",
+    "never mark it handled",
+    "without marking",
+    "discard the batch",
+)
+
+
+def _messaging_contract_known(guide, check):
+    """Verify wake, FIFO handled read, --retry-request replay, and inbox recovery."""
+    if not guide or not check:
+        return False
+    if any(phrase in check for phrase in _HANDLED_NEGATIONS):
+        return False
+    wake_ok = ("orca wakes you" in guide) or ("orca" in guide and "wakes you" in guide)
+    fifo_handled_ok = (
+        "fifo" in check
+        and "batch" in check
+        and "handled" in check
+        and ("mark" in check or "marks" in check or "marked" in check)
+    )
+    retry_ok = "--retry-request" in check and (
+        "same batch" in check or "same response" in check or "replay" in check
+    )
+    inbox_ok = "inbox" in check and "--terminal" in check and "--full" in check
+    return wake_ok and fifo_handled_ok and retry_ok and inbox_ok
+
+
 def _check_messaging(context, runner):
     """Fail closed unless this session and its selected CLI support recovery.
 
@@ -465,8 +446,9 @@ def _check_messaging(context, runner):
                                       for argv, _required in probes) and all(
                                       row["returncode"] == 0 and row["markers_present"]
                                       for row in observations)
-    # Match the documented behavior, independent of the release number. This
-    # recognizes precise wording, not arbitrary paraphrases or runtime behavior.
+    # Match the documented wake/FIFO/recovery semantics without tying verification
+    # to brittle punctuation or filler words, while still failing on negations or missing
+    # recovery capabilities unless human_verification explicitly attests the new CLI.
     guide = _collapse(outputs["skills/get/orchestration"]).lower()
     check = _collapse(outputs["orchestration/check/--help"]).lower()
     status_observation = {}
@@ -479,8 +461,10 @@ def _check_messaging(context, runner):
         caller = result.get("caller") if isinstance(result, dict) else None
         caller = caller if isinstance(caller, dict) else {}
         session_id = caller.get("orcaSessionId")
-        chat_contract = ("orca wakes you." in guide and
-                         "in a chat, each message arrives whole as its own message" in guide)
+        chat_contract = (
+            ("orca wakes you" in guide or ("orca" in guide and "wakes you" in guide))
+            and ("each message arrives whole" in guide or ("chat" in guide and "whole" in guide))
+        )
         confirmed = (not problem and status is not None and status.get("ok") is True
                      and caller.get("live") is True
                      and isinstance(session_id, str) and bool(session_id.strip()) and chat_contract)
@@ -501,10 +485,7 @@ def _check_messaging(context, runner):
                         f"{terminal_probe['handle']} to this pane; "
                         "orca orchestration inbox --terminal "
                         f"{terminal_probe['handle']} --json reached its mailbox")
-    known = ("orca wakes you." in guide
-             and "default: return the bound run's oldest unread fifo batch and mark it handled." in check
-             and "if a check response was lost, rerun it with the --retry-request it printed to get the same batch." in check
-             and "to find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full" in check)
+    known = _messaging_contract_known(guide, check)
     review = messaging.get("human_verification")
     review = review if isinstance(review, dict) else {}
     hashes = {"/".join(argv[1:]): row["sha256"]
@@ -976,6 +957,266 @@ def _append_receipt(detail, ticket, context, checked_at, blocking):
     return {"written": True, "record_id": record_id, "error": ""}
 
 
+_SPEC_FIELD_PATTERNS = {
+    "target": re.compile(r"^\s*(?:[-*]\s*)?target\s*[:：]\s*(.*)$", re.IGNORECASE),
+    "change": re.compile(r"^\s*(?:[-*]\s*)?change\s*[:：]\s*(.*)$", re.IGNORECASE),
+    "constraints": re.compile(r"^\s*(?:[-*]\s*)?constraints\s*[:：]\s*(.*)$", re.IGNORECASE),
+    "ownership": re.compile(r"^\s*(?:[-*]\s*)?ownership\s*[:：]\s*(.*)$", re.IGNORECASE),
+    "acceptance": re.compile(
+        r"^\s*(?:[-*]\s*)?observable acceptance\s*[:：]\s*(.*)$", re.IGNORECASE
+    ),
+    "type": re.compile(
+        r"^\s*(?:[-*]\s*)?(?:ticket\s*type|type|票型|票据类型)\s*[:：]\s*(.*)$",
+        re.IGNORECASE,
+    ),
+    "gates": re.compile(r"^\s*(?:[-*]\s*)?(?:gates|门禁)\s*[:：]\s*(.*)$", re.IGNORECASE),
+    "test_tier": re.compile(
+        r"^\s*(?:[-*]\s*)?(?:test\s*tier|测试档)\s*[:：]\s*(.*)$", re.IGNORECASE
+    ),
+    "skill_location": re.compile(
+        r"^\s*(?:[-*]\s*)?(?:file\s*location|文件位置)\s*[:：]\s*(.*)$", re.IGNORECASE
+    ),
+    "question_channel": re.compile(
+        r"^\s*(?:[-*]\s*)?(?:question\s*channel|提问通道)\s*[:：]\s*(.*)$",
+        re.IGNORECASE,
+    ),
+}
+_FIVE_ELEMENT_KEYS = ("target", "change", "constraints", "ownership", "acceptance")
+_PLACEHOLDER_ONLY_RE = re.compile(r"^<[^<>]+>$")
+_IMPL_TYPE_WORDS = ("impl", "implementation", "bugfix", "实施", "code")
+
+
+def _clean_field_value(raw):
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == "`" and value[-1] == "`":
+        value = value[1:-1].strip()
+    return value
+
+
+def _looks_placeholder(value):
+    cleaned = _clean_field_value(value)
+    if not cleaned:
+        return True
+    if _PLACEHOLDER_ONLY_RE.match(cleaned):
+        return True
+    if "<actual" in cleaned.lower() or "<实际" in cleaned:
+        return True
+    if "研究票 | 设计票" in cleaned or "research | design" in cleaned.lower():
+        return True
+    return False
+
+
+def inspect_spec_text(
+    spec_text,
+    *,
+    ticket_type="",
+    ticket_gate="",
+    review_exempt=False,
+    check_paths=True,
+    spec_ref="inline-spec",
+):
+    """Mechanically check the worker spec contract, fields, and pre-skill file paths."""
+    if not isinstance(spec_text, str) or not spec_text.strip():
+        return {
+            "ok": False,
+            "spec_ref": spec_ref,
+            "errors": ["spec text is empty"],
+            "fields": {},
+            "skill_paths": [],
+            "derived_judgments": {
+                item_id: {
+                    "result": "fail",
+                    "note": "spec text is empty",
+                    "evidence_ref": spec_ref,
+                }
+                for item_id in (
+                    "spec-elements",
+                    "ticket-type",
+                    "gates-decidable",
+                    "formatter-prevention",
+                )
+            },
+        }
+
+    lines = spec_text.splitlines()
+    fields = {}
+    skill_locations = []
+    for idx, line in enumerate(lines):
+        for key, pattern in _SPEC_FIELD_PATTERNS.items():
+            match = pattern.match(line)
+            if not match:
+                continue
+            val = match.group(1).strip()
+            if not val and idx + 1 < len(lines):
+                nxt = lines[idx + 1].strip()
+                if nxt and not any(p.match(nxt) for p in _SPEC_FIELD_PATTERNS.values()):
+                    val = nxt
+            if key == "skill_location":
+                if val:
+                    skill_locations.append(_clean_field_value(val))
+            elif key not in fields:
+                fields[key] = val
+
+    errors = []
+    missing_elements = [k for k in _FIVE_ELEMENT_KEYS if not fields.get(k)]
+    placeholder_elements = [
+        k for k in _FIVE_ELEMENT_KEYS
+        if fields.get(k) and _looks_placeholder(fields[k])
+    ]
+    behavior_rule_present = "BEHAVIOR RULE" in spec_text
+    if missing_elements:
+        errors.append("missing spec element(s): " + ", ".join(missing_elements))
+    if placeholder_elements:
+        errors.append("unfilled spec placeholder(s): " + ", ".join(placeholder_elements))
+    if not behavior_rule_present:
+        errors.append("missing BEHAVIOR RULE block")
+
+    skill_paths = []
+    path_errors = []
+    for raw_loc in skill_locations:
+        candidate = raw_loc.strip().rstrip(".,;")
+        entry = {"path": candidate, "exists": False}
+        if _looks_placeholder(candidate):
+            entry["error"] = "unfilled skill path placeholder"
+            path_errors.append(f"{candidate}: unfilled placeholder")
+        elif check_paths:
+            exists = Path(candidate).expanduser().is_file()
+            entry["exists"] = exists
+            if not exists:
+                entry["error"] = "file not readable on disk"
+                path_errors.append(f"{candidate}: not readable")
+        else:
+            entry["exists"] = True
+        skill_paths.append(entry)
+    if path_errors:
+        errors.append("pre-skill path failure: " + "; ".join(path_errors))
+
+    parsed_type = fields.get("type", "")
+    type_ok = bool(parsed_type) and not _looks_placeholder(parsed_type)
+    if not parsed_type:
+        errors.append("missing Type / 票型 line")
+    elif _looks_placeholder(parsed_type):
+        errors.append("unfilled Type / 票型 placeholder")
+
+    effective_type = (ticket_type or parsed_type).lower()
+    is_impl = any(word in effective_type for word in _IMPL_TYPE_WORDS) or (
+        ticket_gate in ("G-impl", "G-merge")
+    )
+    parsed_gates = fields.get("gates", "")
+    gates_present = bool(parsed_gates) and not _looks_placeholder(parsed_gates)
+    if not gates_present and not ticket_gate:
+        errors.append("missing Gates / 门禁 line")
+    elif parsed_gates and _looks_placeholder(parsed_gates):
+        errors.append("unfilled Gates / 门禁 placeholder")
+    code_review_ok = (
+        not is_impl
+        or review_exempt
+        or ("code-review" in spec_text.lower())
+    )
+    if not code_review_ok:
+        errors.append("implementation spec requires code-review unless review_exempt is set")
+
+    formatter_ok = any(
+        token in spec_text.lower()
+        for token in ("formatter", "git status", "重排", "格式化")
+    )
+    if not formatter_ok:
+        errors.append("missing formatter / git status safeguard")
+
+    spec_elements_ok = (
+        not missing_elements
+        and not placeholder_elements
+        and behavior_rule_present
+        and not path_errors
+    )
+    gates_ok = (gates_present or bool(ticket_gate)) and not (
+        parsed_gates and _looks_placeholder(parsed_gates)
+    ) and code_review_ok
+
+    elem_reasons = []
+    if missing_elements:
+        elem_reasons.append("missing: " + ", ".join(missing_elements))
+    if placeholder_elements:
+        elem_reasons.append("placeholder: " + ", ".join(placeholder_elements))
+    if not behavior_rule_present:
+        elem_reasons.append("missing BEHAVIOR RULE")
+    if path_errors:
+        elem_reasons.extend(path_errors)
+
+    derived = {
+        "spec-elements": {
+            "result": "pass" if spec_elements_ok else "fail",
+            "note": (
+                "verified 5 elements, BEHAVIOR RULE, and pre-skill paths"
+                if spec_elements_ok
+                else "; ".join(elem_reasons)
+            ),
+            "evidence_ref": spec_ref,
+        },
+        "ticket-type": {
+            "result": "pass" if type_ok else "fail",
+            "note": f"type line: {parsed_type}" if type_ok else "missing or unfilled Type / 票型 line",
+            "evidence_ref": spec_ref,
+        },
+        "gates-decidable": {
+            "result": "pass" if gates_ok else "fail",
+            "note": (
+                f"gates: {parsed_gates or ticket_gate}"
+                if gates_ok
+                else (
+                    "missing/unfilled Gates line or missing code-review"
+                )
+            ),
+            "evidence_ref": spec_ref,
+        },
+        "formatter-prevention": {
+            "result": "pass" if formatter_ok else "fail",
+            "note": (
+                "formatter / git status safeguard present"
+                if formatter_ok
+                else "missing formatter / git status safeguard"
+            ),
+            "evidence_ref": spec_ref,
+        },
+    }
+
+    return {
+        "ok": not errors,
+        "spec_ref": spec_ref,
+        "errors": errors,
+        "fields": fields,
+        "behavior_rule": behavior_rule_present,
+        "skill_paths": skill_paths,
+        "formatter_guard": formatter_ok,
+        "code_review_present": code_review_ok,
+        "derived_judgments": derived,
+    }
+
+
+def _apply_spec_to_context(ticket, context):
+    """If ``context`` includes ``spec_file`` or ``spec_text``, derive spec judgments."""
+    spec_file = context.get("spec_file")
+    spec_text = context.get("spec_text")
+    if not spec_file and not spec_text:
+        return context, None
+    spec_ref = str(spec_file or "inline-spec")
+    if spec_file and not spec_text:
+        spec_text = Path(str(spec_file)).read_text(encoding="utf-8")
+    inspection = inspect_spec_text(
+        spec_text or "",
+        ticket_type=ticket.get("type", ""),
+        ticket_gate=ticket.get("gate", ""),
+        review_exempt=bool(context.get("review_exemption")),
+        check_paths=bool(context.get("check_spec_paths", True)),
+        spec_ref=spec_ref,
+    )
+    judgments = dict(context.get("judgments") or {})
+    for item_id, entry in inspection["derived_judgments"].items():
+        if item_id not in judgments:
+            judgments[item_id] = entry
+    return {**context, "judgments": judgments}, inspection
+
+
 def check(ticket, context, runner=None):
     """Build the preflight receipt, write it to the ledger and return the decision.
 
@@ -986,6 +1227,7 @@ def check(ticket, context, runner=None):
     """
     ticket = _validated_ticket(ticket)
     context = _validated_context(context)
+    context, spec_inspection = _apply_spec_to_context(ticket, context)
     checked_at = context.get("checked_at") or _now()
     parsed_checked_at = parse_timestamp(checked_at)
     if parsed_checked_at is None:
@@ -1021,6 +1263,13 @@ def check(ticket, context, runner=None):
             "observations": [],
         },
     }
+    if spec_inspection is not None:
+        detail["spec_inspection"] = {
+            "ok": spec_inspection["ok"],
+            "spec_ref": spec_inspection["spec_ref"],
+            "errors": spec_inspection["errors"],
+            "skill_paths": spec_inspection["skill_paths"],
+        }
     record = _append_receipt(detail, ticket, context, checked_at, blocking)
     receipt = dict(detail)
     receipt["record"] = record
@@ -1323,6 +1572,130 @@ def _load_json_file(path):
         _invalid(f"{path} is not valid JSON: {error}")
 
 
+def _compact_receipt(receipt):
+    failed = [
+        {"id": item["id"], "note": item.get("note", "")}
+        for item in receipt.get("items", [])
+        if item.get("result") == "fail"
+    ]
+    payload = {
+        "schema_version": receipt["schema_version"],
+        "ticket": receipt["ticket"],
+        "checked_at": receipt["checked_at"],
+        "allowed": receipt["blocking"]["allowed"],
+        "blocked": receipt["blocking"]["blocked"],
+        "failed_items": receipt["blocking"]["failed_items"],
+        "waived_items": receipt["blocking"]["waived_items"],
+        "failed_details": failed,
+        "record": receipt.get("record", {}),
+    }
+    if "spec_inspection" in receipt:
+        payload["spec_inspection"] = receipt["spec_inspection"]
+    return payload
+
+
+def _compact_post_dispatch(report):
+    return {
+        "schema_version": report["schema_version"],
+        "ticket": report["ticket"],
+        "checked_at": report["checked_at"],
+        "observations": [
+            {"id": row["id"], "outcome": row["outcome"], "note": row["note"]}
+            for row in report.get("observations", [])
+        ],
+        "records": report.get("records", {}),
+    }
+
+
+def _merge_cli_inputs(args):
+    ticket = _load_json_file(args.ticket) if args.ticket else {}
+    if not isinstance(ticket, dict):
+        _invalid("ticket must be a JSON object")
+    for arg_name, field in (
+        ("ticket_id", "id"),
+        ("ticket_type", "type"),
+        ("ticket_gate", "gate"),
+        ("ticket_origin", "origin"),
+    ):
+        value = getattr(args, arg_name, None)
+        if value:
+            ticket[field] = value
+
+    context = _load_json_file(args.context) if args.context else {}
+    if not isinstance(context, dict):
+        _invalid("context must be a JSON object")
+    context["run_id"] = args.run_id
+    if args.orca:
+        context["orca_command"] = args.orca
+
+    if args.command != "check":
+        return ticket, context
+
+    if getattr(args, "spec", None):
+        context["spec_file"] = args.spec
+    if getattr(args, "no_spec_path_check", False):
+        context["check_spec_paths"] = False
+    if getattr(args, "round_started_at", None):
+        context["round_started_at"] = args.round_started_at
+    if getattr(args, "base_commit", None):
+        context["base_commit"] = args.base_commit
+    if getattr(args, "worktree", None):
+        context["worktree"] = args.worktree
+
+    if getattr(args, "guide", None) or getattr(args, "guide_fetched_at", None):
+        guide = dict(context.get("guide") or {})
+        if args.guide:
+            guide["path"] = args.guide
+        if args.guide_fetched_at:
+            guide["fetched_at"] = args.guide_fetched_at
+        if getattr(args, "guide_command", None):
+            guide["command"] = args.guide_command
+        context["guide"] = guide
+
+    if any(
+        getattr(args, name, None)
+        for name in (
+            "legacy_migrated",
+            "migration_ref",
+            "native_wake",
+            "wake_source",
+            "wake_evidence",
+        )
+    ):
+        messaging = dict(context.get("messaging") or {})
+        if args.legacy_migrated:
+            messaging["legacy_migration_complete"] = True
+        if args.migration_ref:
+            messaging["migration_evidence_ref"] = args.migration_ref
+        if args.native_wake:
+            messaging["native_wake_confirmed"] = True
+        if args.wake_source:
+            messaging["source"] = args.wake_source
+        if args.wake_evidence:
+            messaging["evidence_ref"] = args.wake_evidence
+        context["messaging"] = messaging
+
+    judgment_notes = (
+        ("channel_note", "channel-decided"),
+        ("worktree_note", "worktree-parameters"),
+        ("long_horizon_note", "long-horizon-map"),
+        ("main_rule_note", "main-worktree-rule"),
+        ("canonical_note", "ticket-canonical-copy"),
+    )
+    if any(getattr(args, attr, None) for attr, _ in judgment_notes):
+        judgments = dict(context.get("judgments") or {})
+        for attr, item_id in judgment_notes:
+            note = getattr(args, attr, None)
+            if note:
+                judgments[item_id] = {
+                    "result": "pass",
+                    "note": note,
+                    "evidence_ref": args.spec or note,
+                }
+        context["judgments"] = judgments
+    return ticket, context
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="preflight.py", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1332,30 +1705,79 @@ def main(argv=None):
     ):
         command_parser = sub.add_parser(name, help=help_text)
         command_parser.add_argument("--run-id", required=True)
-        command_parser.add_argument(
-            "--ticket", required=True, help="ticket identity JSON file")
-        command_parser.add_argument(
-            "--context", required=True, help="preflight context JSON file")
+        command_parser.add_argument("--ticket", help="ticket identity JSON file")
+        command_parser.add_argument("--context", help="preflight context JSON file")
+        command_parser.add_argument("--ticket-id", help="inline ticket identifier")
+        command_parser.add_argument("--type", dest="ticket_type", help="inline ticket type")
+        command_parser.add_argument("--gate", dest="ticket_gate", help="inline target gate")
+        command_parser.add_argument("--origin", dest="ticket_origin", help="inline ticket origin")
         command_parser.add_argument(
             "--orca", help="Orca executable; defaults to the resolved Orca executable")
+        command_parser.add_argument("--compact", action="store_true", help="emit compact JSON summary")
+        if name == "check":
+            command_parser.add_argument("--spec", help="worker spec markdown/text file to verify")
+            command_parser.add_argument("--no-spec-path-check", action="store_true",
+                                        help="skip checking pre-skill file existence on disk")
+            command_parser.add_argument("--guide", help="cached guide file path")
+            command_parser.add_argument("--guide-fetched-at", help="RFC3339 fetch timestamp")
+            command_parser.add_argument("--guide-command", help="command used to fetch guide")
+            command_parser.add_argument("--round-started-at", help="RFC3339 round start timestamp")
+            command_parser.add_argument("--base-commit", help="base commit SHA for baseline checks")
+            command_parser.add_argument("--worktree", help="worktree path")
+            command_parser.add_argument("--channel-note", help="judgment note for channel-decided")
+            command_parser.add_argument("--worktree-note", help="judgment note for worktree-parameters")
+            command_parser.add_argument("--long-horizon-note", help="judgment note for long-horizon-map")
+            command_parser.add_argument("--main-rule-note", help="judgment note for main-worktree-rule")
+            command_parser.add_argument("--canonical-note", help="judgment note for ticket-canonical-copy")
+            command_parser.add_argument("--legacy-migrated", action="store_true",
+                                        help="mark legacy consumer migration complete")
+            command_parser.add_argument("--migration-ref", help="evidence ref for legacy migration")
+            command_parser.add_argument("--native-wake", action="store_true",
+                                        help="mark native wake confirmed (when not auto-probed)")
+            command_parser.add_argument("--wake-source", help="native wake source identifier")
+            command_parser.add_argument("--wake-evidence", help="native wake evidence reference")
+
+    inspect_parser = sub.add_parser(
+        "inspect-spec", help="mechanically validate a worker spec markdown/text file"
+    )
+    inspect_parser.add_argument("--spec", required=True, help="worker spec file path")
+    inspect_parser.add_argument("--type", dest="ticket_type", default="", help="ticket type")
+    inspect_parser.add_argument("--gate", dest="ticket_gate", default="", help="target gate")
+    inspect_parser.add_argument("--review-exempt", action="store_true")
+    inspect_parser.add_argument("--no-path-check", action="store_true")
+    inspect_parser.add_argument("--compact", action="store_true")
+
     args = parser.parse_args(argv)
 
     try:
-        ticket = _load_json_file(args.ticket)
-        context = _load_json_file(args.context)
-        if not isinstance(context, dict):
-            _invalid("context must be a JSON object")
-        context["run_id"] = args.run_id
-        if args.orca:
-            context["orca_command"] = args.orca
+        if args.command == "inspect-spec":
+            text = Path(args.spec).read_text(encoding="utf-8")
+            result = inspect_spec_text(
+                text,
+                ticket_type=args.ticket_type,
+                ticket_gate=args.ticket_gate,
+                review_exempt=args.review_exempt,
+                check_paths=not args.no_path_check,
+                spec_ref=args.spec,
+            )
+            _COMMON.emit_json(result, compact=args.compact)
+            return 0 if result["ok"] else 1
+
+        if not args.ticket and not args.ticket_id:
+            _invalid("--ticket FILE or --ticket-id is required")
+        if not args.context and not args.ticket_id and not getattr(args, "spec", None):
+            _invalid("--context FILE is required unless direct check flags are given")
+        ticket, context = _merge_cli_inputs(args)
         if args.command == "check":
             receipt = check(ticket, context)
-            print(json.dumps(receipt, ensure_ascii=False))
+            payload = _compact_receipt(receipt) if args.compact else receipt
+            _COMMON.emit_json(payload, compact=args.compact)
             return 0 if (
                 receipt["blocking"]["allowed"] and receipt["record"]["written"]
             ) else 1
         report = post_dispatch(ticket, context)
-        print(json.dumps(report, ensure_ascii=False))
+        payload = _compact_post_dispatch(report) if args.compact else report
+        _COMMON.emit_json(payload, compact=args.compact)
         return 0 if report["records"]["written"] else 1
     except (OSError, TypeError, ValueError) as error:
         print("Preflight error: " + str(error), file=sys.stderr)

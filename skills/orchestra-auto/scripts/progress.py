@@ -452,12 +452,26 @@ def ensure_private_directory(path):
     os.chmod(path, REGISTRY_DIRECTORY_MODE)
 
 
-def _fsync_directory(directory):
-    fd = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+def _load_fsync_directory():
+    common_path = Path(__file__).resolve().with_name('_common.py')
+    if common_path.is_file():
+        spec = importlib.util.spec_from_file_location('orca_progress_common', common_path)
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.fsync_directory
+
+    def _fallback_fsync_directory(directory):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    return _fallback_fsync_directory
+
+
+_fsync_directory = _load_fsync_directory()
 
 
 def _atomic_write(path, payload, directory=None, prefix=None):

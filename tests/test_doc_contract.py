@@ -14,8 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAMES = ("orchestra-auto", "orchestra-auto-zh")
-REFERENCE = Path("references") / "failed-dispatch-recovery.md"
-INBOX_REFERENCE = Path("references") / "inbox-and-waiting.md"
+REFERENCE = Path("references") / "recovery-and-health.md"
+INBOX_REFERENCE = Path("references") / "dispatch-and-comms.md"
 
 #: The delivery guarantee and the old promise it replaced. A document may state the
 #: at-least-once wake contract or the no-duplicate claim, never both: a duplicate wake
@@ -155,7 +155,7 @@ class RuntimeMigrationContractTests(unittest.TestCase):
         }
         for name, phrase in required.items():
             with self.subTest(bundle=name):
-                text = (REPO_ROOT / 'skills' / name / 'references/gate-acceptance.md').read_text()
+                text = (REPO_ROOT / 'skills' / name / 'references/acceptance-and-closeout.md').read_text()
                 self.assertIn(phrase, text)
                 self.assertNotIn('all gates green means §6.5', text)
 
@@ -166,7 +166,7 @@ class RuntimeMigrationContractTests(unittest.TestCase):
         }
         for name, phrase in required.items():
             with self.subTest(bundle=name):
-                text = (REPO_ROOT / 'skills' / name / 'references/dispatch-preflight.md').read_text()
+                text = (REPO_ROOT / 'skills' / name / 'references/preflight-and-spec.md').read_text()
                 self.assertIn(phrase, text)
 
     def test_existing_consumer_is_quiesced_before_local_archive_reconciliation(self):

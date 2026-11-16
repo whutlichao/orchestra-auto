@@ -59,7 +59,7 @@ python3 scripts/chain.py exit-check --step to-tickets --artifact 01-a.md --artif
 
 `exit-check` 把 spec 的上游原生检查与本项目的 `Test tier:` 附加项分开报告，并按真实票边界检查票据——一票一文件、一条 issue 正文，或合并列表——绝不把每个 `##` 章节当成一张票。其余步骤直接拒绝——它们的出口信号是测试运行或 PR 状态，假装检查比直说不查更糟。
 
-两者都不是判决。它们只抓缺失的小节，抓不住错误的决定；门禁仍然归 coordinator。[chain-run.md](skills/orchestra-auto-zh/references/chain-run.md) 写明各自能推出什么、不能推出什么。
+两者都不是判决。它们只抓缺失的小节，抓不住错误的决定；门禁仍然归 coordinator。[routing-and-chains.md](skills/orchestra-auto-zh/references/routing-and-chains.md) 写明各自能推出什么、不能推出什么。
 
 | | 你自己调用他的 skill | 用 orchestra-auto 在 Orca 上跑 |
 | --- | --- | --- |
@@ -143,8 +143,8 @@ skill 激活时宿主注入完整的 `SKILL.md`；只有路由表指向时，才
 
 | 变体 | `SKILL.md` 字节数 | 估算 token（字节 ÷ 4） |
 | --- | ---: | ---: |
-| 英文 | 30,208 → 25,535（−15.5%） | 7,552 → 6,383 |
-| 中文 | 24,359 → 22,555（−7.4%） | 6,089 → 5,638 |
+| 英文 | 30,208 → 8,819（−70.8%） | 7,552 → 2,204 |
+| 中文 | 24,359 → 8,026（−67.1%） | 6,089 → 2,006 |
 
 右列由测试从包本身重算，所以这张表不会漂移。token 口径是**字节数 ÷ 4**，不是 tokenizer 实测。如果某一轮同时读取两个新 reference，激活时的节省不等于整轮的节省。
 
@@ -183,7 +183,7 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-单例服务只在 `127.0.0.1` 上暴露三条只读 GET 路由：`/health`（服务状态、已注册 Run ID、标签与投影 `run_states`）、`/?run=<id>`（页面，在顶栏右侧下拉列出所有已注册 Run）与 `/snapshot?run=<id>`。跨 Run 访问仅限该列表；响应只出现 Run ID，绝不出现状态路径；不可读的 Run 标为不可用，服务与 `open` 绝不删除。只有显式 `registry prune` 会归档已结束 Run 到 `archive/` 并移除其描述符。所有响应只支持 GET，并带 CSP、`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，`Host` 头必须是 `localhost` 或 `127.0.0.1`。完整 JSON 命令、恢复与各节点责任见[协议与流程责任](skills/orchestra-auto-zh/references/progress-dashboard.md)。
+单例服务只在 `127.0.0.1` 上暴露三条只读 GET 路由：`/health`（服务状态、已注册 Run ID、标签与投影 `run_states`）、`/?run=<id>`（页面，在顶栏右侧下拉列出所有已注册 Run）与 `/snapshot?run=<id>`。跨 Run 访问仅限该列表；响应只出现 Run ID，绝不出现状态路径；不可读的 Run 标为不可用，服务与 `open` 绝不删除。只有显式 `registry prune` 会归档已结束 Run 到 `archive/` 并移除其描述符。所有响应只支持 GET，并带 CSP、`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，`Host` 头必须是 `localhost` 或 `127.0.0.1`。运行时 JSON 命令与检查点见[台账与看板操作](skills/orchestra-auto-zh/references/ledger-and-dashboard.md)，完整 HTTP 与单例架构见[看板架构](docs/design/dashboard-architecture.md)。
 
 ## 仓库结构
 
@@ -196,7 +196,7 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/run-ex
 ├── README.zh-CN.md             本文件
 ├── skills.sh.json              skills.sh 目录页的分组配置
 ├── skills/
-│   ├── orchestra-auto/         英文包；references/ 有 18 个文件
+│   ├── orchestra-auto/         英文包；references/ 有 8 个文件
 │   └── orchestra-auto-zh/      中文包，结构相同
 ├── launch-kit/                 定位、demo 讲稿、FAQ、各渠道草稿
 └── tests/                      上面的 unittest 套件

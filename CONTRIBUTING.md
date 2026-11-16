@@ -82,7 +82,7 @@ Orca 1.4.248 handles consuming `check` batches immediately and delivers native w
 - Do not hardcode a version-specific detail. If a file name, table name or receipt field is really
   version-dependent, point at the current CLI help and the current guide, and tell the reader to ask
   with evidence when their command does not match the public documentation.
-- The six clauses in `references/prose-contract.md` are load-bearing. Keep the wording recognisable
+- The six clauses in the prose contract section of `references/preflight-and-spec.md` are load-bearing. Keep the wording recognisable
   in both bundles; the anchor test looks for the phrases, and the review reads the paragraph around
   them, because the anchor test cannot check that the surrounding prose still means the same thing.
 

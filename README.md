@@ -65,7 +65,7 @@ the combined list — never one ticket per `##` section. Everything else refuses
 signal for those steps is a test run or a PR state and pretending to check it would be worse than
 declining.
 
-Neither is a verdict. They catch a missing section, never a wrong decision; the gate stays with the coordinator. [chain-run.md](skills/orchestra-auto/references/chain-run.md) states what each may and may not conclude.
+Neither is a verdict. They catch a missing section, never a wrong decision; the gate stays with the coordinator. [routing-and-chains.md](skills/orchestra-auto/references/routing-and-chains.md) states what each may and may not conclude.
 
 | | You invoke his skills yourself | orchestra-auto runs them on Orca |
 | --- | --- | --- |
@@ -149,8 +149,8 @@ A host injects the full `SKILL.md` when the skill activates; `references/` is re
 
 | Variant | `SKILL.md` bytes | Approx. tokens (bytes ÷ 4) |
 | --- | ---: | ---: |
-| English | 30,208 → 25,535 (−15.5%) | 7,552 → 6,383 |
-| Chinese | 24,359 → 22,555 (−7.4%) | 6,089 → 5,638 |
+| English | 30,208 → 8,819 (−70.8%) | 7,552 → 2,204 |
+| Chinese | 24,359 → 8,026 (−67.1%) | 6,089 → 2,006 |
 
 A test recomputes the right-hand values from the bundle, so the table cannot drift. The token figures are **bytes ÷ 4**, not a tokenizer measurement. If a turn loads both new references, activation savings are not whole-turn savings.
 
@@ -189,7 +189,7 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/run-examp
   || printf '%s\n' 'Progress warning; continue orchestration' >&2
 ```
 
-The singleton exposes three read-only GET routes on `127.0.0.1`: `/health` (service plus registered Run IDs, labels and projected `run_states`), `/?run=<id>` (the page, listing every registered Run in a top bar dropdown) and `/snapshot?run=<id>`. Cross-Run access is limited to that list; responses name Run IDs, never state paths; an unreadable Run shows as unavailable and is never deleted by the service or `open`. Only an explicit `registry prune` archives ended Runs into `archive/` and removes their descriptors. Every response is GET-only with a CSP, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and the `Host` header must be `localhost` or `127.0.0.1`. JSON commands, recovery and the exact checkpoints are in the [protocol and workflow ownership](skills/orchestra-auto/references/progress-dashboard.md).
+The singleton exposes three read-only GET routes on `127.0.0.1`: `/health` (service plus registered Run IDs, labels and projected `run_states`), `/?run=<id>` (the page, listing every registered Run in a top bar dropdown) and `/snapshot?run=<id>`. Cross-Run access is limited to that list; responses name Run IDs, never state paths; an unreadable Run shows as unavailable and is never deleted by the service or `open`. Only an explicit `registry prune` archives ended Runs into `archive/` and removes their descriptors. Every response is GET-only with a CSP, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and the `Host` header must be `localhost` or `127.0.0.1`. Runtime JSON commands and checkpoints are in [ledger-and-dashboard.md](skills/orchestra-auto/references/ledger-and-dashboard.md), and the HTTP/registry architecture specification is in [dashboard-architecture.md](docs/design/dashboard-architecture.md).
 
 ## Repository layout
 
@@ -202,7 +202,7 @@ The singleton exposes three read-only GET routes on `127.0.0.1`: `/health` (serv
 ├── README.zh-CN.md             中文说明
 ├── skills.sh.json              skills.sh directory grouping
 ├── skills/
-│   ├── orchestra-auto/         English bundle; references/ holds eighteen files
+│   ├── orchestra-auto/         English bundle; references/ holds eight files
 │   └── orchestra-auto-zh/      Chinese bundle, same structure
 ├── launch-kit/                 positioning, demo script, FAQs, channel drafts
 └── tests/                      the unittest suites above

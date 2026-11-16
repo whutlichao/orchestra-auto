@@ -401,6 +401,29 @@ class CliTests(unittest.TestCase):
         self.assertFalse(json.loads(out)["appended"])
         self.assertFalse((home / "runs" / "r1" / "flow.jsonl").exists())
 
+    def test_init_route_presets_and_compact(self):
+        home = self.root / "home"
+        for idx, route in enumerate(sorted(flow.ROUTE_PRESETS)):
+            run_id = f"r-preset-{idx}"
+            code, out, err = self.run_cli(
+                "init-route", "--run-id", run_id, "--route", route,
+                "--flow-home", str(home), "--compact",
+            )
+            self.assertEqual(code, 0, err + out)
+            self.assertEqual(len(out.strip().splitlines()), 1)
+            created = json.loads(out)
+            self.assertTrue(created["appended"])
+            self.assertEqual(created["route"], route)
+
+            code, out, err = self.run_cli(
+                "plan", "--run-id", run_id, "--flow-home", str(home), "--compact",
+            )
+            self.assertEqual(code, 0, err + out)
+            self.assertEqual(len(out.strip().splitlines()), 1)
+            planned = json.loads(out)
+            self.assertEqual(planned["state"], "continue")
+            self.assertEqual(len(planned["ready"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
