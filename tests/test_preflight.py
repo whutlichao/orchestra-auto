@@ -349,7 +349,7 @@ class ChecklistTests(PreflightTestCase):
         expected = [item for line in self.preflight.CHECKLIST for item in line["items"]]
         known = set(expected)
         for skill_dir in SKILL_DIRS:
-            text = (skill_dir / "references" / "dispatch-preflight.md").read_text()
+            text = (skill_dir / "references" / "preflight-and-spec.md").read_text()
             blocks = []
             current = None
             for line in text.splitlines():
@@ -383,7 +383,7 @@ class ChecklistTests(PreflightTestCase):
 
     def test_post_receipt_observations_are_not_pre_dispatch_gates(self):
         for skill_dir in SKILL_DIRS:
-            text = (skill_dir / "references" / "dispatch-preflight.md").read_text()
+            text = (skill_dir / "references" / "preflight-and-spec.md").read_text()
             before = text.split("### 4.0.1", 1)[1].split("### 4.0.2", 1)[0]
             after = text.split("### 4.0.2", 1)[1].split("### 4.0.3", 1)[0]
             for token in ("`review-exemption-recheck`", "`dashboard-backfill`",

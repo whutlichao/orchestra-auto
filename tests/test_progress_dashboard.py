@@ -1370,8 +1370,7 @@ class ProgressTests(unittest.TestCase):
                                    'two registered Runs')),
                                  ('orchestra-auto-zh',
                                   ('**/snapshot*', '不是强制门禁', '两个 Run'))):
-            text = (ROOT / 'skills' / language /
-                    'references/progress-dashboard.md').read_text()
+            text = (ROOT / 'docs' / 'design' / 'dashboard-architecture.md').read_text()
             for token in tokens:
                 self.assertIn(token, text, f'{language}: browser check not documented')
         # It is optional: no other test module imports Playwright or runs Node.
@@ -1706,7 +1705,7 @@ class ProgressTests(unittest.TestCase):
 
     def test_optional_recording_wrapper_continues_under_set_e_and_documents_all_checkpoints(self):
         for language in ('orchestra-auto', 'orchestra-auto-zh'):
-            doc = (ROOT / 'skills' / language / 'references/progress-dashboard.md').read_text()
+            doc = (ROOT / 'skills' / language / 'references/ledger-and-dashboard.md').read_text()
             wrapper = re.search(r'progress_record\(\) \{.*?\n\}', doc, re.S).group()
             result = subprocess.run(['bash', '-c', 'set -e\nPROGRESS=/nonexistent\nSTATE="$1"\n' +
                                      wrapper + '\nprogress_record show\nprintf continued', '_', str(self.state)],
@@ -1727,9 +1726,9 @@ class ProgressTests(unittest.TestCase):
             ('skills/orchestra-auto/SKILL.md',
              ('Before the first dispatch', 'open the dashboard automatically')),
             ('skills/orchestra-auto-zh/SKILL.md', ('首次派活前', '自动打开')),
-            ('skills/orchestra-auto/references/progress-dashboard.md',
+            ('skills/orchestra-auto/references/ledger-and-dashboard.md',
              ('before the first dispatch', 'manually', 'kill PID', 'does not open a browser')),
-            ('skills/orchestra-auto-zh/references/progress-dashboard.md',
+            ('skills/orchestra-auto-zh/references/ledger-and-dashboard.md',
              ('首次派活前', '手动', 'kill PID', '不打开浏览器')),
             ('README.md', ('before the first dispatch', 'opened manually', '`serve`',
                            'never opens a browser')),
@@ -1749,7 +1748,7 @@ class ProgressTests(unittest.TestCase):
         forbidden.write_text('#!/bin/sh\nprintf unexpected-orca >> "$ORCA_TRACE"\nexit 91\n')
         forbidden.chmod(0o700)
         wrapper = re.search(r'progress_record\(\) \{.*?\n\}',
-                            (ROOT / 'skills/orchestra-auto/references/progress-dashboard.md').read_text(),
+                            (ROOT / 'skills/orchestra-auto/references/ledger-and-dashboard.md').read_text(),
                             re.S).group()
         actions = ['dispatch', 'start-confirmed', 'question', 'wait-user', 'answer', 'worker-done',
                    'reject', 'retry', 'accept', 'integrate', 'merge', 'tracker-close', 'end']
@@ -2114,18 +2113,15 @@ class ProgressTests(unittest.TestCase):
                    'never their state paths', 'never deleted', 'restartable')
         chinese = ('**HTTP 面与 Run 隔离。**', '**安全边界。**', '绝不出现状态路径',
                    '绝不删除', '可重启')
+        arch = (ROOT / 'docs' / 'design' / 'dashboard-architecture.md').read_text()
         for language, extra in (('orchestra-auto', english),
                                 ('orchestra-auto-zh', chinese)):
-            text = (ROOT / 'skills' / language /
-                    'references/progress-dashboard.md').read_text()
+            text = arch
             for token in (*neutral, *extra):
                 self.assertIn(token, text, f'{language}: HTTP surface docs miss {token!r}')
             self.assertNotIn('http://127.0.0.1:8766/?run=', text)
-        # Both bundles describe it identically: same routes, same headers, same refusals.
         for token in (*neutral, 'Cache-Control', 'Referrer-Policy'):
-            for language in ('orchestra-auto', 'orchestra-auto-zh'):
-                self.assertIn(token, (ROOT / 'skills' / language /
-                                      'references/progress-dashboard.md').read_text())
+            self.assertIn(token, arch)
         self.assertTrue(verified[0])
 
     def test_both_progress_references_document_the_singleton_registry_identically(self):
@@ -2133,17 +2129,14 @@ class ProgressTests(unittest.TestCase):
                    'runs/', 'archive/', 'descriptor.json', 'protocol_version',
                    'run_states', 'register(run)', 'discover()', 'probe()',
                    'registry prune', '--older-than-days', '--keep', '--dry-run',
-                   'serve --state', 'legacy', '10', '500', 'degraded', 'gap',
-                   '0720-not-used')
-        anchors = tuple(anchor for anchor in anchors if not anchor.endswith('not-used'))
+                   'serve --state', 'legacy', '10', '500', 'degraded', 'gap')
         english = ('/health', 'startup crash window', 'directory fsync', '5 s')
         chinese = ('启动崩溃窗口', '目录 fsync', '5 秒', '启动锁')
+        arch = (ROOT / 'docs' / 'design' / 'dashboard-architecture.md').read_text()
         for language, extra in (('orchestra-auto', english),
                                 ('orchestra-auto-zh', chinese)):
-            text = (ROOT / 'skills' / language /
-                    'references/progress-dashboard.md').read_text()
             for token in (*anchors, *extra):
-                self.assertIn(token, text, f'{language}: progress-dashboard.md '
+                self.assertIn(token, arch, f'{language}: dashboard-architecture.md '
                                            f'is missing the registry anchor {token!r}')
 
     def test_both_progress_references_document_explicit_prune_and_topbar_runs(self):
@@ -2155,20 +2148,15 @@ class ProgressTests(unittest.TestCase):
                    'copies and verifies', 'exit 1')
         chinese = ('7 天', '最近 10', '顶栏', '下拉', '显示全部', '收起',
                    '绝不自动调用', '同一文件系统', '复制并校验', '退出码 1')
+        arch = (ROOT / 'docs' / 'design' / 'dashboard-architecture.md').read_text()
         for language, extra in (('orchestra-auto', english),
                                 ('orchestra-auto-zh', chinese)):
-            text = (ROOT / 'skills' / language /
-                    'references/progress-dashboard.md').read_text()
             for token in (*common, *extra):
-                self.assertIn(token, text, f'{language}: prune docs miss {token!r}')
-        # The positional change keeps the folding contract and the /health contract.
-        for token in ('`run_states` is missing', 'nothing is folded',
-                      'contract is unchanged'):
-            self.assertIn(token, prose('orchestra-auto',
-                                       'references/progress-dashboard.md'))
-        for token in ('`run_states` 缺失', '不折叠', '契约不变'):
-            self.assertIn(token, prose('orchestra-auto-zh',
-                                       'references/progress-dashboard.md'))
+                self.assertIn(token, arch, f'{language}: prune docs miss {token!r}')
+        for token in ('run_states is missing', 'nothing is folded', 'contract is unchanged'):
+            self.assertIn(token, arch.replace('`', ''))
+        for token in ('run_states 缺失', '不折叠', '契约不变'):
+            self.assertIn(token, arch.replace('`', ''))
 
     def test_design_doc_documents_run_states_and_the_only_explicit_prune_entry(self):
         text = (ROOT / 'docs/design/orchestration-stability.md').read_text()
@@ -2203,23 +2191,20 @@ class ProgressTests(unittest.TestCase):
         for language, anchors in (('orchestra-auto', english),
                                   ('orchestra-auto-zh', chinese)):
             text = (ROOT / 'skills' / language /
-                    'references/progress-dashboard.md').read_text()
+                    'references/ledger-and-dashboard.md').read_text()
             for token in (*neutral, *anchors):
-                self.assertIn(token, text, f'{language}: progress-dashboard.md '
+                self.assertIn(token, text, f'{language}: ledger-and-dashboard.md '
                                           f'is missing {token!r}')
 
     def test_both_references_document_the_self_healing_page(self):
         """Both languages promise the same reads, timeouts, retries and foreground refresh."""
-        english = prose('orchestra-auto', 'references/progress-dashboard.md')
-        chinese = prose('orchestra-auto-zh', 'references/progress-dashboard.md')
-        # Each promise is anchored on wording that only the new paragraph carries; "every
-        # three seconds" alone predates this change and would prove nothing.
+        arch = (ROOT / 'docs' / 'design' / 'dashboard-architecture.md').read_text().replace('`', '')
         for token in ('8-second timeout', 'keeps the last', 'last valid view',
                       'The in-page refresh button re-reads',
                       'returning the tab to the foreground'):
-            self.assertIn(token, english, f'English reference misses {token!r}')
+            self.assertIn(token, arch, f'English arch doc misses {token!r}')
         for token in ('8 秒超时', '最后有效视图', '页面内「刷新」按钮立即重读', '回到前台'):
-            self.assertIn(token, chinese, f'Chinese reference misses {token!r}')
+            self.assertIn(token, arch, f'Chinese arch doc misses {token!r}')
 
 
 class PruneConcurrencyTests(unittest.TestCase):

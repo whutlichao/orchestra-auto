@@ -62,24 +62,14 @@ PYTHON_SCRIPTS = (
 BASELINE_EVAL_COUNT = 31
 
 REFERENCE_FILES = (
-    "chain-run.md",
-    "dispatch-loop.md",
-    "dispatch-preflight.md",
-    "failed-dispatch-recovery.md",
-    "failure-and-reporting.md",
-    "gate-acceptance.md",
-    "gates-docs-planning.md",
-    "inbox-and-waiting.md",
-    "ledger.md",
-    "long-horizon-tickets.md",
-    "progress-dashboard.md",
-    "prose-contract.md",
-    "reformat-noise-recovery.md",
-    "reply-protocol.md",
-    "run-health.md",
-    "spec-contract.md",
+    "acceptance-and-closeout.md",
+    "dispatch-and-comms.md",
+    "ledger-and-dashboard.md",
+    "long-horizon.md",
+    "preflight-and-spec.md",
+    "recovery-and-health.md",
+    "routing-and-chains.md",
     "visual-evidence.md",
-    "worker-start-and-recovery.md",
 )
 
 # The critical clauses of the orchestration-stability contract, in each language's own wording.
@@ -381,7 +371,7 @@ class ReferenceIntegrityTests(unittest.TestCase):
         for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
             lines = (directory / "SKILL.md").read_text().splitlines()
             self.assertLess(
-                len(lines), 300,
+                len(lines), 180,
                 f"{name}: SKILL.md is {len(lines)} lines; move detail into references",
             )
 
@@ -464,7 +454,7 @@ class ReferenceIntegrityTests(unittest.TestCase):
             "orchestra-auto-zh": ("示例不是穷举", "由 Orca 校验", "不替换 agent"),
         }
         for name, phrases in cases.items():
-            preflight = (REPO_ROOT / "skills" / name / "references" / "dispatch-preflight.md").read_text()
+            preflight = (REPO_ROOT / "skills" / name / "references" / "preflight-and-spec.md").read_text()
             for phrase in phrases:
                 self.assertIn(phrase, preflight, f"{name}: missing {phrase!r}")
 
@@ -481,7 +471,7 @@ class ReferenceIntegrityTests(unittest.TestCase):
             ("orchestra-auto-zh", ("凭证", "第三方", "付费", "人工审批", "不可逆")),
         )
         for name, triggers in pairs:
-            body = (REPO_ROOT / "skills" / name / "references" / "spec-contract.md").read_text()
+            body = (REPO_ROOT / "skills" / name / "references" / "preflight-and-spec.md").read_text()
             for trigger in triggers:
                 self.assertIn(
                     trigger, body,
@@ -502,8 +492,8 @@ class ReferenceIntegrityTests(unittest.TestCase):
         )
         for name, phrases in pairs:
             references = REPO_ROOT / "skills" / name / "references"
-            contract = (references / "spec-contract.md").read_text()
-            preflight = (references / "dispatch-preflight.md").read_text()
+            contract = (references / "preflight-and-spec.md").read_text()
+            preflight = (references / "preflight-and-spec.md").read_text()
             for phrase in phrases:
                 self.assertIn(
                     phrase, contract,
@@ -700,7 +690,7 @@ class ContractRegressionTests(unittest.TestCase):
             entrypoint, references = self.corpus(name)
             self.assertIn(evidence, squash(entrypoint),
                           f"{name}: the entrypoint must accept an observed start as evidence")
-            self.assertIn(evidence, squash(references["dispatch-loop.md"]),
+            self.assertIn(evidence, squash(references["dispatch-and-comms.md"]),
                           f"{name}: the dispatch loop lost the observed-start rule")
             self.assertNotIn("`state: ready` ≠ `turnStart`", entrypoint,
                              f"{name}: the duplicated ready rule came back")
@@ -740,7 +730,7 @@ class ContractRegressionTests(unittest.TestCase):
         retired = "single-post-pr-backfill"
         for name, expected in contract.items():
             _entrypoint, references = self.corpus(name)
-            text = compact(references["spec-contract.md"])
+            text = compact(references["preflight-and-spec.md"])
             for phrase in expected["required"]:
                 self.assertIn(compact(phrase), text,
                               f"{name}: the no-backfill rule lost {phrase!r}")
@@ -790,7 +780,7 @@ class ContractRegressionTests(unittest.TestCase):
         }
         for name, expected in expectations.items():
             _entrypoint, references = self.corpus(name)
-            text = references["dispatch-preflight.md"]
+            text = references["preflight-and-spec.md"]
             flat = squash(text)
             self.assertIn(expected["verdict"], flat,
                           f"{name}: the 'no dispatch' rule must name the checkpoint it scopes")
@@ -850,7 +840,7 @@ class ContractRegressionTests(unittest.TestCase):
         )
         for name in SKILL_NAMES:
             _entrypoint, references = self.corpus(name)
-            text = references["dispatch-preflight.md"]
+            text = references["preflight-and-spec.md"]
             flat = squash(text)
             for token in tokens:
                 self.assertIn(token, flat, f"{name}: preflight receipt lost {token!r}")
@@ -890,7 +880,7 @@ class ContractRegressionTests(unittest.TestCase):
         }
         for name, expected in expectations.items():
             _entrypoint, references = self.corpus(name)
-            text = squash(references["gates-docs-planning.md"])
+            text = squash(references["preflight-and-spec.md"])
             for state in expected["states"]:
                 self.assertIn(state, text, f"{name}: the frontier states are incomplete: {state!r}")
             self.assertIn(expected["causes"], text,
@@ -919,14 +909,14 @@ class ContractRegressionTests(unittest.TestCase):
         }
         for name, expected in expectations.items():
             _entrypoint, references = self.corpus(name)
-            long_horizon = squash(references["long-horizon-tickets.md"])
+            long_horizon = squash(references["long-horizon.md"])
             for level in expected["levels"]:
                 self.assertIn(level, long_horizon, f"{name}: missing acceptance level {level!r}")
             self.assertIn(expected["no_premerge_closure"], long_horizon,
                           f"{name}: closing every ticket before the merge must be rejected")
             self.assertIn(expected["no_false_close"], long_horizon,
                           f"{name}: a false close-out must be named as forbidden")
-            self.assertIn(expected["reconcile"], squash(references["gate-acceptance.md"]),
+            self.assertIn(expected["reconcile"], squash(references["acceptance-and-closeout.md"]),
                           f"{name}: the post-merge tracker reconciliation is missing")
 
     def test_acceptance_records_document_the_same_rules_in_both_bundles(self):
@@ -979,9 +969,9 @@ class ContractRegressionTests(unittest.TestCase):
         }
         for name, expected in expectations.items():
             _entrypoint, references = self.corpus(name)
-            text = squash(references["gate-acceptance.md"])
+            text = squash(references["acceptance-and-closeout.md"])
             self.assertIn(expected["section"], text,
-                          f"{name}: gate-acceptance.md has no acceptance-record section")
+                          f"{name}: acceptance-and-closeout.md has no acceptance-record section")
             for field in expected["fields"]:
                 self.assertIn(field, text,
                               f"{name}: the acceptance record loses the field {field!r}")
@@ -990,7 +980,7 @@ class ContractRegressionTests(unittest.TestCase):
                         "revert", "pending", "script"):
                 self.assertIn(expected[key], text,
                               f"{name}: the acceptance rule {key!r} is missing from "
-                              "gate-acceptance.md")
+                              "acceptance-and-closeout.md")
 
     def test_pre_skill_is_chosen_by_stage_not_by_channel(self):
         """A stage chooses its pre-skill; the old channel-to-skill mapping must be gone."""
@@ -1013,9 +1003,9 @@ class ContractRegressionTests(unittest.TestCase):
             everything = squash("\n".join([entrypoint, *references.values()]))
             self.assertNotIn(expected["old_mapping"], everything,
                              f"{name}: the fixed channel-to-skill mapping is still published")
-            loop = squash(references["dispatch-loop.md"])
+            loop = squash(references["preflight-and-spec.md"])
             self.assertIn(expected["by_stage"], loop,
-                          f"{name}: the stage-based rule is missing from the dispatch loop")
+                          f"{name}: the pre-skill selection rule is missing")
             for stage in expected["stages"]:
                 self.assertIn(stage, loop, f"{name}: the stage table is missing {stage!r}")
             self.assertIn(expected["missing"], loop,
@@ -1046,7 +1036,7 @@ class ContractRegressionTests(unittest.TestCase):
         }
         for name, expected in expectations.items():
             _entrypoint, references = self.corpus(name)
-            text = squash(references["failed-dispatch-recovery.md"])
+            text = squash(references["recovery-and-health.md"])
             for label in expected["classes"]:
                 self.assertIn(label, text, f"{name}: missing failure class {label!r}")
             self.assertIn(expected["not_proof"], text,
@@ -1076,12 +1066,12 @@ class ContractRegressionTests(unittest.TestCase):
             _entrypoint, references = self.corpus(name)
             holders = [filename for filename, text in references.items()
                        if expected["trigger"] in squash(text)]
-            self.assertEqual(holders, ["gate-acceptance.md"],
-                             f"{name}: the one-way trigger list must live only in gate-acceptance.md, "
+            self.assertEqual(holders, ["acceptance-and-closeout.md"],
+                             f"{name}: the one-way trigger list must live only in acceptance-and-closeout.md, "
                              f"found in {holders}")
-            self.assertIn(expected["authority"], squash(references["gate-acceptance.md"]),
+            self.assertIn(expected["authority"], squash(references["acceptance-and-closeout.md"]),
                           f"{name}: the authoritative copy is not labelled as such")
-            self.assertIn("gate-acceptance.md", references["long-horizon-tickets.md"],
+            self.assertIn("acceptance-and-closeout.md", references["long-horizon.md"],
                           f"{name}: the second copy was removed without leaving a pointer")
 
     def test_readme_states_the_real_eval_count(self):
@@ -1136,7 +1126,7 @@ class ContractRegressionTests(unittest.TestCase):
             self.assertIn(expected["observed_scenario"], scenarios,
                           f"{name}: a scenario accepting `turnStart: observed` is missing")
             _entrypoint, references = self.corpus(name)
-            body = squash(references["worker-start-and-recovery.md"])
+            body = squash(references["dispatch-and-comms.md"])
             for phrase in expected["body"]:
                 self.assertIn(phrase, body, f"{name}: the start rule lost {phrase!r}")
             for scenario_name in expected["fixture_paths"]:
@@ -1160,21 +1150,21 @@ class ProseAnchorTests(unittest.TestCase):
     def test_both_bundles_carry_the_six_prose_anchors(self):
         for name, directory in zip(SKILL_NAMES, SKILL_DIRS, strict=True):
             entrypoint = plain((directory / "SKILL.md").read_text())
-            contract_file = directory / "references" / "prose-contract.md"
+            contract_file = directory / "references" / "preflight-and-spec.md"
             self.assertTrue(
                 contract_file.is_file(),
-                f"{name}: references/prose-contract.md is missing; the anchors have no home",
+                f"{name}: references/preflight-and-spec.md is missing; the anchors have no home",
             )
             # Case is not part of the clause: a clause may open a sentence and be capitalised.
             body = plain(contract_file.read_text()).lower()
             for anchor in PROSE_ANCHORS[name]:
                 self.assertIn(
                     anchor.lower(), body,
-                    f"{name}: prose-contract.md lost the anchor {anchor!r}",
+                    f"{name}: preflight-and-spec.md lost the anchor {anchor!r}",
                 )
             self.assertTrue(
                 any(anchor.lower() in entrypoint.lower() for anchor in PROSE_ANCHORS[name][:1])
-                or "prose-contract.md" in entrypoint,
+                or "preflight-and-spec.md" in entrypoint,
                 f"{name}: SKILL.md never routes the reader to the prose contract",
             )
 
@@ -1192,11 +1182,11 @@ class ProseAnchorTests(unittest.TestCase):
         }
         for name, phrases in expectations.items():
             text = compact(plain(
-                (REPO_ROOT / "skills" / name / "references" / "prose-contract.md").read_text()
+                (REPO_ROOT / "skills" / name / "references" / "preflight-and-spec.md").read_text()
             ))
             for phrase in phrases:
                 self.assertIn(compact(phrase), text,
-                              f"{name}: prose-contract.md must state its limits: {phrase!r}")
+                              f"{name}: preflight-and-spec.md must state its limits: {phrase!r}")
 
         readme_cases = {
             "README.md": ("checks anchors, not full semantic equivalence"),
@@ -1217,10 +1207,16 @@ class ProseAnchorTests(unittest.TestCase):
         """
         numbered = re.compile(r"^(\d+)\. \*\*", re.MULTILINE)
         for name in SKILL_NAMES:
-            text = (REPO_ROOT / "skills" / name / "references" / "prose-contract.md").read_text()
-            numbers = [int(value) for value in numbered.findall(text)]
+            text = (REPO_ROOT / "skills" / name / "references" / "preflight-and-spec.md").read_text()
+            if "## Prose Contract" in text:
+                section_text = text.split("## Prose Contract", 1)[1]
+            elif "## 散文契约" in text:
+                section_text = text.split("## 散文契约", 1)[1]
+            else:
+                section_text = text
+            numbers = [int(value) for value in numbered.findall(section_text)]
             self.assertEqual(numbers, [1, 2, 3, 4, 5, 6],
-                             f"{name}: the prose contract must carry six numbered clauses")
+                             f"{name}: the prose contract section must carry six numbered clauses")
             self.assertEqual(len(PROSE_ANCHORS[name]), 6,
                              f"{name}: the anchor list and the reference disagree on the count")
 
@@ -1369,7 +1365,7 @@ class DocCountTests(unittest.TestCase):
         totals = reference_totals()
         english = (REPO_ROOT / "README.md").read_text()
         chinese = (REPO_ROOT / "README.zh-CN.md").read_text()
-        words = {12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
+        words = {8: "eight", 12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
                  16: "sixteen", 17: "seventeen", 18: "eighteen"}
         count = totals["orchestra-auto"]
         self.assertIn(f"{words[count]} files", english,
@@ -1614,26 +1610,26 @@ class RunHealthReferenceTests(unittest.TestCase):
 
     def test_the_state_machine_and_signal_table_are_documented(self):
         for name in SKILL_NAMES:
-            text = (REPO_ROOT / "skills" / name / "references" / "run-health.md").read_text()
+            text = (REPO_ROOT / "skills" / name / "references" / "recovery-and-health.md").read_text()
             flat = compact(text)
             for state in self.STATES:
-                self.assertIn(state, text, f"{name}: run-health.md lost the {state} state")
+                self.assertIn(state, text, f"{name}: recovery-and-health.md lost the {state} state")
             for signal in self.SIGNALS[name]:
                 self.assertIn(compact(signal), flat,
-                              f"{name}: run-health.md lost the {signal!r} signal row")
+                              f"{name}: recovery-and-health.md lost the {signal!r} signal row")
             for anchor in self.ANCHORS[name]:
                 self.assertIn(compact(anchor), flat,
-                              f"{name}: run-health.md lost the anchor {anchor!r}")
+                              f"{name}: recovery-and-health.md lost the anchor {anchor!r}")
 
     def test_the_reference_trigger_is_on_the_first_lines(self):
         for name in SKILL_NAMES:
             head = "\n".join(
-                (REPO_ROOT / "skills" / name / "references" / "run-health.md")
+                (REPO_ROOT / "skills" / name / "references" / "recovery-and-health.md")
                 .read_text().splitlines()[:12]
             )
             self.assertTrue(
                 any(marker in head for marker in ("When to read", "什么时候读", "何时读取")),
-                f"{name}: run-health.md must state its trigger near the top",
+                f"{name}: recovery-and-health.md must state its trigger near the top",
             )
 
 

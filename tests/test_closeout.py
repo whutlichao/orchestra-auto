@@ -1729,7 +1729,7 @@ class ReferenceParityTests(unittest.TestCase):
     }
 
     def flat(self, name):
-        text = (REPO_ROOT / "skills" / name / "references" / "gate-acceptance.md").read_text()
+        text = (REPO_ROOT / "skills" / name / "references" / "acceptance-and-closeout.md").read_text()
         return "".join(text.split())
 
     def test_the_two_bundles_carry_the_same_closeout_contract(self):
@@ -1737,7 +1737,7 @@ class ReferenceParityTests(unittest.TestCase):
             flat = self.flat(name)
             for key, anchor in expected.items():
                 self.assertIn("".join(anchor.split()), flat,
-                              f"{name}: gate-acceptance.md lost the closeout anchor {key!r}")
+                              f"{name}: acceptance-and-closeout.md lost the closeout anchor {key!r}")
             for anchor in self.ROW_ANCHORS[name]:
                 self.assertIn("".join(anchor.split()), flat,
                               f"{name}: the ten-row table lost the {anchor!r} row")
@@ -1753,7 +1753,7 @@ class ReferenceParityTests(unittest.TestCase):
         }
         for name, anchors in expectations.items():
             text = (REPO_ROOT / "skills" / name / "references"
-                    / "long-horizon-tickets.md").read_text()
+                    / "long-horizon.md").read_text()
             flat = "".join(text.split())
             for anchor in anchors:
                 self.assertIn("".join(anchor.split()), flat,

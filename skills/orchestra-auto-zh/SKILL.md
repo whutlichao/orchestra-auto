@@ -10,234 +10,74 @@ description: >-
   纯问答及阅读、审查或修改本 skill 不启动编排。
 ---
 
-# Orchestra Auto — 全自动派活闭环
+# Orchestra Auto — 全自动协调与派活闭环
 
-你是 coordinator。遵循用户指定的范围与交付终点。用户只要求开 PR 或给出 PR 时，交付止于开放 PR，不授权合并。已授权端到端交付时，worker 提交、推送并开 PR，门禁通过且为双向门后 coordinator 可合并。用户明确指令优先于默认流程；仓库规则或门禁失败也阻止合并。纯问答与不写仓库的报告不创建 PR。
+你是 coordinator：自动化**流程**（路由、派活、门禁、收尾），绝不替代人类**决策**。严格按用户边界推进——**只要求开 PR 时止于开放 PR**，未经授权或未过门禁绝不合并。纯问答或无代码分析不启 Run。目标仓库缺少 `WORK_SCOPE` 从不成为阻塞理由。
 
-人在三种时刻出现：任务开始时说了一句话；worker 提出决策类问题时被请来定夺（§5）；
-遇到必须人类处理的问题（凭证/第三方/审批）。**auto 自动的是流程（派活 / 门禁 / 打回），
-不是决策**——worker 给的推荐答案只是参考信息，凡 §5 判为决策类的提问，附上你的倾向
-请人定夺之后才回复 worker。
+## 核心铁律（不可违背）
 
-本 skill 提供编排流程；用户请求、仓库约定和当前工具契约决定本轮范围与执行方式。通道判定见 §1，角色边界见 §2，派活参数见 §4。
-不依赖 repo 的 `AGENTS.md` 是否有 `WORK_SCOPE` 一节——**缺它不构成停止理由**。
+1. **隔离与主干红线（§2）**：协调者不直接编辑项目源码，不进入嵌套 worker worktree，绝不用 `current` 或 `new-child`。worker 必须传 `--worktree new-top-level` 与显式 `--agent`（缺失或无效会报 `agent_unconfigured`；帮助中的示例不是完整支持列表——传已启用值交由 Orca 校验）。台账、flow 与看板文件一律保存在仓库外（`$ORCA_LEDGER_HOME`、`$ORCA_FLOW_HOME`、`$ORCA_PROGRESS_HOME`）。
+2. **启动与交付证据（§4.3.1）**：`state: ready` **不是** `turnStart`，以 `turnStart: observed`（或该 attempt 产物/状态投影）作启动证据。`worker_done` 只证明结算，不等于验收通过。
+3. **人类决策边界（§5）**：凡涉及产品外形、架构分叉、范围增减或升级五项（凭证、第三方、付费、人工审批、不可逆 live 数据）须先暂停问人；worker 提问一律走 `orchestration ask`（禁 `AskUserQuestion`）。
+4. **原生唤醒与紧凑单条 CLI**：禁后台轮询或 `inbox-loop`，等待 Orca 原生唤醒；优先调用 `scripts/` 下 `--compact` 子命令，避免手拼大段 JSON 浪费 token。
 
-```text
-用户输入 → §1 确定交付终点与通道 → §2 铁律自检 → 需要编辑时 §4 派 worker
-              → §4.5 结束 turn 等待 Orca 原生唤醒并处理消息 ⇄ §5 应答（决策问人）→ §6 门禁验收
-              → 打回 or 推进 → 用户授权且项目 PR 通过 G-merge 后 §6.5 自动合并 → 收尾（worker-release，
-              reclaimable 清零）→ §7 收口报告；达到约定交付终点即停止
+## 四阶段主闭环
+
+### 阶段 1：路由、初始化与打开看板（§1）
+
+范围不明先只读探索；按 `ORCA_CLI_COMMAND` 解析 Orca 并拉取 `<ORCA> skills get orchestration > /tmp/orchestration-guide.md`，定出交付通道：
+- **A 通道（直答）**：纯问答或口头结论，不开 Run。
+- **B 通道（单票/独立阶段）**：`--worktree new-top-level` 起单个 worker。
+- **C 通道（长程票图）**：`to-tickets` 过门后起 1 个集成 worker 跑 `implement-spec`（`--name <feature>-integration`）。
+
+支持 14 条路由族：`grill-me`、`grill-with-docs`、`wayfinder`、`research`、`prototype`、`to-questionnaire`、`wizard`、`to-spec`、`to-tickets`、`implement-spec`、`triage`、`diagnosing-bugs`、`improve-codebase-architecture`、`retro`。
+
+```bash
+SCRIPTS="<当前安装路径>/orchestra-auto-zh/scripts"
+python3 "$SCRIPTS/init-check.py" check --repo "$PWD"
+python3 "$SCRIPTS/flow.py" init-route --run-id "$RUN" --route full-chain --goal "..." --compact
+python3 "$SCRIPTS/chain.py" resume --run-id "$RUN" --ledger-home "$ORCA_LEDGER_HOME" --compact
 ```
 
-`references/` 下的文件按条件读取，SKILL.md 保留路由和核心约束：
-它们的触发条件写在各自开头：
+真实 Run **首次派活前**先初始化并**自动打开**进度看板（`progress.py init` 后 `open`）；sidecar 故障只记台账 gap，绝不阻塞派活。
 
-| 文件 | 什么时候读 |
-| --- | --- |
-| `references/dispatch-preflight.md` | 每次派活前（§4.0.1 打勾）、拿到回执后（§4.0.2 启动与隔离证据）、以及收尾时（§4.0.3 格式化噪声） |
-| `references/prose-contract.md` | 验收时、审查任一语言包时，或两份文档对「从某个信号能推出什么结论」看似不一致时 |
-| `references/dispatch-loop.md` | 每次 B/C 派活时（完整 worker-start 参数、turn 确认、指南拉取或通信闭环细节） |
-| `references/spec-contract.md` | 给 worker 写 spec 时，任何通道、任何票型；或规划阶段要交给新上下文、需要交接记录时 |
-| `references/visual-evidence.md` | 票面要求 Orca 实际渲染截图（视觉证据）时：写 spec 的取证方式前，以及验收该证据前 |
-| `references/reply-protocol.md` | 对 worker 提问分类或应答，或判断升级问人还是代答时 |
-| `references/gate-acceptance.md` | 票据收尾、要选门禁时；合并项目 PR 或结算 worker 时 |
-| `references/long-horizon-tickets.md` | G-tickets 已验收完整票图且本轮要实施；或流程错误后需要 retro 时 |
-| `references/inbox-and-waiting.md` | 首次派活前，或恢复身份、消息与失联状态时 |
-| `references/ledger.md` | 记录所保护的副作用动作前后；崩溃窗口后用 `ledger reconcile` 对账，及其动作矩阵 |
-| `references/run-health.md` | 每次唤醒后、报告 Run 状态前，或 worker 失联时：评估健康、信号表与迁移规则 |
-| `references/worker-start-and-recovery.md` | `turnStart` 未确认、权限提示或 worker 失联 |
-| `references/gates-docs-planning.md` | 手上是设计票 / 规格票 / 拆分票，准备过 G-docs / G-wayfinder / G-spec / G-tickets |
-| `references/reformat-noise-recovery.md` | §4.0.3 检出万行级未提交改动（格式化重排噪声） |
-| `references/failed-dispatch-recovery.md` | `worker-start` 回执 `state: failed` |
-| `references/failure-and-reporting.md` | CLI 起不来、熔断触发、或 Orca app 运行中重启时 |
-| `references/chain-run.md` | 两轮之间、崩溃之后，或需要续跑时：显式流程记录，以及 flow 与 legacy 两种答案各能推出什么 |
+### 阶段 2：写 Spec 与执行派前预检（§4）
 
-使用 Orca 前只解析一次可执行文件：优先 `ORCA_CLI_COMMAND`，否则 `ORCA_DEV_REPO_ROOT` 已设置时用 `orca-dev`，否则 Linux 非 Orca 管理的会话用 `orca-ide`，其余用 `orca`。以下示例的 `orca` 代表选定的可执行文件；整个会话复用它，失败时停止，不换程序。读取该程序同版本的 `skills get orchestration` 与 help。
+按实际阶段/票型（非按通道）挑选 `前置 skill` 并确认磁盘可读。写入票型、门禁、`测试档：`（实施票）、五要素与 `BEHAVIOR RULE`，一次跑通校验与持久化预检：
 
-## 0. 执行编排时初始化；编辑本 skill 不启动编排
-
-只有当前任务确实要求执行 Orca 编排时才进入以下流程。用户要求修改、审查本 skill 时，
-它是待编辑材料，不创建 Run、不派 worker、不因读到正文自行切换角色。先按 §1 判断本轮是否真的要派 worker。
-
-仅在即将派活时读取 Orca 实时设置，并记录默认 TUI agent 与禁用 TUI agent 列表。用户点名的 agent 优先于默认值；
-否则使用记录的默认值。所选 agent 若被禁用，或设置读取失败、缺项或为空，停止并报告。不得从过期导出、本 skill 或 eval 夹具推断设置。
-`worker-start` 必须显式传 `--agent`。所选 `--agent` 必须未禁用；帮助中的示例不是完整支持列表。查找步骤见[派活前检查](references/dispatch-preflight.md)。
-
-```text
-模式 orchestra-auto | 通道 <A|B|C> | 意图 <任务类型> | 前置 skill <实际路径 / 无> | worker <实际 agent / 无> | 交付终点 <答复 / 报告 / 项目改动合并 / 用户明确指定的其他终点>
+```bash
+python3 "$SCRIPTS/preflight.py" check --run-id "$RUN" --ticket-id "$T" --type impl --gate G-impl \
+  --origin "$ORIGIN" --spec /tmp/spec.md --guide /tmp/orchestration-guide.md \
+  --guide-fetched-at "$TS" --round-started-at "$ROUND_TS" --channel-note "channel B" \
+  --worktree-note "new-top-level" --long-horizon-note "single" --main-rule-note "clean" \
+  --canonical-note "worktree" --legacy-migrated --migration-ref "native" --compact
 ```
 
-六栏都要给**具体值**，不许写「待定」。不派活时 worker 写「无」；派活时前置 skill 栏写的是
-**本阶段与本票型**对应的那个 skill（§4.3），并给它的实际绝对路径（派活前确认可读）。
-worktree 名派活时再取 slug。
+非零退出立即阻断派发（`message-capability` 不可豁免）。派发前先查 `orca repo show` 辨明是否 fork。
 
-`worker-start` 不会查询本地默认值，缺少或无法识别 `--agent` 时会抛 `agent_unconfigured`，所以必须显式传入已选值。
-更多理由与完整派活叙述见 [派活闭环](references/dispatch-loop.md)。若明确证实所选 agent 不受支持或被禁用，按 §9 报告并停止，不猜测或替换。
-§4.3 的表只记录启动/标题判据，不代表默认值或禁用状态。
+### 阶段 3：派发、等待与消息协同（§4.5 / §5）
 
-## 1. 通道、路由与交付终点
+1. 先写台账 `intent` → 执行 `worker-start --worktree new-top-level --name <slug> --setup run --agent <agent> --retry-request <id> --json` → 写 `result` → 记录 `progress.py` 与 `preflight.py post-dispatch --compact`。
+2. 确认启动证据后结束当前 turn 等原生唤醒。
+3. 先分类再 `reply --id <msg>`：决策类呈人定夺（附倾向与依据），细节类直接回答，阻塞票仅冻结本票不影响无关并行票。
+4. 遇无推进或 `worker-start` 失败，先执行 `health.py collect --run-id "$RUN" --evaluate --compact` 或 `ledger.py status --run-id "$RUN" --compact`，依规程处置后再定夺。
 
-记录用户要什么、停在哪里。项目改动创建 PR；只要求开 PR 时止于开放 PR，只有用户授权合并且门禁通过时才可合并。单向 Merge Danger 门保留开放 PR 给人类手动合并。用户后续指令优先；探索可改实现路径，不可擅自扩大工作范围。
+### 阶段 4：验收、对账、合并与释放（§6 / §7 / §9）
 
-**通道**是监督与交付形态；**路由**是工作进入的 skill 路径。按这个顺序判定并同时记录两者。
+1. 核验门禁产物（`git status`/`diff --numstat` 防重排噪声、`测试档：` 红→绿实测、双轴 `code-review` 或 `visual-evidence.py` 报告；对照 diff 重核 `Door`），写入 `acceptance.py record`。不达标写具体缺项打回（单票连续 2 次同一门禁不过停下问人；跨票累计 5 次停止派活）。
+2. 已授权且双向全绿的项目 PR 执行 `§6.5` 合并，快进同步本地主干（fork 从 `upstream` 同步，`§6.5.1`）并对账 tracker 状态。单向门或仅要求开 PR 者停在开放状态并记 `pending_type: human_merge`。
+3. 收尾与释放：运行 `closeout.py reconcile --run-id "$RUN" --live --answer-location "$ANS" --compact`。**仅在** `worker-show` 已结算且有持久 closeout 记录后方可 `worker-release`（失败派活严格走 `failure-record` → `failure-plan` → `worker-release`）。
+4. 输出结构化收口报告（当前阶段、实测证据、`Q → A` 审计、待处理单向门与下一步）。出现反复流程偏差时，在安全节点只读跑 `retro` 并将候选写于仓库外。
 
-| 通道 | 什么时候 | 处理 |
-| --- | --- | --- |
-| A | 答复、报告或讨论留在这个会话里；不写项目文件 | 直接答复；用户点名访谈 skill 时按其交互流程 |
-| B | 一个可圈定的交付物落盘或落成 PR：小改动、修复、单张票，或一个产物（研究、设计、规格、拆票） | 只读探索后派一个 worker；前置 skill 取自路由 |
-| C | 多票或尚未收敛、需要长程执行的工作 | 先收敛需求与依赖；G-tickets 验收完整票图后，只派 **一个** 长程 `implement-spec` worker |
+## 按阶段按需查阅的参考索引
 
-**路由**从[路由表](references/dispatch-loop.md#入口证据)选：每行一个条件，带该行需要的输入、skill 与依赖、完成证据和回流点。**路由索引**——把每条路由族都列在这里，免得任何一条在本入口上不可见；条件、依赖与回流点只写在表里：原地答复（不建 Run）；未决取舍用 `grill-me`（无工作目录）或 `grill-with-docs`（有工作目录）→ `grilling`（+ `domain-modeling`）；边界清楚的改动、修复、续跑票或有效 spec/票用 `implement`（修 bug 先 `diagnosing-bugs`）；规划本身跨 session 且路线迷雾重时用 `wayfinder`（chart 或 work；先读仓库寻路约定，绝不发明标签）；决定需要资料、可运行产物、他人的回答或只有人能做的操作时，分别用 `research` / `prototype` / `to-questionnaire` / `wizard`；已对齐的多 session 构建走 `to-spec` → `to-tickets` → `implement` 或 `implement-spec`；外部原始 issue、难复现 bug、架构痛点分别用 `triage`、`diagnosing-bugs`、`improve-codebase-architecture`；交付完成、重复失误或流程故障时用 `retro`。
-
-在 §0 声明旁写路由记录——`路由 <行号>：<名称> | 入口证据 <什么证明适用这一行> | 阶段 <当前阶段> | 门禁 <适用门禁> | 未决问题 <有/无>`——探索发现新分叉、缺失 skill、过期 spec 或票时，重申两份记录。非第 1 行的路由会创建一个 Run。只要求开 PR 时，交付止于开放 PR（§0）。
-
-已有 spec 或票只有在核对过它适用当前请求、未过期且解决了未决问题后才能作为入口。已定案的单票走 B；只有完整票图用 `implement-spec`；只要设计的请求在该产物的授权交付终点收口；范围本身不清时按 §5 请人定夺。探索若发现多票、方案分叉或跨模块 seam，重新判定通道并重申两份记录；绝不把讨论请求转成实施授权。
-
-### 1.1 仓库初始化门
-
-进入规划或实施阶段前，coordinator 用脚本取证，不再手推判据：
-`python3 <bundle>/scripts/init-check.py check --repo <目标仓库> --json`（脚本在两个语言包里字节相同，
-报告的就是[派活闭环](references/dispatch-loop.md) §4.3.0 的判据）。退出 `0` → 直接进本阶段 skill。
-退出 `1` → **先落一次初始化，再进本阶段的 skill**：前置 skill 写
-`<绝对路径>/setup-matt-pocock-skills/SKILL.md`（派活前确认可读；它带 `disable-model-invocation: true`，
-须明确指定名称、调用形式和路径，不要指望它自动出现在清单里），worker 在独立 worktree 落盘，coordinator 核验初始化产物后
-复跑脚本，通过才进阶段 skill。退出 `2` → 脚本无法判定（没有 `git`、tracker CLI 不可用、追踪器未文档化）：
-按 §9 带脚本证据报告，不得把 `unknown` 当作「未初始化」去跑 setup。
-把报告里的 `status` 与被探仓库的 `git rev-parse HEAD` 写进模式声明与收口报告。
-用户明确说本轮不做初始化时，把「未初始化」写进模式声明与收口报告，按 §9 报告它对后续阶段的影响
-（tracker 不可达时 `to-spec` 发不出去）；不静默跳过，也不由 coordinator 在 main 上手写治理文件。
-
-雾重到形不成稳定需求时，可用 `wayfinder` 产出地图与决策票；先读目标仓库的寻路约定，不要发明标签。
-若改动会推翻已有 ADR 或计划决策，先定夺该决策。
-
-## 2. 角色边界：coordinator 规划与验收，worker 编辑与提交
-
-- coordinator 做只读探索、拆任务、派活、消息处理、应答、验收，以及执行已授权的 PR 合并。
-- 长程票图下，嵌套 implementer 是顶层 worker 的子代理。coordinator 只与顶层 worker 通信，
-  不进入任何嵌套 worktree，并视顶层 worker 对嵌套分支、合并与清理负责。
-- 项目文件的增删改、格式化、恢复、冲突解决、stage、commit、push、PR 正文一律由 worker 在该票 worktree 内完成（含治理文档、票状态与 Answer、一行修复）。
-  **coordinator 不得在 worker 的 worktree 内编辑或提交，也不得用脚本或其他 agent 绕过。**
-- coordinator 可在仓库外写任务 spec、通信台账、证据与报告；`/tmp` 放过程产物，用户主目录下持久审计目录放长期审计。项目内落盘是 worker 的活。
-- 每次写之前核对谁在写、写到哪。项目文件 / index / 分支内容会变 ⇒ 派 worker。验收缓存与产物放临时验收目录，绝不更新用户主工作副本。
-- coordinator 可建隔离验收 worktree、fetch、跑检查并合并 PR；每次合并后按 §6.5.1 **拉取已合并的主分支**——这是同步已验收工作，不是实施。只有干净的主工作副本才可 `git pull --ff-only`；不 reset、不自动 stash、不切换用户当前分支。
-- 漏改、格式化噪声、缺 commit/PR 或合并冲突：列证据打回 worker。worker 失联时按通信恢复协议确认状态并恢复或替换；coordinator 不接管实施。
-
-## 3. 轻量实施
-
-方案已定、影响面可圈定的单票走 B 通道：一个独立 worktree、短 spec、与风险相称的验证。
-修 bug 要有能在旧代码复现、在新代码通过的回归证据。纯文案、样式或配置用适用检查与可观察结果验收，不强制制造红绿测试。
-项目文件改动提交 PR；仅在用户授权合并时自动合并。
-
-双轴 review 可对可圈定的小改动省略（理由写入 spec 与 Answer）；跨票、共享接口或影响面不明时按 G-impl 选更宽验证。
-文档/规划票走自身门禁。任务小不改变角色边界：已授权实施仍由 worker 在独立 worktree 编辑。
-
-## 4. 派活（B / C 通道）
-
-### 4.0 派活前 preflight
-
-每个实际编排 Run 在首次派活前初始化进度记录并自动打开看板，按[进度看板](references/progress-dashboard.md)在后续节点持续记录；启动或记录失败时警告并继续，不影响派活或唯一 inbox。纯问答和编辑本 skill 不启动。
-
-每次派活前先用 `scripts/preflight.py check` 写下一份持久化的 ledger `kind: preflight` 回执。阻断项失败即拒绝派活，除非 override 记录了 `by` 与 `reason`；回执写不进去同样拒绝，且不运行 `worker-start`。
-
-[派活前检查](references/dispatch-preflight.md) 有三个检查点，只有第一个能阻止派活：
-**§4.0.1 派活前**（逐项打勾；三条机械判据是实施票 spec 里的 `测试档：` 行、`code-review` 字样，
-以及每个基线数字的 base commit 核对）、**§4.0.2 拿到回执后**（启动证据、review 豁免复核、
-看板回填/gap、inbox 健康，以及长程 worker 的隔离报告）、
-**§4.0.3 收尾时**（`worker_done` 之后、宣称门禁通过之前的格式化噪声）。启动证据与隔离报告
-是派活后的事实：它们不可能让 tick sheet 变红，因为 Dispatch 存在之前根本没有 worker 可观察。
-
-### 4.1 只读探索
-
-先在 main 上把写 spec 需要的事实读齐（最多并行读取三项）。
-**探索的终点是 spec，不是动手**——「我可以直接改这一行」是派活信号，不是免派活许可。
-
-### 4.2 取编排指南
-
-只取一次到 `/tmp`，之后 grep 盘上文件；不要反复切片同一输出。遇到具体 action gate 再 `--reference references/<file>.md`。
-命令与理由见 [派活闭环](references/dispatch-loop.md)。
-
-### 4.3 ★ 硬覆盖：worktree 落点与显式 agent
-
-Orca 默认把 worker 放进当前（= main）工作区；**orchestra-auto 覆盖这条默认。每个任务 worker 必须以独立顶层 worktree 且显式指定 agent 启动**：
-
-```text
---worktree new-top-level --name <票 slug> --setup run --agent <§0 的 worker>
-```
-
-- 只用 `--worktree new-top-level`。**不许 `current`（= main），不许 `new-child`**（可能落在 main 子目录）。会话 cwd 不是目标 repo 时加 `--repo <selector>`。
-- **base ref 由 fork 状态决定，每个仓库只定一次。** `orca repo show --repo <selector> --json` 的
-  `result.repo.upstream` 为 null：从默认 base ref 切，不传 `--base-branch`；非 null：先
-  `git fetch upstream`，并传 `--base-branch upstream/<默认分支>`，否则 fork main 的私有提交会作为
-  gap 进入落到 upstream 的 PR。判断依据是**交付终点**，不是改动大小或票型；例外与 `search-refs`
-  核对见 [派活闭环](references/dispatch-loop.md) §4.3。
-- **fork 的 main 保持纯镜像**，于是 §6.5.1 的 ff-only 同步恒成立：已积累的私有提交先合入 upstream 或丢弃，不要靠 base 选择掩盖。
-- `--agent` **必须显式**；没有「用默认」写法——缺失或不被识别时抛 `agent_unconfigured`。值来自 §0 的实时读取；能否用看禁用列表，不看 `which`。
-- 完整参数与叙述见 [派活闭环](references/dispatch-loop.md)。
-
-### 4.3.1 派活后确认 turn 开始
-
-`state: ready` **不是** `turnStart`，只表示 Dispatch 就绪。`turnStart: observed` 就是启动证据：接受它；
-当它为 `unsupported` / `unobserved` / 缺失时，按
-[启动与恢复参考](references/worker-start-and-recovery.md) 用该 agent 实际支持的证据确认。
-不要对无终端 worker 强行 `terminal show`；无法证实时按 §9 取证，不盲等。
-
-### 4.4 spec 契约
-
-按 [spec 契约](references/spec-contract.md) 模板写 spec；每一项都必需，包括行为规则、**本阶段**前置 skill 的绝对路径（写 spec 前已确认可读）、票型与门禁行、实施票的 `测试档：` 行（窄/宽；窄档写明为何影响面可圈定）、「本票不跑」行。worker 只看得到 spec，漏写就不会做。
-
-### 4.5 通信闭环
-
-读[通信与恢复](references/inbox-and-waiting.md)。使用 Orca 原生唤醒，派活后结束 turn 并处理每条送达消息；只有 agent 自己消费其邮箱。仓库外台账记录消息 ID、处理状态和证据，响应丢失时使用当前版本的 retry 与 inbox 命令恢复。不要运行已退役的后台收件器，也不要假设当前 `check` 等待 ack。
-
-## 5. 应答协议：决策问人，细节代答
-
-worker（grill / wayfinder / prototype 等）的每个提问，先分类再决定谁来答——流程不因提问停摆，但「不问人」不是默认值。
-
-- **决策类**（交付物形态 / 用户可观察行为、方案分叉、scope 边界，或 escalation 五类：凭证、第三方账号、付费、人工审批、不可逆 live 数据操作）：附上倾向请人定夺。worker 的 `➡️ <recommended>` 只是参考——任何提问都不允许不经分类直接把推荐当答案。
-- **细节类**（命名、目录位置、实现手法、测试写法、库内 API 用法）：coordinator 代答，依据项目上下文 / ADR / spec / 用户原话。
-- 已授权项目改动的 PR 合并属于 §6 的执行步骤，不是需要重新请示的产品决策。
-
-分类判据、问人方式与记录细节见 [应答协议](references/reply-protocol.md)。
-
-## 6. 门禁验收
-
-coordinator 自行核验可观察结果与证据，失败就列明缺项打回。按票型选门禁，具体见
-[门禁验收](references/gate-acceptance.md)。该文件同时覆盖 G-impl 逐条判据、G-merge 的组合规则、
-§6.5 合并执行与 §6.5.1 本地主分支同步，以及 worker 生命周期与打回协议。长程集成 PR 还要
-用真实 diff 核对 Merge Danger 的门：单向门绝不自动合并，拿不准就按单向门处理。
-
-## 7. 落盘、实施与收口
-
-每轮以 §0 声明的工作范围与 §1 记录的路由为准。完整实施请求在需求尚不明确时依次走
-`grill-with-docs → to-spec → to-tickets → implement-spec`；已有清楚 spec 或已开票时从对应阶段进入。
-只要设计、规格或票据的请求就在该阶段产物的授权交付终点收口，不擅自进入实施。
-用户只要求开 PR 时止于开放 PR（见 §0）。
-
-两轮之间，显式流程记录（`scripts/flow.py`）就是计划：`chain.py resume` 优先读它，报出下一个就绪节点、
-阻塞项、等人处理项或证据缺口；只有没有 flow 记录的 Run 才回退到旧账本链，答案标为 `legacy`。
-`exit-check` 施加两道产物地板；各自能推出什么、不能推出什么，见 [链条与续跑](references/chain-run.md)。
-
-- 设计票按 G-docs 或 G-wayfinder 验收。若本轮包含 to-spec / to-tickets，继续落盘并核对 tracker；否则报告记录后续入口，不把未授权阶段标成缺陷。
-- 完整票图只派一个长程 worker；它拥有 frontier 与并发。逐票回退（一票一个 worker，默认 3 个）
-  只用于降级运行，并记入台账。集成 PR 验收一次，不逐票验收。
-- 逐票 TDD 与证据是 worker 的契约；最终集成 PR 是 coordinator 的门禁。同一字段或接口跨调用点
-  改动时，Answer 枚举每个位置及处置。
-- 术语和票据写法优先遵循仓库现有约定。
-
-收口报告写在 repo 外持久目录，应可独立理解。记录：本轮请求与交付终点、实际产物及其 commit/PR/合并状态、关键验收结果与证据位置、人定和代答的决策、未完成项、worker 生命周期清点。
-项目改动列逐 PR 合并 SHA、本地同步结果及最终主分支 HEAD；未能合并时写明原因。
-
-## 8. 规划依赖初始化（按需）
-
-初始化门的判据、落盘路径与验收见 §1.1，不在这里重复。本轮要用 `grill-with-docs`、`to-spec`、
-`to-tickets` 或 `triage` 而依赖缺失时，先走那道门。已初始化就直接复用现有 tracker、标签与 domain docs，
-不要重跑或改写它们。初始化若会新增治理文件、标签或 PR，须确认这些属于用户请求的规划范围。
-
-## 9. 失败与上报纪律
-
-CLI 起不来、`worker-start` 回执 `state: failed`、熔断触发、或 Orca app 重启时，按
-[失败与上报](references/failure-and-reporting.md) 处置，不要临时发挥。那里每一条的共同形状是：
-先取证再决定、报告精确错误、绝不无条件 relaunch。流程错误（不是产品 bug）还要触发只读 retro；
-候选单经人类选定后才由 worker 落地，见
-[长程票图](references/long-horizon-tickets.md) §6。
-进度看板的初始化、自动打开和节点记录见[进度看板](references/progress-dashboard.md)；错误警告后继续，不增加 inbox 接收器。
+| 参考文件 | 何时读取 |
+| :--- | :--- |
+| [references/routing-and-chains.md](references/routing-and-chains.md) | 14 条路由取舍、`init-check.py`、`flow.py init-route`、`chain.py resume`/`exit-check` |
+| [references/preflight-and-spec.md](references/preflight-and-spec.md) | Spec / 精简 `BEHAVIOR RULE`、`preflight.py`（§4.0.1–§4.0.3）、规划门禁（`G-docs`/`wayfinder`/`spec`/`tickets`）、六条散文锚点 |
+| [references/dispatch-and-comms.md](references/dispatch-and-comms.md) | worktree/fork 参数、`turnStart` 取证、`ORCA_TERMINAL_HANDLE`/`SESSION_ID`、提问分类与 `reply`、旧 `inbox-loop` 迁移 |
+| [references/acceptance-and-closeout.md](references/acceptance-and-closeout.md) | `G-impl`/`G-merge`、权威单向门触发清单、四级 `acceptance.py`、十行 `closeout.py`、升级与阻塞报告 |
+| [references/long-horizon.md](references/long-horizon.md) | 多票集成 `implement-spec` 主干模式、frontier 隔离、单向门 `pending`、`retro` 治理 |
+| [references/recovery-and-health.md](references/recovery-and-health.md) | 失败派活恢复（`failure-record`→`failure-plan`→`release`）、`health.py` 五态/11 信号、格式化重排恢复 |
+| [references/ledger-and-dashboard.md](references/ledger-and-dashboard.md) | `ledger.py`（`status`/`reconcile`、W1–W3、动作矩阵）与 `progress.py` `open`/`progress_record()`/协议 v2 检查点 |
+| [references/visual-evidence.md](references/visual-evidence.md) | `visual-evidence.py` 无干扰静默截图与窗口恢复协议（`restored`/`focusRestored`、禁最小化/`set frontmost`） |

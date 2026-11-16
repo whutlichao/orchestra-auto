@@ -2908,13 +2908,16 @@ class DocumentationParityTests(unittest.TestCase):
     """Both language packs document the same reconciliation contract."""
 
     def documents(self):
-        return [directory / "references" / "ledger.md" for directory in SKILL_DIRS]
+        return [directory / "references" / "ledger-and-dashboard.md" for directory in SKILL_DIRS]
+
+    def corpora(self):
+        internals = (REPO_ROOT / "docs" / "design" / "ledger-internals.md").read_text(encoding="utf-8")
+        return [path.read_text(encoding="utf-8") + "\n" + internals for path in self.documents()]
 
     def assert_tokens(self, tokens):
-        for path in self.documents():
-            text = path.read_text(encoding="utf-8")
+        for path, text in zip(self.documents(), self.corpora(), strict=True):
             for token in tokens:
-                self.assertIn(token, text, str(path) + " is missing " + token)
+                self.assertIn(token, text, str(path) + " (+ ledger-internals) is missing " + token)
 
     def test_both_references_document_windows_and_the_action_matrix(self):
         self.assert_tokens((
@@ -2941,11 +2944,11 @@ class DocumentationParityTests(unittest.TestCase):
             "turnStart", "bookkeeping",
         ))
         anchors = (
-            (SKILL_DIRS[0] / "references" / "ledger.md",
+            (SKILL_DIRS[0] / "references" / "ledger-and-dashboard.md",
              ("Idempotency", "Key before the action", "Read-back", "When uncertain",
               "Two hard rules", "Write the intent before the action",
               "read authority before deciding", "Fixed dispatch order")),
-            (SKILL_DIRS[1] / "references" / "ledger.md",
+            (SKILL_DIRS[1] / "references" / "ledger-and-dashboard.md",
              ("幂等", "动作前键", "回读", "不确定时", "两条硬规则",
               "动作前写 intent", "不确定时先读权威", "固定派发顺序")),
         )
