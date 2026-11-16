@@ -33,6 +33,7 @@ SKILL_DIRS = tuple(REPO_ROOT / "skills" / name for name in SKILL_NAMES)
 #: iterate this list, and a completeness test fails when a shipped file is missing from it, so
 #: a new script cannot land with a green suite and no coverage.
 SCRIPT_FILES = (
+    "_common.py",
     "acceptance.py",
     "chain.py",
     "closeout.py",
@@ -49,7 +50,7 @@ SCRIPT_FILES = (
     "visual-evidence.py",
 )
 PYTHON_SCRIPTS = (
-    "acceptance.py", "chain.py",
+    "_common.py", "acceptance.py", "chain.py",
     "closeout.py", "flow.py", "health.py", "inbox-loop.py", "init-check.py", "ledger.py",
     "preflight.py",
     "progress-demo.py", "progress.py", "visual-evidence.py",

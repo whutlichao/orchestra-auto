@@ -14,6 +14,7 @@ refuses to read authority, and a test that needed authority would be testing ano
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -508,6 +509,31 @@ class CliTests(unittest.TestCase):
         self.assertTrue(payload["native"]["passed"])
         self.assertFalse(payload["dispatch"]["passed"])
         self.assertTrue(any("Test tier" in error for error in payload["dispatch"]["errors"]))
+
+    def test_resume_resolves_orca_flow_home_fallback_with_compact(self):
+        ledger_home = self.root / "ledger-home"
+        flow_home = self.root / "flow-home"
+        run_dir = ledger_home / "runs" / "r-env"
+        run_dir.mkdir(parents=True)
+        (run_dir / "ledger.jsonl").write_text("", encoding="utf-8")
+        init_res = subprocess.run(
+            [sys.executable, str(SCRIPTS / "flow.py"),
+             "init-route", "--run-id", "r-env", "--route", "single-impl",
+             "--flow-home", str(flow_home), "--compact"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(init_res.returncode, 0, init_res.stderr)
+        env = {**os.environ, "ORCA_FLOW_HOME": str(flow_home)}
+        res = subprocess.run(
+            [sys.executable, str(SCRIPTS / "chain.py"),
+             "resume", "--run-id", "r-env", "--ledger-home", str(ledger_home), "--compact"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(len(res.stdout.strip().splitlines()), 1)
+        payload = json.loads(res.stdout)
+        self.assertEqual(payload["state"], "continue")
+        self.assertEqual([item["node"] for item in payload["ready"]], ["implement"])
 
 
 if __name__ == "__main__":

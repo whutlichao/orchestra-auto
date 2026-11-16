@@ -32,6 +32,12 @@ from pathlib import Path
 import sys
 import uuid
 
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_closeout_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
+
 SCHEMA_VERSION = 1
 
 #: The ten documented rows, in order. ``repeatable`` is whether authority can prove the
@@ -155,13 +161,7 @@ SECTION_KEYS = ("state", "reason")
 
 def _load(name, module_name):
     """Import a sibling script by path: the shared modules are reused, not copied."""
-    path = Path(__file__).with_name(name)
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot build an import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _COMMON.load_sibling(__file__, name, alias=module_name)
 
 
 LEDGER = _load("ledger.py", "orca_closeout_ledger")
@@ -173,9 +173,7 @@ def _invalid(message):
     raise ValueError(message)
 
 
-def _now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z")
+_now = _COMMON.utc_now
 
 
 def _unknown_section(reason):
@@ -2025,7 +2023,7 @@ def reconcile(run_id, authority, home=None, answer_location=""):
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Live authority collection & CLI
 # ---------------------------------------------------------------------------
 
 
@@ -2037,8 +2035,43 @@ def _read_json(path):
         _invalid(str(path) + " is not valid JSON: " + str(error))
 
 
-def _emit(payload):
-    print(json.dumps(payload, ensure_ascii=False))
+def _emit(payload, *, compact=False):
+    _COMMON.emit_json(payload, compact=compact)
+
+
+def _compact_closeout(payload):
+    if not isinstance(payload, dict):
+        return payload
+    checklist = payload.get("checklist")
+    compact_rows = None
+    if isinstance(checklist, dict) and isinstance(checklist.get("rows"), list):
+        compact_rows = [
+            {"id": row.get("id"), "status": row.get("status")}
+            for row in checklist["rows"]
+            if isinstance(row, dict)
+        ]
+    compact = {
+        key: value for key, value in payload.items()
+        if key not in ("checklist", "closeout")
+    }
+    if isinstance(checklist, dict):
+        compact["checklist_summary"] = {
+            "ready": checklist.get("ready"),
+            "classification": checklist.get("classification"),
+            "blocking": checklist.get("blocking"),
+            "divergent": checklist.get("divergent"),
+            "rows": compact_rows,
+        }
+    if isinstance(payload.get("closeout"), dict):
+        closeout = payload["closeout"]
+        compact["closeout_summary"] = {
+            "record_id": closeout.get("record_id"),
+            "outcome": closeout.get("outcome"),
+            "classification": closeout.get("classification"),
+            "answer_location": closeout.get("answer_location"),
+            "durable": closeout.get("durable"),
+        }
+    return compact
 
 
 class RecordedFacts:
@@ -2051,12 +2084,367 @@ class RecordedFacts:
         return copy.deepcopy(self.sections)
 
 
+def _accepted_pr_rows(records):
+    by_pr = {}
+    tickets_by_pr = {}
+    for record in records:
+        if record.get("kind") != "acceptance":
+            continue
+        detail = record.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        pr_info = detail.get("pr") if isinstance(detail.get("pr"), dict) else {}
+        pr_num = ACCEPTANCE.as_int(pr_info.get("number"))
+        ticket = detail.get("ticket")
+        if pr_num is not None:
+            by_pr[pr_num] = detail
+            if ACCEPTANCE.is_nonempty(ticket):
+                tickets_by_pr[pr_num] = str(ticket)
+    return by_pr, tickets_by_pr
+
+
+def _collect_pr_host(by_pr, repo_dir, run_fn):
+    if not by_pr:
+        return {"state": "ok", "reason": "", "pull_requests": []}
+    rows = []
+    for pr_num in sorted(by_pr):
+        res = run_fn(
+            ["gh", "pr", "view", str(pr_num), "--json", "number,state,mergeCommit,baseRefName"],
+            cwd=repo_dir,
+        )
+        if res.get("returncode", 1) != 0:
+            return _unknown_section(
+                f"gh pr view {pr_num} failed: {(res.get('stderr') or '').strip() or 'unavailable'}"
+            )
+        parsed = _COMMON.json_object(res.get("stdout", ""))
+        if not parsed:
+            return _unknown_section(f"gh pr view {pr_num} did not return JSON")
+        merge_commit = parsed.get("mergeCommit")
+        merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else ""
+        rows.append({
+            "pr": ACCEPTANCE.as_int(parsed.get("number")) or pr_num,
+            "state": parsed.get("state") or "",
+            "merge_sha": merge_sha or "",
+            "base": parsed.get("baseRefName") or "",
+        })
+    return {"state": "ok", "reason": "", "pull_requests": rows}
+
+
+def _collect_git(by_pr, pr_section, repo_dir, run_fn):
+    if not repo_dir:
+        return _unknown_section("no repository directory provided")
+    bases = {
+        row.get("base") for row in pr_section.get("pull_requests", [])
+        if ACCEPTANCE.is_nonempty(row.get("base"))
+    }
+    main_branch = sorted(bases)[0] if len(bases) == 1 else "main"
+
+    status_res = run_fn(["git", "-C", str(repo_dir), "status", "--porcelain"])
+    branch_res = run_fn(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"])
+    head_res = run_fn(["git", "-C", str(repo_dir), "rev-parse", "HEAD"])
+    if any(res.get("returncode", 1) != 0 for res in (status_res, branch_res, head_res)):
+        return _unknown_section("git status/rev-parse failed in repository")
+
+    clean = not (status_res.get("stdout") or "").strip()
+    local_branch = (branch_res.get("stdout") or "").strip()
+    local_head = (head_res.get("stdout") or "").strip()
+
+    upstream_name = ""
+    remote_head = local_head
+    up_res = run_fn(
+        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", f"{main_branch}@{{u}}"]
+    )
+    up_head_res = run_fn(
+        ["git", "-C", str(repo_dir), "rev-parse", f"{main_branch}@{{u}}"]
+    )
+    if up_res.get("returncode", 1) == 0 and up_head_res.get("returncode", 1) == 0:
+        upstream_name = (up_res.get("stdout") or "").strip()
+        remote_head = (up_head_res.get("stdout") or "").strip()
+    else:
+        origin_ref = f"origin/{main_branch}"
+        orig_res = run_fn(["git", "-C", str(repo_dir), "rev-parse", origin_ref])
+        if orig_res.get("returncode", 1) == 0:
+            upstream_name = origin_ref
+            remote_head = (orig_res.get("stdout") or "").strip()
+
+    local_main_head = local_head
+    if local_branch != main_branch:
+        mb_res = run_fn(["git", "-C", str(repo_dir), "rev-parse", main_branch])
+        if mb_res.get("returncode", 1) == 0:
+            local_main_head = (mb_res.get("stdout") or "").strip()
+
+    synced = bool(upstream_name) and local_main_head == remote_head and (
+        local_branch == main_branch
+    )
+    ancestry = []
+    merges = []
+    if pr_section.get("state") == "ok":
+        pr_map = {row["pr"]: row for row in pr_section.get("pull_requests", [])}
+        for pr_num, detail in by_pr.items():
+            host = pr_map.get(pr_num) or {}
+            accepted_sha = detail.get("accepted_sha") or ""
+            merge_sha = host.get("merge_sha") or ""
+            if not (ACCEPTANCE.is_sha(accepted_sha) and ACCEPTANCE.is_sha(merge_sha)):
+                continue
+            levels = detail.get("levels") if isinstance(detail.get("levels"), dict) else {}
+            merged_lvl = levels.get("merged") if isinstance(levels.get("merged"), dict) else {}
+            if merged_lvl.get("shape") == "equivalence":
+                diff_res = run_fn(
+                    ["git", "-C", str(repo_dir), "diff", "--quiet", accepted_sha, merge_sha]
+                )
+                merges.append({
+                    "accepted_sha": accepted_sha,
+                    "merge_sha": merge_sha,
+                    "diff_empty": diff_res.get("returncode", 1) == 0,
+                })
+            else:
+                anc_res = run_fn(
+                    ["git", "-C", str(repo_dir), "merge-base", "--is-ancestor", accepted_sha, merge_sha]
+                )
+                ancestry.append({
+                    "ancestor": accepted_sha,
+                    "descendant": merge_sha,
+                    "result": anc_res.get("returncode", 1) == 0,
+                })
+            if ACCEPTANCE.is_sha(remote_head):
+                main_res = run_fn(
+                    ["git", "-C", str(repo_dir), "merge-base", "--is-ancestor", merge_sha, remote_head]
+                )
+                ancestry.append({
+                    "ancestor": merge_sha,
+                    "descendant": remote_head,
+                    "result": main_res.get("returncode", 1) == 0,
+                })
+    return {
+        "state": "ok",
+        "reason": "",
+        "ancestry": ancestry,
+        "merges": merges,
+        "main": {
+            "branch": main_branch,
+            "head": remote_head,
+            "local_branch": local_branch,
+            "local_head": local_main_head,
+            "upstream": upstream_name,
+            "clean": clean,
+            "synced": synced,
+        },
+    }
+
+
+def _collect_tickets(records, pr_section, git_section):
+    accepted_tickets = sorted({
+        str(record["detail"].get("ticket"))
+        for record in records
+        if record.get("kind") == "acceptance"
+        and isinstance(record.get("detail"), dict)
+        and ACCEPTANCE.is_nonempty(record["detail"].get("ticket"))
+    })
+    if not accepted_tickets:
+        return {"state": "ok", "reason": "", "tickets": []}
+    if pr_section.get("state") != "ok" or git_section.get("state") != "ok":
+        return _unknown_section("cannot derive ticket integration without pr_host and git")
+    main_head = (git_section.get("main") or {}).get("head") or ""
+    ancestry = git_section.get("ancestry") or []
+    pr_by_num = {row.get("pr"): row for row in pr_section.get("pull_requests", [])}
+    rows = []
+    for ticket in accepted_tickets:
+        pr_nums = [
+            ACCEPTANCE.as_int((record["detail"].get("pr") or {}).get("number"))
+            for record in records
+            if record.get("kind") == "acceptance"
+            and isinstance(record.get("detail"), dict)
+            and record["detail"].get("ticket") == ticket
+        ]
+        integrated = True
+        evidence_ref = ""
+        for pr_num in pr_nums:
+            host = pr_by_num.get(pr_num)
+            if not host or str(host.get("state", "")).upper() != "MERGED":
+                integrated = False
+                break
+            merge_sha = host.get("merge_sha") or ""
+            in_main = any(
+                item.get("ancestor") == merge_sha
+                and item.get("descendant") == main_head
+                and item.get("result") is True
+                for item in ancestry
+            )
+            if not in_main:
+                integrated = False
+                break
+            evidence_ref = f"git:ancestry:{merge_sha}..{main_head}"
+        rows.append({
+            "ticket": ticket,
+            "integrated": bool(pr_nums) and integrated,
+            "evidence_ref": evidence_ref,
+        })
+    return {"state": "ok", "reason": "", "tickets": rows}
+
+
+def _collect_tracker(records, repo_dir, run_fn):
+    tickets = sorted({
+        str(record["detail"].get("ticket"))
+        for record in records
+        if record.get("kind") == "acceptance"
+        and isinstance(record.get("detail"), dict)
+        and ACCEPTANCE.is_nonempty(record["detail"].get("ticket"))
+    })
+    if not tickets:
+        return {"state": "ok", "reason": "", "tickets": []}
+    rows = []
+    for ticket in tickets:
+        issue_num = ticket.lstrip("#")
+        if not issue_num.isdigit():
+            return _unknown_section(f"cannot map non-numeric ticket {ticket!r} without explicit authority")
+        res = run_fn(
+            ["gh", "issue", "view", issue_num, "--json", "state,closedAt"],
+            cwd=repo_dir,
+        )
+        if res.get("returncode", 1) != 0:
+            return _unknown_section(f"gh issue view {issue_num} failed")
+        parsed = _COMMON.json_object(res.get("stdout", ""))
+        if not parsed:
+            return _unknown_section(f"gh issue view {issue_num} did not return JSON")
+        raw_state = str(parsed.get("state") or "").upper()
+        state = "closed" if raw_state == "CLOSED" else "open" if raw_state == "OPEN" else raw_state.lower()
+        rows.append({
+            "ticket": ticket,
+            "state": state,
+            "closed_at": parsed.get("closedAt"),
+        })
+    return {"state": "ok", "reason": "", "tickets": rows}
+
+
+def _collect_workers(run_id, orca_cli, run_fn):
+    cli = orca_cli or _COMMON.resolve_orca_cli()
+    res = run_fn(
+        [cli, "orchestration", "worker-list", "--run", run_id, "--include-remote", "--json"]
+    )
+    if res.get("returncode", 1) != 0:
+        return _unknown_section(
+            f"orca worker-list failed: {(res.get('stderr') or '').strip() or 'unavailable'}"
+        )
+    parsed = _COMMON.json_object(res.get("stdout", ""))
+    if parsed is None or parsed.get("ok") is False:
+        return _unknown_section("orca worker-list returned invalid JSON")
+    inner = parsed.get("result", parsed)
+    raw_workers = inner.get("workers") if isinstance(inner, dict) else None
+    if not isinstance(raw_workers, list):
+        return _unknown_section("orca worker-list did not include a workers list")
+    rows = []
+    for entry in raw_workers:
+        if not isinstance(entry, dict):
+            continue
+        wstate = entry.get("workerState") or entry.get("worker_state") or entry.get("status") or ""
+        rows.append({
+            "dispatch_id": entry.get("dispatchId") or entry.get("dispatch_id") or "",
+            "task_id": entry.get("taskId") or entry.get("task_id") or "",
+            "attempt": ACCEPTANCE.as_int(entry.get("attempt")) or 1,
+            "worktree": entry.get("worktree") or entry.get("worktreePath") or "",
+            "worker_state": str(wstate),
+        })
+    return {"state": "ok", "reason": "", "rows": rows}
+
+
+def _collect_dashboard(progress_path):
+    if not progress_path:
+        return {"state": "ok", "reason": "no progress projection path supplied"}
+    path = Path(progress_path)
+    if not path.is_file():
+        return {"state": "ok", "reason": "progress.json missing (non-authoritative)", "gap": {"missing": True}}
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return {"state": "ok", "reason": f"progress.json unreadable: {error}", "gap": {"unreadable": True}}
+    return {"state": "ok", "reason": "non-authoritative projection read"}
+
+
+def collect_live_authority(
+    repo_dir,
+    *,
+    run_id,
+    records,
+    progress_path=None,
+    orca_cli=None,
+    runner=None,
+    overrides=None,
+):
+    """Collect closeout authority sections from read-only git, gh, and orca probes.
+
+    Explicit entries in ``overrides`` take precedence over live collection. Unavailable
+    external commands degrade cleanly to ``state: 'unknown'``.
+    """
+    run_fn = runner or _COMMON.run_command
+    base = dict(overrides or {})
+    by_pr, _ = _accepted_pr_rows(records)
+
+    pr_host = base.get("pr_host")
+    if pr_host is None:
+        pr_host = _collect_pr_host(by_pr, repo_dir, run_fn)
+
+    git_section = base.get("git")
+    if git_section is None:
+        git_section = _collect_git(by_pr, pr_host, repo_dir, run_fn)
+
+    tickets_section = base.get("tickets")
+    if tickets_section is None:
+        tickets_section = _collect_tickets(records, pr_host, git_section)
+
+    tracker_section = base.get("tracker")
+    if tracker_section is None:
+        tracker_section = _collect_tracker(records, repo_dir, run_fn)
+
+    workers_section = base.get("workers")
+    if workers_section is None:
+        workers_section = _collect_workers(run_id, orca_cli, run_fn)
+
+    dashboard_section = base.get("dashboard")
+    if dashboard_section is None:
+        dashboard_section = _collect_dashboard(progress_path)
+
+    collected = {
+        "pr_host": pr_host,
+        "git": git_section,
+        "tickets": tickets_section,
+        "tracker": tracker_section,
+        "workers": workers_section,
+        "dashboard": dashboard_section,
+    }
+    if "release" in base:
+        collected["release"] = base["release"]
+    return collected
+
+
+class LiveCloseoutAuthority:
+    """Authority adapter collecting git/gh/orca facts on demand with optional overrides."""
+
+    def __init__(self, repo_dir=".", *, progress_path=None, orca_cli=None, runner=None, overrides=None):
+        self.repo_dir = str(repo_dir or ".")
+        self.progress_path = progress_path
+        self.orca_cli = orca_cli
+        self.runner = runner
+        self.overrides = dict(overrides or {})
+
+    def facts(self, run_id, records):
+        return collect_live_authority(
+            self.repo_dir,
+            run_id=run_id,
+            records=records,
+            progress_path=self.progress_path,
+            orca_cli=self.orca_cli,
+            runner=self.runner,
+            overrides=self.overrides,
+        )
+
+
 def command_plan(args):
     recorded = _read_json(args.facts)
     if not isinstance(recorded, dict) or recorded.get("run_id") != args.run_id:
         _invalid("the facts file belongs to another run")
     checklist = plan(recorded)
-    _emit(checklist)
+    _emit(_compact_closeout({"checklist": checklist}) if getattr(args, "compact", False) else checklist,
+          compact=getattr(args, "compact", False))
     return 0
 
 
@@ -2069,9 +2457,19 @@ def command_reconcile(args, home):
         _invalid("the authority file may only supply " + ", ".join(AUTHORITY_SECTIONS)
                  + "; unknown: " + ", ".join(unknown)
                  + "; run --print-schema for each section's row shape")
-    result = reconcile(args.run_id, RecordedFacts(recorded), home=home,
+    if getattr(args, "live", False):
+        authority = LiveCloseoutAuthority(
+            repo_dir=getattr(args, "repo", ".") or ".",
+            progress_path=getattr(args, "progress", None),
+            orca_cli=getattr(args, "orca", None),
+            overrides=recorded,
+        )
+    else:
+        authority = RecordedFacts(recorded)
+    result = reconcile(args.run_id, authority, home=home,
                        answer_location=args.answer_location)
-    _emit(result)
+    compact = getattr(args, "compact", False)
+    _emit(_compact_closeout(result) if compact else result, compact=compact)
     return 0 if result["recorded"] else 1
 
 
@@ -2079,12 +2477,13 @@ def command_show(args, home):
     records, unknown = LEDGER.effective_records(args.run_id, home=home)
     history = unknown if unknown is not None else {"state": "ok", "reason": ""}
     records = [record for record in records if record.get("kind") == "closeout"]
+    compact = getattr(args, "compact", False)
     if not records:
-        _emit({"found": False, "run_id": args.run_id, "history": history})
+        _emit({"found": False, "run_id": args.run_id, "history": history}, compact=compact)
         return 1
     record = records[-1]
     detail = record.get("detail") if isinstance(record.get("detail"), dict) else {}
-    _emit({
+    payload = {
         "found": True,
         "run_id": args.run_id,
         "record_id": record["record_id"],
@@ -2092,7 +2491,8 @@ def command_show(args, home):
         "checklist": detail.get("checklist"),
         "closeout": detail,
         "history": history,
-    })
+    }
+    _emit(_compact_closeout(payload) if compact else payload, compact=compact)
     return 0
 
 
@@ -2109,7 +2509,8 @@ def command_failure_record(args, home):
             "at": args.release_at,
             "version_scope": args.version_scope,
         })
-    _emit(result)
+    compact = getattr(args, "compact", False)
+    _emit(_compact_closeout(result) if compact else result, compact=compact)
     return 0 if result["recorded"] else 1
 
 
@@ -2125,7 +2526,8 @@ def command_failure_plan(args, home):
         evidence_refs=args.evidence_refs or [],
         answer_location=args.answer_location or "",
         read_back_path=args.read_back if args.read_back != "-" else "")
-    _emit(result)
+    compact = getattr(args, "compact", False)
+    _emit(_compact_closeout(result) if compact else result, compact=compact)
     return 0
 
 
@@ -2142,6 +2544,7 @@ def main(argv=None):
     plan_parser.add_argument("--run-id", required=True)
     plan_parser.add_argument("--facts", required=True, metavar="FILE",
                              help="facts JSON, or - for stdin")
+    plan_parser.add_argument("--compact", action="store_true")
 
     reconcile_parser = sub.add_parser(
         "reconcile", help="read authority, reconcile and persist one closeout record")
@@ -2152,9 +2555,17 @@ def main(argv=None):
     reconcile_parser.add_argument(
         "--answer-location", required=True,
         help="where this ticket's Answer lives; stored on the closeout record")
+    reconcile_parser.add_argument(
+        "--live", action="store_true",
+        help="collect live git, gh, and orca worker-list authority (overridden by --authority)")
+    reconcile_parser.add_argument("--repo", default=".", help="repository path for --live git/gh checks")
+    reconcile_parser.add_argument("--progress", help="optional progress.json path for row 9")
+    reconcile_parser.add_argument("--orca", help="Orca executable for --live")
+    reconcile_parser.add_argument("--compact", action="store_true")
 
     show_parser = sub.add_parser("show", help="print the last persisted checklist")
     show_parser.add_argument("--run-id", required=True)
+    show_parser.add_argument("--compact", action="store_true")
 
     failure_record_parser = sub.add_parser(
         "failure-record",
@@ -2179,6 +2590,7 @@ def main(argv=None):
     failure_record_parser.add_argument("--release-at", default="")
     failure_record_parser.add_argument("--version-scope",
                                        default=FAILURE_VERSION_SCOPE)
+    failure_record_parser.add_argument("--compact", action="store_true")
 
     failure_plan_parser = sub.add_parser(
         "failure-plan",
@@ -2195,6 +2607,7 @@ def main(argv=None):
     failure_plan_parser.add_argument("--evidence-ref", action="append",
                                      dest="evidence_refs", metavar="REF")
     failure_plan_parser.add_argument("--answer-location")
+    failure_plan_parser.add_argument("--compact", action="store_true")
 
     args = parser.parse_args(argv)
     if args.print_schema:

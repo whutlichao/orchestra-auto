@@ -1356,6 +1356,66 @@ class CommandLineTests(PreflightTestCase):
         self.assertEqual(report["review_exemption"]["status"], "revoked")
         self.assertIn("unexpected", report["review_exemption"]["reason"])
 
+    def test_inspect_spec_and_direct_cli_check_without_temp_files(self):
+        fake = self.make_fake("fake-direct")
+        guide_file = self.root / "guide.md"
+        guide_file.write_text("# orchestration\nOrca wakes you.\n", encoding="utf-8")
+        skill_file = self.root / "tdd-skill" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# TDD\n", encoding="utf-8")
+
+        spec_file = self.root / "worker-spec.md"
+        spec_file.write_text(
+            "【BEHAVIOR RULE】\n"
+            f"Pre-skill:\n- Name: tdd\n- Explicit invocation: unverified\n- File location: {skill_file}\n"
+            "Type: impl\nGates: G-impl\nTest tier: targeted\n"
+            "Target: foo.py\nChange: add helper\nConstraints: keep API\n"
+            "Ownership: foo.py and test_foo.py\n"
+            "Observable acceptance: pytest passes, code-review run, git status and formatter checked\n",
+            encoding="utf-8",
+        )
+        inspect_ok = self.run_cli(
+            "inspect-spec", "--spec", str(spec_file), "--type", "impl", "--compact",
+            env=self.cli_env(fake),
+        )
+        self.assertEqual(inspect_ok.returncode, 0, inspect_ok.stderr)
+        self.assertTrue(json.loads(inspect_ok.stdout)["ok"])
+
+        bad_spec = self.root / "bad-spec.md"
+        bad_spec.write_text(
+            "Pre-skill:\n- File location: /no/such/skill/SKILL.md\nTarget: <files/modules>\n",
+            encoding="utf-8",
+        )
+        inspect_bad = self.run_cli(
+            "inspect-spec", "--spec", str(bad_spec), "--type", "impl", "--compact",
+            env=self.cli_env(fake),
+        )
+        self.assertEqual(inspect_bad.returncode, 1)
+        self.assertFalse(json.loads(inspect_bad.stdout)["ok"])
+
+        direct = self.run_cli(
+            "check", "--run-id", RUN_ID,
+            "--ticket-id", "42", "--type", "impl", "--gate", "G-impl", "--origin", "GH#42",
+            "--spec", str(spec_file),
+            "--guide", str(guide_file), "--guide-fetched-at", CHECKED_AT,
+            "--round-started-at", ROUND_START,
+            "--channel-note", "channel B", "--worktree-note", "isolated",
+            "--long-horizon-note", "single", "--main-rule-note", "checked",
+            "--canonical-note", "GH#42",
+            "--legacy-migrated", "--migration-ref", "migrated",
+            "--native-wake", "--wake-source", "live_preamble", "--wake-evidence", "preamble",
+            "--compact",
+            env=self.cli_env(fake),
+        )
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        self.assertEqual(len(direct.stdout.strip().splitlines()), 1)
+        summary = json.loads(direct.stdout)
+        self.assertTrue(summary["allowed"])
+        self.assertTrue(summary["spec_inspection"]["ok"])
+        records = self.ledger_records(kind="preflight")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records[0]["detail"]["items"]), len(self.preflight.ITEM_ORDER))
+
 
 if __name__ == "__main__":
     unittest.main()

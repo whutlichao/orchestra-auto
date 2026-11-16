@@ -62,26 +62,21 @@ import sys
 SCHEMA_VERSION = 1
 
 
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_chain_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
+
+
 def _load_ledger():
     """Import the sibling ``ledger.py`` by path: effective history is reused, not copied."""
-    path = Path(__file__).with_name("ledger.py")
-    spec = importlib.util.spec_from_file_location("orca_chain_ledger", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot build an import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _COMMON.load_sibling(__file__, "ledger.py", alias="orca_chain_ledger")
 
 
 def _load_flow():
     """Import the sibling ``flow.py`` by path: the flow contract stays in one module."""
-    path = Path(__file__).with_name("flow.py")
-    spec = importlib.util.spec_from_file_location("orca_chain_flow", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot build an import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _COMMON.load_sibling(__file__, "flow.py", alias="orca_chain_flow")
 
 
 LEDGER = _load_ledger()
@@ -549,11 +544,7 @@ def ledger_path(run_id, home=None):
 
 
 def _resolve_flow_path(args):
-    """The explicit flow file wins, then the flow home, then the ledger's own Run directory.
-
-    Placing ``flow.jsonl`` beside ``ledger.jsonl`` by default means a coordinator who already
-    points the ledger somewhere does not have to point the flow somewhere else.
-    """
+    """The explicit flow file wins, then flow_home, then beside ledger, then $ORCA_FLOW_HOME."""
     if getattr(args, "flow", None):
         return Path(args.flow)
     home = getattr(args, "flow_home", None)
@@ -561,12 +552,18 @@ def _resolve_flow_path(args):
         return FLOW.flow_path(args.run_id, home)
     ledger_home = getattr(args, "ledger_home", None)
     if ledger_home:
-        return Path(ledger_home) / "runs" / args.run_id / "flow.jsonl"
+        beside_ledger = Path(ledger_home) / "runs" / args.run_id / "flow.jsonl"
+        if beside_ledger.exists():
+            return beside_ledger
+        default_flow = FLOW.flow_path(args.run_id)
+        if default_flow.exists():
+            return default_flow
+        return beside_ledger
     return FLOW.flow_path(args.run_id)
 
 
-def _emit(payload):
-    print(json.dumps(payload, ensure_ascii=False, indent=1))
+def _emit(payload, *, compact=False):
+    _COMMON.emit_json(payload, compact=compact, indent=None if compact else 1)
 
 
 def main(argv=None):
@@ -574,7 +571,8 @@ def main(argv=None):
     parser.add_argument("--version", action="version", version="chain " + str(SCHEMA_VERSION))
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("steps", help="print the chain positions, their gates and their steps")
+    steps_parser = subparsers.add_parser("steps", help="print the chain positions, their gates and their steps")
+    steps_parser.add_argument("--compact", action="store_true")
 
     resume_parser = subparsers.add_parser("resume", help="read the ledger and name the next position")
     resume_parser.add_argument("--run-id", required=True)
@@ -584,6 +582,7 @@ def main(argv=None):
                               help="explicit process record; defaults beside the ledger")
     resume_parser.add_argument("--flow-home", default=None,
                               help="home holding runs/<id>/flow.jsonl")
+    resume_parser.add_argument("--compact", action="store_true")
 
     check_parser = subparsers.add_parser("exit-check", help="check one step's artifact")
     check_parser.add_argument("--step", required=True, choices=STEP_IDS)
@@ -592,11 +591,14 @@ def main(argv=None):
     check_parser.add_argument("--source", default=None, choices=TICKET_SOURCES,
                               help="ticket format: list (combined ## blocks), file (one local "
                                    "ticket) or issue (one issue body); detected when omitted")
+    check_parser.add_argument("--compact", action="store_true")
 
     args = parser.parse_args(argv)
+    compact = bool(getattr(args, "compact", False))
 
     if args.command == "steps":
-        _emit({"version": SCHEMA_VERSION, "positions": list(POSITIONS), "steps": list(STEPS)})
+        _emit({"version": SCHEMA_VERSION, "positions": list(POSITIONS), "steps": list(STEPS)},
+              compact=compact)
         return 0
 
     if args.command == "resume":
@@ -613,7 +615,7 @@ def main(argv=None):
                 answer["ready"] = []
                 answer["evidence_gaps"] = answer["evidence_gaps"] + [
                     "the flow file has invalid records; resolve them before resuming"]
-            _emit(answer)
+            _emit(answer, compact=compact)
             return 0 if answer["state"] != "uncertain" else 1
         records, problems, unknown = load_effective_records(path)
         legacy = {"state": "legacy",
@@ -625,13 +627,13 @@ def main(argv=None):
             _emit({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
                    "state": "unknown", "landed": [], "next": None,
                    "reason": unknown["reason"], "history": unknown, "legacy": legacy,
-                   "problems": problems})
+                   "problems": problems}, compact=compact)
             return 0
         answer = next_step(records)
         answer.update({"version": SCHEMA_VERSION, "run_id": args.run_id, "ledger": str(path),
                        "history": {"state": "ok", "reason": ""}, "problems": problems,
                        "legacy": legacy})
-        _emit(answer)
+        _emit(answer, compact=compact)
         return 0
 
     if args.command == "exit-check":
@@ -639,7 +641,7 @@ def main(argv=None):
         missing = [str(path) for path in artifacts if not path.exists()]
         if missing:
             _emit({"version": SCHEMA_VERSION, "step": args.step, "passed": False,
-                   "errors": ["artifact not found: " + path for path in missing]})
+                   "errors": ["artifact not found: " + path for path in missing]}, compact=compact)
             return 1
         errors = []
         report = None
@@ -663,7 +665,7 @@ def main(argv=None):
                             source=args.source or "file", base_dir=artifact.parent))
         except AmbiguousArtifact as exc:
             _emit({"version": SCHEMA_VERSION, "step": args.step, "passed": False,
-                   "errors": [str(exc)]})
+                   "errors": [str(exc)]}, compact=compact)
             return 2
         payload = {"version": SCHEMA_VERSION, "step": args.step,
                    "artifacts": [str(path) for path in artifacts],
@@ -673,7 +675,7 @@ def main(argv=None):
             payload["dispatch"] = report["dispatch"]
         if len(artifacts) == 1:
             payload["artifact"] = str(artifacts[0])
-        _emit(payload)
+        _emit(payload, compact=compact)
         return 0 if not errors else 1
 
     parser.print_usage(sys.stderr)

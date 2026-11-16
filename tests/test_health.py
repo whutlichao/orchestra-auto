@@ -1429,6 +1429,99 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
             self.health.evaluate_to_ledger(
                 RUN_ID, snapshot, ledger_module=self.FakeLedger())
 
+    def test_native_mode_evaluates_without_retired_inbox_and_scopes_nested_roster(self):
+        snapshot = {
+            "observed_at": NOW,
+            "mode": "native",
+            "watch": {"enabled": True},
+            "worker_list": {"observed_at": NOW, "active_workers": 1},
+            "worker_show": {"observed_at": NOW, "status": "running", "worker_done": None, "agent_wait": None},
+            "turnStart": {"status": "observed", "observed_at": at(30), "dispatched_at": at(40)},
+            "last_effective_progress": {"rounds_without_progress": 0},
+            "reclaimable": {"terminals": []},
+            "long_horizon": False,
+        }
+        res = self.health.evaluate(snapshot)
+        self.assertEqual(res["state"], "healthy", res)
+        long_missing = dict(snapshot, long_horizon=True)
+        res_long = self.health.evaluate(long_missing)
+        self.assertNotEqual(res_long["state"], "healthy")
+
+    def test_collect_signals_builds_native_snapshot_and_degrades_gracefully(self):
+        def fake_runner(argv):
+            if "worker-list" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True,
+                    "result": {"workers": [
+                        {"dispatchId": "d1", "workerState": "running"},
+                        {"dispatchId": "d2", "workerState": "reclaimable", "settled": True},
+                    ]},
+                })}
+            if "worker-show" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True,
+                    "result": {"worker": {"workerState": "reclaimable", "settled": True}},
+                })}
+            return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self.health.collect_signals(
+                RUN_ID, dispatch_id="d2", ledger_home=tmp, runner=fake_runner, observed_at=NOW
+            )
+            self.assertEqual(snap["mode"], "native")
+            self.assertEqual(snap["worker_list"]["active_workers"], 1)
+            self.assertEqual(len(snap["reclaimable"]["terminals"]), 1)
+            evaluated = self.health.evaluate(snap)
+            self.assertIn(evaluated["state"], self.health.STATES)
+
+            broken = self.health.collect_signals(
+                RUN_ID, ledger_home=tmp,
+                runner=lambda _argv: {"returncode": 127, "stdout": "", "stderr": "missing"},
+                observed_at=NOW,
+            )
+            self.assertEqual(broken["mode"], "native")
+            self.assertNotIn("worker_list", broken)
+
+    def test_disk_pending_survives_cleared_memory_and_retries(self):
+        real_ledger = load_ledger(SKILL_DIRS[0]) if "load_ledger" in globals() else self.health.load_ledger()
+
+        class FailingOnceDiskLedger:
+            def __init__(self, fail_first=True):
+                self.fail_first = fail_first
+
+            def home_path(self, home=None):
+                return real_ledger.home_path(home)
+
+            def read(self, run_id, filters=None, home=None):
+                return real_ledger.read(run_id, filters, home=home)
+
+            def append(self, record, home=None):
+                if self.fail_first:
+                    self.fail_first = False
+                    raise OSError("transient write error")
+                return real_ledger.append(record, home=home)
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = str(Path(raw_tmp).resolve())
+            ledger_wrapper = FailingOnceDiskLedger(fail_first=True)
+            payload = self.health.evaluate_to_ledger(
+                RUN_ID, self.healthy_signals(run_id=RUN_ID),
+                ledger_home=tmp, ledger_module=ledger_wrapper,
+            )
+            self.assertFalse(payload["recorded"])
+            self.assertTrue(payload.get("retry_path"))
+            self.assertTrue(Path(payload["retry_path"]).is_file())
+            # Simulate process restart losing in-memory pending queue
+            self.health._PENDING_RECORDS.clear()
+            retried = self.health.retry_pending(
+                ledger_home=tmp, ledger_module=real_ledger, run_id=RUN_ID,
+            )
+            self.assertEqual(retried["retried"], [payload["record_id"]])
+            self.assertEqual(retried["still_pending"], [])
+            self.assertFalse(Path(payload["retry_path"]).exists())
+            stored = real_ledger.read(RUN_ID, {"kind": "health"}, home=tmp)
+            self.assertEqual([r["record_id"] for r in stored], [payload["record_id"]])
+
 
 if __name__ == "__main__":
     unittest.main()

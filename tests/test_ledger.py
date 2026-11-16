@@ -2442,6 +2442,34 @@ class ReconcileCliTests(LedgerTestCase):
                 result = self.run_cli(*arguments)
                 self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_status_command_summarizes_run_in_one_compact_call(self):
+        result = self.run_cli("status", "--run-id", RUN_ID, "--compact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.strip().splitlines()), 1)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["run_id"], RUN_ID)
+        self.assertEqual(payload["total_records"], 1)
+        self.assertEqual([item["request_id"] for item in payload["open_intents"]],
+                         [self.intent["request_id"]])
+
+    def test_cached_terminal_result_skips_request_show_unless_refreshed(self):
+        self.append(result_record(
+            self.intent,
+            state="completed",
+            detail={"raw_receipt": {"state": "completed", "dispatchId": "dispatch-1"}},
+        ))
+        fake = self.fake()
+        first = self.reconcile(fake)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_calls = [call[1] for call in fake.call_argv()]
+        self.assertNotIn("request-show", first_calls)
+
+        fake_refresh = self.fake()
+        second = self.reconcile(fake_refresh, "--refresh-requests")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        refresh_calls = [call[1] for call in fake_refresh.call_argv()]
+        self.assertIn("request-show", refresh_calls)
+
 
 class ProjectionRepairTests(LedgerTestCase):
     """An authority-supplied binding updates only the projection, as an observation."""

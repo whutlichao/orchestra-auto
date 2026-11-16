@@ -27,6 +27,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,12 @@ import re
 import subprocess
 import sys
 import uuid
+
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_ledger_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
 
 SCHEMA_VERSION = 1
 
@@ -85,14 +92,7 @@ DEFAULT_CLI = "orca"
 
 def resolve_orca_cli():
     """Follow the version-matched Orca discovery stub without fallback."""
-    if CLI_ENV in os.environ:
-        return os.environ[CLI_ENV]
-    if os.environ.get("ORCA_DEV_REPO_ROOT"):
-        return "orca-dev"
-    if sys.platform.startswith("linux") and not (
-            os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
-        return "orca-ide"
-    return DEFAULT_CLI
+    return _COMMON.resolve_orca_cli()
 
 CLI_TIMEOUT_SECONDS = 30
 PAGE_LIMIT = 100
@@ -419,11 +419,7 @@ def _write_all(fd, data):
 
 
 def _fsync_directory(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    _COMMON.fsync_directory(path)
 
 
 def _env_int(name, default):
@@ -2510,11 +2506,13 @@ class LiveAuthority:
     """
 
     def __init__(self, orca_cli=None, pr_host=None, tracker=None, git=None,
-                 timeout=CLI_TIMEOUT_SECONDS, progress=None):
+                 timeout=CLI_TIMEOUT_SECONDS, progress=None,
+                 refresh_completed=False):
         self.orca_cli = orca_cli
         self.hosts = {"pr_host": pr_host, "tracker": tracker, "git": git}
         self.timeout = timeout
         self.progress = progress
+        self.refresh_completed = refresh_completed
 
     def _call(self, argv):
         command = _orca_command(self.orca_cli)
@@ -2561,19 +2559,38 @@ class LiveAuthority:
                 "receipt": receipt}
 
     def _request_show(self, records):
-        """Read every keyed intent's receipt, not only the ones still open.
+        """Read keyed intents' receipts, reusing terminal ledger receipts when cached.
 
-        Reading a completed intent's receipt too keeps the snapshot facts stable
-        across reconciliations: the second run must not look like a different
-        authority read merely because the first run recorded the result.
+        Reading an already-completed intent's receipt keeps the snapshot digest
+        stable across reconciliations without spawning an Orca subprocess for
+        every historical intent in a long-horizon run. Pass
+        ``refresh_completed=True`` to re-query Orca for already-settled intents.
         """
+        cached = {}
+        if not self.refresh_completed:
+            for record in records:
+                if record.get("kind") != "result" or not record.get("request_id"):
+                    continue
+                if record.get("state") not in ("completed", "failed", "refused"):
+                    continue
+                detail = record.get("detail")
+                if isinstance(detail, dict) and isinstance(detail.get("raw_receipt"), dict):
+                    cached[record["request_id"]] = {
+                        "state": record["state"],
+                        "reason": str(detail.get("request_reason", "")),
+                        "receipt": copy.deepcopy(detail["raw_receipt"]),
+                    }
         entries = {}
         for record in records:
             if record["kind"] != "intent" or not record["request_id"]:
                 continue
-            if record["request_id"] in entries:
+            request_id = record["request_id"]
+            if request_id in entries:
                 continue
-            entries[record["request_id"]] = self._request_show_one(record["request_id"])
+            if request_id in cached:
+                entries[request_id] = cached[request_id]
+            else:
+                entries[request_id] = self._request_show_one(request_id)
         return entries
 
     def _page(self, argv, rows_key, normalize):
@@ -2782,6 +2799,179 @@ def _subject_filters(items):
     return filters
 
 
+def _resolve_flow_file(run_id, home, flow_file=None, flow_home=None):
+    if flow_file:
+        candidate = Path(flow_file)
+        return candidate if candidate.exists() else None
+    candidates = []
+    if flow_home:
+        candidates.append(Path(flow_home) / RUNS_DIR / run_id / "flow.jsonl")
+    candidates.append(home / RUNS_DIR / run_id / "flow.jsonl")
+    env_home = os.environ.get("ORCA_FLOW_HOME")
+    if env_home:
+        candidates.append(Path(env_home).expanduser() / RUNS_DIR / run_id / "flow.jsonl")
+    candidates.append(Path("~/.orca/flows").expanduser() / RUNS_DIR / run_id / "flow.jsonl")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def run_status(run_id, *, home=None, flow_file=None, flow_home=None):
+    """Aggregate flow, health, open intents, unresolved pending items, acceptance and workers."""
+    _portable_identifier(run_id, "run_id")
+    root = home_path(home)
+    records, unknown = effective_records(run_id, home=root)
+    active_records, corrupt = read_report(run_id, home=root)
+    summary = _summarize(run_id, active_records, corrupt)
+
+    resolved_pending = set()
+    for record in records:
+        if record["kind"] == "observation" and isinstance(record.get("detail"), dict):
+            detail = record["detail"]
+            if detail.get("status") == "resolved" and detail.get("pending_record_id"):
+                resolved_pending.add(detail["pending_record_id"])
+
+    result_keys = {
+        record["request_id"] for record in records
+        if record["kind"] == "result" and record["request_id"]
+    }
+    open_intents = [
+        {"record_id": record["record_id"], "action": record["action"],
+         "request_id": record["request_id"], "subject": record["subject"]}
+        for record in records
+        if record["kind"] == "intent"
+        and (not record["request_id"] or record["request_id"] not in result_keys)
+    ]
+    unresolved_pending = []
+    for record in records:
+        if record["kind"] != "pending" or record["record_id"] in resolved_pending:
+            continue
+        detail = record.get("detail") or {}
+        unresolved_pending.append({
+            "record_id": record["record_id"],
+            "type": detail.get("pending_type") or detail.get("decision_class") or "pending",
+            "ticket": detail.get("ticket") or record["subject"].get("ticket"),
+            "pr": detail.get("pr") or record["subject"].get("pr"),
+            "reason": detail.get("reason") or detail.get("condition") or "",
+        })
+
+    health_records = [record for record in records if record["kind"] == "health"]
+    latest_health = None
+    if health_records:
+        last_h = health_records[-1]
+        h_detail = last_h.get("detail") or {}
+        latest_health = {
+            "state": h_detail.get("health_state", "unknown"),
+            "entered_at": h_detail.get("entered_at", last_h["observed_at"]),
+            "observed_at": last_h["observed_at"],
+            "next_action": h_detail.get("next_action", ""),
+        }
+
+    acceptance_by_ticket = {}
+    for record in records:
+        if record["kind"] != "acceptance":
+            continue
+        detail = record.get("detail") or {}
+        ticket = detail.get("ticket") or record["subject"].get("ticket")
+        if not ticket:
+            continue
+        levels = detail.get("levels") or {}
+        acceptance_by_ticket[ticket] = {
+            "ticket": ticket,
+            "gate": detail.get("gate", []),
+            "attempt": detail.get("attempt"),
+            "accepted_sha": detail.get("accepted_sha", ""),
+            "levels": {
+                name: (entry.get("terminal") or entry.get("value"))
+                for name, entry in levels.items() if isinstance(entry, dict)
+            },
+        }
+
+    closeouts = [record for record in records if record["kind"] == "closeout"]
+    latest_closeout = None
+    if closeouts:
+        last_c = closeouts[-1]
+        c_detail = last_c.get("detail") or {}
+        latest_closeout = {
+            "record_id": last_c["record_id"],
+            "outcome": c_detail.get("outcome") or last_c["state"],
+            "classification": c_detail.get("classification", ""),
+            "observed_at": last_c["observed_at"],
+        }
+
+    workers = {}
+    for record in records:
+        subject = record.get("subject") or {}
+        dispatch_id = subject.get("dispatch_id")
+        detail = record.get("detail") or {}
+        if not dispatch_id and isinstance(detail.get("raw_receipt"), dict):
+            dispatch_id = detail["raw_receipt"].get("dispatchId") or detail["raw_receipt"].get("dispatch_id")
+        if dispatch_id:
+            entry = workers.setdefault(dispatch_id, {
+                "dispatch_id": dispatch_id,
+                "task_id": subject.get("task_id", ""),
+                "attempt": subject.get("attempt"),
+                "ticket": subject.get("ticket", ""),
+            })
+            if detail.get("worktree"):
+                entry["worktree"] = detail["worktree"]
+        if record["kind"] == "closeout" and isinstance(detail.get("mapping"), list):
+            for row in detail["mapping"]:
+                did = row.get("dispatch_id")
+                if did:
+                    workers[did] = {**workers.get(did, {}), **row}
+
+    flow_summary = None
+    flow_path = _resolve_flow_file(run_id, root, flow_file=flow_file, flow_home=flow_home)
+    if flow_path is not None:
+        flow_mod = _COMMON.load_sibling(__file__, "flow.py", "orca_ledger_flow")
+        flow_records, flow_problems = flow_mod.read_records(flow_path)
+        plan = flow_mod.plan(flow_records)
+        if flow_problems and plan["state"] != "uncertain":
+            plan["state"] = "uncertain"
+            plan["ready"] = []
+        flow_summary = {
+            "path": str(flow_path),
+            "state": plan["state"],
+            "endpoint": plan["endpoint"],
+            "ready": plan["ready"],
+            "waiting_user": plan["waiting_user"],
+            "blocked": plan["blocked"],
+            "invalidated": plan["invalidated"],
+            "problems": flow_problems + plan["problems"],
+        }
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "history": unknown or {"state": "ok", "reason": ""},
+        "flow": flow_summary,
+        "health": latest_health,
+        "open_intents": open_intents,
+        "unresolved_pending": unresolved_pending,
+        "acceptance": list(acceptance_by_ticket.values()),
+        "closeout": latest_closeout,
+        "workers": list(workers.values()),
+        "corrupt_lines": summary["corrupt_lines"],
+        "total_records": len(records),
+    }
+
+
+def _compact_reconcile_report(report):
+    return {
+        "schema_version": report["schema_version"],
+        "run_id": report["run_id"],
+        "observed_at": report["observed_at"],
+        "counts": report["counts"],
+        "authority_sources": report["authority_sources"],
+        "unreadable": report["unreadable"],
+        "decisions": [{"class": d["class"], "reason": d["reason"]} for d in report["decisions"]],
+        "replay_count": len(report.get("replays", [])),
+        "closeout": report.get("closeout"),
+    }
+
+
 def _report_corrupt(run_id, corrupt):
     for item in corrupt:
         print(
@@ -2808,6 +2998,12 @@ def main(argv=None):
     )
     summary_parser = sub.add_parser("summary", help="counts per kind/state and open items")
     summary_parser.add_argument("--run-id", required=True)
+    status_parser = sub.add_parser(
+        "status", help="unified Run status (flow, health, open intents, pending, acceptance, workers)")
+    status_parser.add_argument("--run-id", required=True)
+    status_parser.add_argument("--flow", default=None, help="explicit flow.jsonl path")
+    status_parser.add_argument("--flow-home", default=None, help="home holding runs/<id>/flow.jsonl")
+    status_parser.add_argument("--compact", action="store_true", help="compact JSON output")
     reconcile_parser = sub.add_parser(
         "reconcile", help="classify against live authority and apply allowed repairs")
     reconcile_parser.add_argument("--run-id", required=True)
@@ -2820,6 +3016,11 @@ def main(argv=None):
     reconcile_parser.add_argument(
         "--no-replay", action="store_true",
         help="never repeat a pending joinable action; record a decision instead")
+    reconcile_parser.add_argument(
+        "--refresh-requests", action="store_true",
+        help="re-query Orca request-show even for intents that already have terminal results")
+    reconcile_parser.add_argument(
+        "--compact", action="store_true", help="compact JSON summary instead of full report")
     reconcile_parser.add_argument(
         "--human", action="store_true", help="print the human-readable report")
     args = parser.parse_args(argv)
@@ -2854,6 +3055,12 @@ def main(argv=None):
             records, corrupt = read_report(args.run_id, home=home)
             _report_corrupt(args.run_id, corrupt)
             print(json.dumps(_summarize(args.run_id, records, corrupt), ensure_ascii=False))
+        elif args.command == "status":
+            payload = run_status(
+                args.run_id, home=home,
+                flow_file=args.flow, flow_home=args.flow_home,
+            )
+            _COMMON.emit_json(payload, compact=args.compact)
         else:
             recorded = _load_authority_file(args.authority) if args.authority else {}
             progress = (_load_progress_file(args.progress) if args.progress
@@ -2866,6 +3073,7 @@ def main(argv=None):
                 git=RecordedSource(recorded["git"])
                 if "git" in recorded else None,
                 progress=progress,
+                refresh_completed=args.refresh_requests,
             )
             _records, corrupt = read_report(args.run_id, home=home)
             _report_corrupt(args.run_id, corrupt)
@@ -2874,7 +3082,8 @@ def main(argv=None):
             if args.human:
                 sys.stdout.write(render_report(report))
             else:
-                print(json.dumps(report, ensure_ascii=False))
+                out = _compact_reconcile_report(report) if args.compact else report
+                _COMMON.emit_json(out, compact=args.compact)
     except (OSError, TypeError, ValueError) as error:
         print("Ledger error: " + str(error), file=sys.stderr)
         return 1

@@ -42,6 +42,12 @@ import re
 import sys
 import uuid
 
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_acceptance_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
+
 SCHEMA_VERSION = 1
 
 LEVEL_NAMES = ("implemented", "integrated", "merged", "tracker_closed")
@@ -100,7 +106,7 @@ _SHA_TEXT = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 PENDING_DIRNAME = "acceptance-pending"
 MAX_PAYLOAD_BYTES = 60 * 1024
 
-#: Issue #20's open questions about the four levels. They are recorded as ledger
+#: Open questions about the four acceptance levels. They are recorded as ledger
 #: ``pending`` items so a long-horizon run can close without a human reply; the affected
 #: semantics carry ``provisional`` so nothing here is frozen.
 OPEN_QUESTIONS = (
@@ -108,41 +114,35 @@ OPEN_QUESTIONS = (
         "question_id": "four-levels-multi-pr",
         "question": "A ticket that spans two PRs: which PR owns 'merged'?",
         "affected": "multi_pr",
-        "evidence_ref": "issue:20#question-1-multi-pr",
+        "evidence_ref": "docs/four-level-acceptance#question-1-multi-pr",
     },
     {
         "question_id": "four-levels-non-github-tracker",
         "question": "A tracker that closes itself from a merge keyword collapses "
                     "'merged' and 'tracker_closed'; is the split GitHub-shaped?",
         "affected": "tracker_close",
-        "evidence_ref": "issue:20#question-2-tracker",
+        "evidence_ref": "docs/four-level-acceptance#question-2-tracker",
     },
     {
         "question_id": "four-levels-never-merge",
         "question": "Work that is deliberately never merged has no accepted terminal "
                     "state; is 'never_merge' that state?",
         "affected": "never_merge",
-        "evidence_ref": "issue:20#question-3-never-merge",
+        "evidence_ref": "docs/four-level-acceptance#question-3-never-merge",
     },
     {
         "question_id": "four-levels-revert",
         "question": "After a merge is reverted, does the level go back down, and who "
                     "says so?",
         "affected": "revert",
-        "evidence_ref": "issue:20#question-4-revert",
+        "evidence_ref": "docs/four-level-acceptance#question-4-revert",
     },
 )
 
 
 def _load_ledger():
     """Import the sibling ``ledger.py`` by path: storage is reused, not duplicated."""
-    path = Path(__file__).with_name("ledger.py")
-    spec = importlib.util.spec_from_file_location("orca_acceptance_ledger", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot build an import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _COMMON.load_sibling(__file__, "ledger.py", "orca_acceptance_ledger")
 
 
 LEDGER = _load_ledger()
@@ -1111,6 +1111,9 @@ def command_show(args, home):
         for name in LEVEL_NAMES:
             ticket["levels"][name] = {"value": None, "evidence_refs": [],
                                       "state": "unknown"}
+    if getattr(args, "compact", False):
+        _COMMON.emit_json({"ticket": args.ticket, "summary": ticket}, compact=True)
+        return 0
     shown = [record for record in records
              if record.get("kind") in ("acceptance", "observation")
              and _ticket_of(record) == args.ticket]
@@ -1119,7 +1122,7 @@ def command_show(args, home):
     return 0
 
 
-def _question_items(run_id, home):
+def _question_items(run_id, home, ticket_id=""):
     records = LEDGER.read(run_id, home=home)
     existing = {}
     resolutions = {}
@@ -1133,23 +1136,24 @@ def _question_items(run_id, home):
         elif record.get("kind") == "observation" and detail.get("status") == "resolved":
             resolutions[question_id] = record
     items, appended = [], []
+    subject = {"ticket": ticket_id} if is_nonempty(ticket_id) else {}
     for question in OPEN_QUESTIONS:
         question_id = question["question_id"]
         record = existing.get(question_id)
         if record is None:
             detail = {
                 **question,
-                "ticket": "39",
-                "issue": 20,
                 "provisional": True,
                 "status": "pending",
             }
+            if is_nonempty(ticket_id):
+                detail["ticket"] = ticket_id
             record = {
                 "schema_version": LEDGER.SCHEMA_VERSION,
                 "record_id": str(uuid.uuid4()),
                 "kind": "pending",
                 "run_id": run_id,
-                "subject": {"ticket": "39"},
+                "subject": dict(subject),
                 "action": "acceptance",
                 "request_id": "",
                 "idempotency": "none",
@@ -1185,7 +1189,7 @@ def _question_items(run_id, home):
 
 
 def command_open_questions(args, home):
-    items = _question_items(args.run_id, home)
+    items = _question_items(args.run_id, home, ticket_id=getattr(args, "ticket", "") or "")
     _emit({"items": items, "count": len(items)})
     return 0
 
@@ -1201,12 +1205,24 @@ def command_resolve_question(args, home):
         _emit({"status": "refused", "errors": [
             "a resolution needs --reason and --evidence-ref"]})
         return 1
+    ticket_id = getattr(args, "ticket", "") or ""
+    subject = {"ticket": ticket_id} if is_nonempty(ticket_id) else {}
+    detail = {
+        "question_id": question["question_id"],
+        "affected": question["affected"],
+        "status": "resolved",
+        "provisional": True,
+        "reason": args.reason,
+        "evidence_ref": args.evidence_ref,
+    }
+    if is_nonempty(ticket_id):
+        detail["ticket"] = ticket_id
     record = {
         "schema_version": LEDGER.SCHEMA_VERSION,
         "record_id": str(uuid.uuid4()),
         "kind": "observation",
         "run_id": args.run_id,
-        "subject": {"ticket": "39"},
+        "subject": subject,
         "action": "acceptance",
         "request_id": "",
         "idempotency": "none",
@@ -1214,16 +1230,7 @@ def command_resolve_question(args, home):
         "evidence_ref": args.evidence_ref,
         "observed_at": _now(),
         "actor": "human" if args.human else "coordinator",
-        "detail": {
-            "question_id": question["question_id"],
-            "affected": question["affected"],
-            "ticket": "39",
-            "issue": 20,
-            "status": "resolved",
-            "provisional": True,
-            "reason": args.reason,
-            "evidence_ref": args.evidence_ref,
-        },
+        "detail": detail,
     }
     try:
         record_id = LEDGER.append(record, home=home)
@@ -1264,8 +1271,7 @@ def command_retry(args, home):
 
 
 def _now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z")
+    return _COMMON.utc_now()
 
 
 def main(argv=None):
@@ -1289,6 +1295,8 @@ def main(argv=None):
     show_parser = sub.add_parser("show", help="aggregate and print one ticket's levels")
     show_parser.add_argument("--run-id", required=True)
     show_parser.add_argument("--ticket", required=True)
+    show_parser.add_argument("--compact", action="store_true",
+                             help="print compact summary without full record list")
 
     observe_parser = sub.add_parser(
         "observe", help="append a revert/reopen observation that lowers a level")
@@ -1297,8 +1305,10 @@ def main(argv=None):
 
     questions_parser = sub.add_parser(
         "open-questions",
-        help="record issue #20's open four-level questions as pending items")
+        help="record open four-level acceptance questions as provisional pending items")
     questions_parser.add_argument("--run-id", required=True)
+    questions_parser.add_argument("--ticket", default="",
+                                  help="optional ticket id to bind to the pending items")
 
     resolve_parser = sub.add_parser(
         "resolve-question", help="append a later human decision as an observation")
@@ -1306,6 +1316,8 @@ def main(argv=None):
     resolve_parser.add_argument("--question-id", required=True)
     resolve_parser.add_argument("--reason", required=True)
     resolve_parser.add_argument("--evidence-ref", required=True)
+    resolve_parser.add_argument("--ticket", default="",
+                                help="optional ticket id matching open-questions")
     resolve_parser.add_argument("--human", action="store_true")
 
     retry_parser = sub.add_parser(

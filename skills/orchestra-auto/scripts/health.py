@@ -37,9 +37,16 @@ import argparse
 from datetime import datetime, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import uuid
+
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_health_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
 
 SCHEMA_VERSION = 1
 CLI_NAME = "health.py"
@@ -60,6 +67,13 @@ SIGNALS = (
     "nested_roster",
 )
 
+#: Signals required in strict/legacy consumer mode vs active native-wake mode.
+LEGACY_CONSUMER_SIGNALS = ("inbox", "unacked", "waiter_slot")
+NATIVE_REQUIRED_SIGNALS = (
+    "worker_list", "worker_show", "turnStart", "last_effective_progress", "reclaimable",
+)
+HEALTH_MODES = ("strict", "native")
+PENDING_DIRNAME = "health-pending"
 #: ``watch`` is a local switch rather than an Orca observation, but its absence is still
 #: evidence absent: the evaluator must not assume watching is on.
 REQUIRED_INPUTS = SIGNALS + ("watch",)
@@ -714,10 +728,18 @@ def _config(overrides=None):
 def _snapshot(snapshot):
     if not isinstance(snapshot, dict):
         _invalid("signals snapshot must be an object")
-    allowed = {"schema_version", "run_id", "observed_at", *REQUIRED_INPUTS, *OPTIONAL_INPUTS}
+    allowed = {
+        "schema_version", "run_id", "observed_at", "mode", "long_horizon",
+        *REQUIRED_INPUTS, *OPTIONAL_INPUTS,
+    }
     unknown = sorted(set(snapshot) - allowed)
     if unknown:
         _invalid("unknown signal fields: " + ", ".join(unknown))
+    mode = snapshot.get("mode")
+    if mode is not None and mode not in HEALTH_MODES:
+        _invalid("signals.mode must be one of " + ", ".join(HEALTH_MODES))
+    if "long_horizon" in snapshot and not isinstance(snapshot["long_horizon"], bool):
+        _invalid("signals.long_horizon must be a boolean")
     for name in SIGNALS:
         value = snapshot.get(name)
         if value is not None and not isinstance(value, dict):
@@ -892,7 +914,31 @@ def authorize_release(health_state, settled=None, closeout_record="", decided_by
     return result
 
 
-def evaluate(signals, config=None):
+def _native_signal_names(snapshot):
+    """Signals evaluated in ``native`` mode: active Orca wake contracts only.
+
+    Retired consumer signals (``inbox``, ``unacked``, ``waiter_slot``) are checked only
+    when explicitly supplied. ``nested_roster`` is required only when ``long_horizon``
+    is true. ``heartbeat`` is checked only when a positive preamble cadence exists.
+    ``progress`` and ``watch`` do not turn an active Run ``unknown`` when omitted.
+    """
+    names = list(NATIVE_REQUIRED_SIGNALS)
+    for retired in LEGACY_CONSUMER_SIGNALS:
+        if _block(snapshot, retired) is not None:
+            names.append(retired)
+    if snapshot.get("long_horizon") or _block(snapshot, "nested_roster") is not None:
+        names.append("nested_roster")
+    heartbeat = _block(snapshot, "heartbeat")
+    if heartbeat is not None and type(heartbeat.get("cadence_seconds")) is int and heartbeat["cadence_seconds"] > 0:
+        names.append("heartbeat")
+    if _block(snapshot, "progress") is not None:
+        names.append("progress")
+    if _block(snapshot, "watch") is not None:
+        names.append("watch")
+    return names
+
+
+def evaluate(signals, config=None, *, mode=None):
     """Evaluate one signals snapshot; a pure function.
 
     Returns ``{"state", "reasons", "next_action"}``. ``reasons`` holds one entry per
@@ -900,12 +946,19 @@ def evaluate(signals, config=None):
     any detail. Healthy signals are omitted. Aggregation is worst-of with the precedence
     ``lost > blocked > unknown > degraded > healthy``; a projection gap is recorded but
     never raises the state, because ``progress.json`` is not authority.
+
+    ``mode="native"`` (or ``signals["mode"] == "native"``) evaluates the native-wake
+    signal set instead of demanding retired consumer signals.
     """
     snapshot = _snapshot(signals)
     settings = _config(config)
+    active_mode = mode or snapshot.get("mode") or "strict"
+    if active_mode not in HEALTH_MODES:
+        _invalid("mode must be one of " + ", ".join(HEALTH_MODES))
     now = _parse(snapshot.get("observed_at"), "observed_at")
     findings = []
-    for name in SIGNALS + ("watch",):
+    names = _native_signal_names(snapshot) if active_mode == "native" else (SIGNALS + ("watch",))
+    for name in names:
         finding = SIGNAL_RULES[name](snapshot, settings, now)
         if finding is not None:
             findings.append(finding)
@@ -1007,23 +1060,9 @@ def evaluate_observation(observation, config=None, run_id=None):
 
 
 def load_ledger(script_dir=None):
-    """Import the sibling ``ledger.py`` by path, without touching ``sys.path``.
-
-    The scripts are shipped as standalone files rather than a package, so a sibling import
-    is a path load. ``script_dir`` exists for callers that keep a copy elsewhere.
-    """
-    directory = Path(script_dir) if script_dir else Path(__file__).resolve().parent
-    path = directory / "ledger.py"
-    name = "orchestra_ledger_" + str(abs(hash(str(path))))
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        _invalid("cannot import the ledger module from " + str(path))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    """Import the sibling ``ledger.py`` by path, without touching ``sys.path``."""
+    base = Path(script_dir) / "health.py" if script_dir else __file__
+    return _COMMON.load_sibling(base, "ledger.py", "orca_health_ledger")
 
 
 def _stable_record_id(run_id, snapshot, result):
@@ -1127,6 +1166,30 @@ def _previous_health(ledger, run_id, home):
     return records[-1] if records else None
 
 
+def _pending_dir(ledger, ledger_home, run_id):
+    home_fn = getattr(ledger, "home_path", None)
+    if not callable(home_fn):
+        return None
+    try:
+        home = Path(home_fn(ledger_home))
+    except (OSError, TypeError, ValueError):
+        return None
+    return home / "runs" / run_id / PENDING_DIRNAME
+
+
+def _persist_pending(ledger, ledger_home, record):
+    directory = _pending_dir(ledger, ledger_home, record["run_id"])
+    if directory is None:
+        return ""
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"{record['record_id']}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+        return str(path)
+    except OSError:
+        return ""
+
+
 def evaluate_to_ledger(run_id, snapshot, config=None, record_id=None,
                        ledger_home=None, ledger_module=None,
                        decided_by=None):
@@ -1175,13 +1238,14 @@ def evaluate_to_ledger(run_id, snapshot, config=None, record_id=None,
         entered_at=entered_at, previous_state=previous_state,
         transition_result=transition_result,
     )
-    recorded, error = False, ""
+    recorded, error, retry_path = False, "", ""
     try:
         ledger.append(record, home=ledger_home)
         recorded = True
     except (OSError, ValueError) as failure:
         error = str(failure)
         _PENDING_RECORDS.append(record)
+        retry_path = _persist_pending(ledger, ledger_home, record)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -1197,11 +1261,13 @@ def evaluate_to_ledger(run_id, snapshot, config=None, record_id=None,
     }
     if error:
         payload["record_error"] = error
+    if retry_path:
+        payload["retry_path"] = retry_path
     return payload
 
 
-def retry_pending(ledger_home=None, ledger_module=None):
-    """Retry every health record a failed write kept in memory, without blocking."""
+def retry_pending(ledger_home=None, ledger_module=None, run_id=None):
+    """Retry every failed health record in memory and any persisted ``health-pending`` files."""
     ledger = ledger_module or load_ledger()
     retried, still = [], []
     for record in list(_PENDING_RECORDS):
@@ -1212,7 +1278,175 @@ def retry_pending(ledger_home=None, ledger_module=None):
             continue
         retried.append(record["record_id"])
         _PENDING_RECORDS.remove(record)
+    if run_id:
+        directory = _pending_dir(ledger, ledger_home, run_id)
+        if directory is not None and directory.is_dir() and not directory.is_symlink():
+            already_retried = set(retried)
+            for path in sorted(directory.glob("*.json")):
+                if path.stem in already_retried:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    continue
+                try:
+                    record = json.loads(path.read_text())
+                    record_id = ledger.append(record, home=ledger_home)
+                except (OSError, ValueError, TypeError):
+                    still.append(path.stem)
+                    continue
+                path.unlink()
+                if record_id not in already_retried:
+                    retried.append(record_id)
+                    already_retried.add(record_id)
     return {"retried": retried, "still_pending": still}
+
+
+def _orca_json(orca_cli, argv, runner=None):
+    cmd = [orca_cli, *argv]
+    result = runner(cmd) if runner else _COMMON.run_command(cmd)
+    if result.get("returncode", 1) != 0:
+        return None
+    envelope = _COMMON.json_object(result.get("stdout", ""))
+    if envelope is None or envelope.get("ok") is False:
+        return None
+    inner = envelope.get("result", envelope)
+    return inner if isinstance(inner, dict) else None
+
+
+def collect_signals(run_id, *, dispatch_id=None, progress_dir=None, long_horizon=False,
+                    rounds_without_progress=0, ledger_home=None, ledger_module=None,
+                    orca_cli=None, runner=None, observed_at=None):
+    """Collect a native-wake signals snapshot from Orca CLI, ledger, and optional progress.
+
+    Unreachable sources are left omitted rather than fabricated so ``evaluate`` reports
+    them honestly as ``unknown``.
+    """
+    now = observed_at or _COMMON.utc_now()
+    cli = orca_cli or _COMMON.resolve_orca_cli()
+    ledger = ledger_module or load_ledger()
+    signals = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "observed_at": now,
+        "mode": "native",
+        "long_horizon": bool(long_horizon),
+        "watch": {"enabled": os.environ.get("WORKER_WATCH", "1") != "0"},
+    }
+
+    try:
+        records, _unknown = ledger.effective_records(run_id, home=ledger_home)
+    except (OSError, ValueError):
+        records = []
+
+    worker_list_result = _orca_json(
+        cli, ["orchestration", "worker-list", "--run", run_id, "--include-remote", "--json"],
+        runner=runner,
+    )
+    workers = []
+    if worker_list_result is not None and isinstance(worker_list_result.get("workers"), list):
+        workers = [row for row in worker_list_result["workers"] if isinstance(row, dict)]
+        active = [
+            row for row in workers
+            if str(row.get("workerState") or row.get("worker_state") or row.get("status") or "").lower()
+            not in TERMINATED_STATUSES and not row.get("settled")
+        ]
+        signals["worker_list"] = {"observed_at": now, "active_workers": len(active)}
+        reclaimable = []
+        for row in workers:
+            wstate = str(row.get("workerState") or row.get("worker_state") or "").lower()
+            if wstate == "reclaimable":
+                reclaimable.append({"observed_at": row.get("settledAt") or now})
+        signals["reclaimable"] = {"terminals": reclaimable}
+
+    target_dispatch = dispatch_id
+    if not target_dispatch and workers:
+        target_dispatch = workers[-1].get("dispatchId") or workers[-1].get("dispatch_id")
+    if target_dispatch:
+        wshow = _orca_json(
+            cli, ["orchestration", "worker-show", "--dispatch", target_dispatch, "--json"],
+            runner=runner,
+        )
+        if wshow is not None:
+            worker = wshow.get("worker", wshow)
+            if isinstance(worker, dict) and isinstance(worker.get("worker"), dict):
+                worker = worker["worker"]
+            if isinstance(worker, dict):
+                wstate = str(worker.get("workerState") or worker.get("worker_state") or worker.get("status") or "").lower()
+                raw_wait = worker.get("agentWait") if "agentWait" in worker else worker.get("agent_wait")
+                agent_wait = raw_wait if isinstance(raw_wait, dict) else ({"waiting": True} if raw_wait is True else None)
+                signals["worker_show"] = {
+                    "observed_at": now,
+                    "status": wstate or "unknown",
+                    "worker_done": bool(worker.get("settled")) if "settled" in worker else None,
+                    "agent_wait": agent_wait,
+                }
+                if worker.get("turnStart") == "observed" or worker.get("turn_start") == "observed":
+                    signals["turnStart"] = {"status": "observed", "observed_at": now}
+
+    if "turnStart" not in signals:
+        last_dispatch = None
+        for record in reversed(records):
+            if record.get("action") == "worker-start" and record.get("kind") in ("result", "intent"):
+                detail = record.get("detail") or {}
+                raw_receipt = detail.get("raw_receipt") or {}
+                if raw_receipt.get("turnStart") == "observed" or detail.get("turn_start") == "observed":
+                    signals["turnStart"] = {"status": "observed", "observed_at": record["observed_at"]}
+                    break
+                if last_dispatch is None:
+                    last_dispatch = record["observed_at"]
+        if "turnStart" not in signals and last_dispatch is not None:
+            signals["turnStart"] = {"status": "unobserved", "dispatched_at": last_dispatch}
+
+    markers = []
+    for record in records[-5:]:
+        if record.get("kind") in ("result", "acceptance", "closeout"):
+            markers.append("message")
+            break
+    signals["last_effective_progress"] = {
+        "mode": "coordinator",
+        "rounds_without_progress": rounds_without_progress,
+        "markers": markers,
+    }
+
+    pending_items = []
+    resolved_ids = {
+        (rec.get("detail") or {}).get("pending_record_id")
+        for rec in records
+        if rec.get("kind") == "observation" and (rec.get("detail") or {}).get("status") == "resolved"
+    }
+    for record in records:
+        if record.get("kind") == "pending" and record["record_id"] not in resolved_ids:
+            detail = record.get("detail") or {}
+            cls = detail.get("decision_class") or detail.get("pending_type") or "pending"
+            pending_items.append({"class": cls if cls in PENDING_CLASSES else "pending"})
+    if pending_items:
+        signals["pending"] = {"items": pending_items}
+
+    if progress_dir:
+        pfile = Path(progress_dir).expanduser() / "progress.json"
+        try:
+            pdata = json.loads(pfile.read_text(encoding="utf-8"))
+            updated = ((pdata.get("run") or {}).get("last_observed")
+                       or (pdata.get("run") or {}).get("updated_at"))
+            if isinstance(updated, str) and updated:
+                signals["progress"] = {"updated_at": updated}
+        except (OSError, ValueError, TypeError):
+            pass
+
+    return signals
+
+
+def _compact_health(payload):
+    return {
+        "run_id": payload["run_id"],
+        "state": payload["state"],
+        "next_action": payload["next_action"],
+        "recorded": payload["recorded"],
+        "record_id": payload["record_id"],
+        "reasons": [{"signal": r["signal"], "state": r["state"], "reason": r["reason"]}
+                    for r in payload["reasons"]],
+    }
 
 
 def main(argv=None):
@@ -1237,9 +1471,48 @@ def main(argv=None):
         help="retry an earlier health record with the same id")
     evaluate_parser.add_argument(
         "--decided-by", choices=("coordinator", "human"), default="coordinator")
+    evaluate_parser.add_argument("--compact", action="store_true", help="compact JSON output")
+
+    collect_parser = sub.add_parser(
+        "collect", help="collect native-wake signals from Orca/ledger and evaluate health")
+    collect_parser.add_argument("--run-id", required=True)
+    collect_parser.add_argument("--dispatch", default=None, help="target dispatch id for worker-show")
+    collect_parser.add_argument("--progress", default=None, help="optional progress state directory")
+    collect_parser.add_argument("--long-horizon", action="store_true")
+    collect_parser.add_argument("--rounds-without-progress", type=int, default=0)
+    collect_parser.add_argument("--config", metavar="FILE")
+    collect_parser.add_argument("--no-record", action="store_true", help="do not append to ledger")
+    collect_parser.add_argument("--compact", action="store_true", help="compact JSON output")
+
+    retry_parser = sub.add_parser("retry", help="retry persisted health-pending records")
+    retry_parser.add_argument("--run-id", required=True)
+
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "retry":
+            _COMMON.emit_json(retry_pending(run_id=args.run_id))
+            return 0
+        if args.command == "collect":
+            config = _read_snapshot(args.config) if args.config else None
+            snapshot = collect_signals(
+                args.run_id,
+                dispatch_id=args.dispatch,
+                progress_dir=args.progress,
+                long_horizon=args.long_horizon,
+                rounds_without_progress=args.rounds_without_progress,
+            )
+            if args.no_record:
+                verdict = evaluate(snapshot, config)
+                payload = {"run_id": args.run_id, "signals": snapshot, **verdict, "recorded": False}
+                _COMMON.emit_json(
+                    {"run_id": args.run_id, **verdict, "recorded": False} if args.compact else payload,
+                    compact=args.compact,
+                )
+                return 0
+            payload = evaluate_to_ledger(args.run_id, snapshot, config)
+            _COMMON.emit_json(_compact_health(payload) if args.compact else payload, compact=args.compact)
+            return 0
         config = None
         if args.config:
             config = _read_snapshot(args.config)
@@ -1251,7 +1524,7 @@ def main(argv=None):
             args.run_id, snapshot, config, record_id=args.record_id,
             decided_by=args.decided_by,
         )
-        print(json.dumps(payload, ensure_ascii=False))
+        _COMMON.emit_json(_compact_health(payload) if args.compact else payload, compact=args.compact)
     except (OSError, TypeError, ValueError) as error:
         print("Health error: " + str(error), file=sys.stderr)
         return 1

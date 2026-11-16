@@ -47,10 +47,18 @@ library is used.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import uuid
+
+_COMMON_PATH = Path(__file__).resolve().with_name("_common.py")
+_COMMON_SPEC = importlib.util.spec_from_file_location("orca_flow_common", _COMMON_PATH)
+assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
+_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
+_COMMON_SPEC.loader.exec_module(_COMMON)
 
 SCHEMA_VERSION = 1
 
@@ -529,7 +537,83 @@ def append_record(path, record):
         handle.write(line)
         handle.flush()
         os.fsync(handle.fileno())
+    _COMMON.fsync_directory(path.parent)
     return record
+
+
+ROUTE_PRESETS = {
+    "design-only": {
+        "endpoint": "settled design & spec artifact",
+        "nodes": (
+            {"id": "grill-with-docs", "gate": "G-docs", "depends_on": []},
+            {"id": "to-spec", "gate": "G-spec", "depends_on": ["grill-with-docs"]},
+        ),
+    },
+    "single-impl": {
+        "endpoint": "merged PR & closed ticket",
+        "nodes": (
+            {"id": "implement", "gate": "G-impl", "depends_on": []},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement"]},
+        ),
+    },
+    "full-chain": {
+        "endpoint": "merged PR & closed tickets",
+        "nodes": (
+            {"id": "grill-with-docs", "gate": "G-docs", "depends_on": []},
+            {"id": "to-spec", "gate": "G-spec", "depends_on": ["grill-with-docs"]},
+            {"id": "to-tickets", "gate": "G-tickets", "depends_on": ["to-spec"]},
+            {"id": "implement", "gate": "G-impl", "depends_on": ["to-tickets"]},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement"]},
+        ),
+    },
+    "wayfinder": {
+        "endpoint": "integrated & merged PRs & closed tickets",
+        "nodes": (
+            {"id": "wayfinder-plan", "gate": "G-wayfinder", "depends_on": []},
+            {"id": "grill-with-docs", "gate": "G-docs", "depends_on": ["wayfinder-plan"]},
+            {"id": "to-spec", "gate": "G-spec", "depends_on": ["grill-with-docs"]},
+            {"id": "to-tickets", "gate": "G-tickets", "depends_on": ["to-spec"]},
+            {"id": "implement-spec", "gate": "G-impl", "depends_on": ["to-tickets"]},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement-spec"]},
+        ),
+    },
+    "ticket-map": {
+        "endpoint": "single integration PR merged & tracker closed",
+        "nodes": (
+            {"id": "to-tickets", "gate": "G-tickets", "depends_on": []},
+            {"id": "implement-spec", "gate": "G-impl", "depends_on": ["to-tickets"]},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement-spec"]},
+        ),
+    },
+    "bugfix": {
+        "endpoint": "red-to-green fix PR merged & closed ticket",
+        "nodes": (
+            {"id": "diagnosing-bugs", "gate": "G-impl", "depends_on": []},
+            {"id": "implement", "gate": "G-impl", "depends_on": ["diagnosing-bugs"]},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement"]},
+        ),
+    },
+}
+
+
+def preset_flow_record(route, run_id, *, goal="", flow_id="", endpoint=""):
+    """Build one validated ``kind: flow`` record for a canonical orchestra-auto route."""
+    if route not in ROUTE_PRESETS:
+        raise FlowError(
+            "unknown route " + repr(route) + "; choose one of: " + ", ".join(sorted(ROUTE_PRESETS))
+        )
+    spec = ROUTE_PRESETS[route]
+    resolved_flow_id = flow_id or f"flow-{route}-{run_id}"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"orca-flow:{run_id}:{resolved_flow_id}")),
+        "kind": "flow",
+        "flow_id": resolved_flow_id,
+        "run_id": run_id,
+        "goal": (goal or f"{route} workflow for {run_id}").strip(),
+        "endpoint": (endpoint or spec["endpoint"]).strip(),
+        "nodes": [dict(node, depends_on=list(node["depends_on"])) for node in spec["nodes"]],
+    }
 
 
 def flow_path(run_id, home=None):
@@ -538,8 +622,8 @@ def flow_path(run_id, home=None):
     return root / RUNS_DIR / run_id / FLOW_NAME
 
 
-def _emit(payload):
-    print(json.dumps(payload, ensure_ascii=False, indent=1))
+def _emit(payload, *, compact=False):
+    _COMMON.emit_json(payload, compact=compact, indent=None if compact else 1)
 
 
 def main(argv=None):
@@ -549,36 +633,67 @@ def main(argv=None):
 
     validate_parser = subparsers.add_parser("validate", help="validate one JSON record")
     validate_parser.add_argument("--file", required=True, help="path to a JSON record")
+    validate_parser.add_argument("--compact", action="store_true")
 
     plan_parser = subparsers.add_parser("plan", help="print the effective plan")
     plan_parser.add_argument("--run-id", required=True)
     plan_parser.add_argument("--flow-home", default=None)
     plan_parser.add_argument("--flow", default=None, help="read this file instead of a home")
+    plan_parser.add_argument("--compact", action="store_true")
 
     append_parser = subparsers.add_parser("append", help="append a validated record")
     append_parser.add_argument("--run-id", required=True)
     append_parser.add_argument("--flow-home", default=None)
     append_parser.add_argument("--flow", default=None, help="write this file instead of a home")
     append_parser.add_argument("--record", required=True, help="path to a JSON record, or -")
+    append_parser.add_argument("--compact", action="store_true")
+
+    init_parser = subparsers.add_parser(
+        "init-route", help="initialize flow.jsonl from one canonical route preset"
+    )
+    init_parser.add_argument("--run-id", required=True)
+    init_parser.add_argument("--route", required=True, choices=sorted(ROUTE_PRESETS))
+    init_parser.add_argument("--goal", default="")
+    init_parser.add_argument("--flow-id", default="")
+    init_parser.add_argument("--endpoint", default="")
+    init_parser.add_argument("--flow-home", default=None)
+    init_parser.add_argument("--flow", default=None, help="write this file instead of a home")
+    init_parser.add_argument("--compact", action="store_true")
 
     args = parser.parse_args(argv)
+    compact = bool(getattr(args, "compact", False))
 
     if args.command == "validate":
         path = Path(args.file)
         if not path.exists():
             _emit({"version": SCHEMA_VERSION, "valid": False,
-                   "errors": ["file not found: " + str(path)]})
+                   "errors": ["file not found: " + str(path)]}, compact=compact)
             return 1
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
-            _emit({"version": SCHEMA_VERSION, "valid": False, "errors": [str(exc)]})
+            _emit({"version": SCHEMA_VERSION, "valid": False, "errors": [str(exc)]}, compact=compact)
             return 1
         errors = validate_record(record)
-        _emit({"version": SCHEMA_VERSION, "valid": not errors, "errors": errors})
+        _emit({"version": SCHEMA_VERSION, "valid": not errors, "errors": errors}, compact=compact)
         return 0 if not errors else 1
 
     path = Path(args.flow) if args.flow else flow_path(args.run_id, args.flow_home)
+
+    if args.command == "init-route":
+        try:
+            record = preset_flow_record(
+                args.route, args.run_id, goal=args.goal, flow_id=args.flow_id, endpoint=args.endpoint
+            )
+            append_record(path, record)
+        except (ValueError, FlowError) as exc:
+            _emit({"version": SCHEMA_VERSION, "appended": False, "errors": [str(exc)]}, compact=compact)
+            return 1
+        _emit({"version": SCHEMA_VERSION, "appended": True, "flow": str(path),
+               "flow_id": record["flow_id"], "record_id": record["record_id"],
+               "route": args.route, "nodes": [n["id"] for n in record["nodes"]]},
+              compact=compact)
+        return 0
 
     if args.command == "plan":
         records, problems = read_records(path)
@@ -589,7 +704,7 @@ def main(argv=None):
             answer["ready"] = []
             answer["evidence_gaps"] = answer["evidence_gaps"] + [
                 "the flow file has invalid records; resolve them before resuming"]
-        _emit(answer)
+        _emit(answer, compact=compact)
         return 0 if answer["state"] != "uncertain" else 1
 
     if args.record == "-":
@@ -598,17 +713,17 @@ def main(argv=None):
         record_path = Path(args.record)
         if not record_path.exists():
             _emit({"version": SCHEMA_VERSION, "appended": False,
-                   "errors": ["record not found: " + str(record_path)]})
+                   "errors": ["record not found: " + str(record_path)]}, compact=compact)
             return 1
         raw = record_path.read_text(encoding="utf-8")
     try:
         record = json.loads(raw)
         append_record(path, record)
     except (ValueError, FlowError) as exc:
-        _emit({"version": SCHEMA_VERSION, "appended": False, "errors": [str(exc)]})
+        _emit({"version": SCHEMA_VERSION, "appended": False, "errors": [str(exc)]}, compact=compact)
         return 1
     _emit({"version": SCHEMA_VERSION, "appended": True, "flow": str(path),
-           "record_id": record.get("record_id"), "kind": record.get("kind")})
+           "record_id": record.get("record_id"), "kind": record.get("kind")}, compact=compact)
     return 0
 
 
