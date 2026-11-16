@@ -29,12 +29,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-_COMMON_PATH = Path(__file__).resolve().with_name('_common.py')
-_COMMON_SPEC = importlib.util.spec_from_file_location('orca_progress_common', _COMMON_PATH)
-assert _COMMON_SPEC is not None and _COMMON_SPEC.loader is not None
-_COMMON = importlib.util.module_from_spec(_COMMON_SPEC)
-_COMMON_SPEC.loader.exec_module(_COMMON)
-
 VERSION = 2
 READABLE_VERSIONS = {1, 2}
 ASSET = Path(__file__).with_name('progress.html')
@@ -458,7 +452,26 @@ def ensure_private_directory(path):
     os.chmod(path, REGISTRY_DIRECTORY_MODE)
 
 
-_fsync_directory = _COMMON.fsync_directory
+def _load_fsync_directory():
+    common_path = Path(__file__).resolve().with_name('_common.py')
+    if common_path.is_file():
+        spec = importlib.util.spec_from_file_location('orca_progress_common', common_path)
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.fsync_directory
+
+    def _fallback_fsync_directory(directory):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    return _fallback_fsync_directory
+
+
+_fsync_directory = _load_fsync_directory()
 
 
 def _atomic_write(path, payload, directory=None, prefix=None):
