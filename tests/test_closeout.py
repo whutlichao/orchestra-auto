@@ -1105,8 +1105,12 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_the_closeout_record_is_idempotent_for_the_same_authority(self):
         self.record_acceptance()
-        first = self.reconcile()
-        second = self.reconcile()
+        # One authority snapshot, read twice: rebuilding it per call stamps a fresh
+        # second-precision ``utc_now()`` into ``tracker.closed_at`` and
+        # ``release.verification.at``, which is a different authority, not a repeat.
+        authority = self.authority()
+        first = self.reconcile(authority=authority)
+        second = self.reconcile(authority=authority)
         self.assertEqual(first["record_id"], second["record_id"])
         self.assertFalse(second["appended"])
         self.assertEqual(len(self.records("closeout")), 1)
