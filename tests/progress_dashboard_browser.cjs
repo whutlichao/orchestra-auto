@@ -108,6 +108,7 @@ let browser;
     [1920, 1080],
     [768, 1024],
     [375, 812],
+    [320, 720],
   ]) {
     await page.setViewportSize({ width, height });
     assert.equal(
@@ -129,6 +130,38 @@ let browser;
     }
     results.push(`viewport ${width}x${height}: no page overflow`);
   }
+  // Anchored sections must clear the real sticky top-bar height, which grows when the
+  // Run title wraps. A fixed offset that only fits the widest layout hides the target
+  // heading at 901–1024px.
+  for (const [width, height] of [
+    [1440, 900],
+    [1024, 900],
+    [901, 900],
+    [375, 812],
+    [320, 720],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.waitForTimeout(80);
+    await page.locator('nav a[href="#stats"]').click();
+    await page.waitForTimeout(80);
+    const clearance = await page.evaluate(() => {
+      const topbar = document.querySelector(".topbar");
+      const target = document.querySelector("#stats");
+      const topbarRect = topbar.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      return getComputedStyle(topbar).position === "sticky"
+        ? targetRect.top - topbarRect.bottom
+        : targetRect.top;
+    });
+    assert.ok(
+      clearance >= 0,
+      `anchored section hidden by sticky chrome at ${width}px: ${clearance}px`,
+    );
+    results.push(`anchor clears sticky chrome at ${width}px: ${clearance}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => scrollTo(0, 0));
   let snapshot = fixture(SELECTED),
     response = "valid";
   // A "hang" answer holds the response until the test releases it, so the page really is
@@ -250,8 +283,15 @@ let browser;
     /tone-success/,
   );
   assert.equal(
-    await page.locator('.run-chip[aria-current="true"]').innerText(),
+    await page
+      .locator('.run-chip[aria-current="true"] .run-chip-text')
+      .innerText(),
     "可验证的 Run 标签 / readable Run label",
+  );
+  assert.match(
+    await page.locator('.run-chip[aria-current="true"]').innerText(),
+    /运行中/,
+    "the chip states the Run status in text, not colour alone",
   );
   assert.equal(
     await page.locator('.run-chip[aria-current="true"]').getAttribute("title"),
@@ -263,9 +303,16 @@ let browser;
   assert.equal(await toggle.innerText(), "收起");
   assert.equal(await toggle.getAttribute("aria-expanded"), "true");
   assert.equal(
-    await page.locator('.run-chip[title="' + SECOND + '"]').innerText(),
+    await page
+      .locator('.run-chip[title="' + SECOND + '"] .run-chip-text')
+      .innerText(),
     SECOND,
     "a Run without a label falls back to its Run ID",
+  );
+  assert.match(
+    await page.locator('.run-chip[title="' + SECOND + '"]').innerText(),
+    /已结束/,
+    "a completed chip states its status in text",
   );
   assert.equal(
     await page
@@ -364,6 +411,7 @@ let browser;
     [1920, 1080],
     [768, 1024],
     [375, 812],
+    [320, 720],
   ]) {
     await page.setViewportSize({ width, height });
     if (!(await isOpen())) await summary.click();
@@ -420,7 +468,7 @@ let browser;
     await page
       .locator(".worker-row")
       .nth(2)
-      .evaluate((n) => n.style.marginLeft),
+      .evaluate((n) => n.style.marginInlineStart),
     "28px",
   );
   assert.deepEqual(
@@ -802,6 +850,24 @@ let browser;
   results.push(
     "visibilitychange, pageshow and focus collapse into one immediate read",
   );
+  // Auto-updating content needs a visible pause control. The poll stops while paused,
+  // the status and live region say so, and resuming reads immediately.
+  const pollBefore = snapshotRequests();
+  await page.clock.runFor(3100);
+  await page.waitForTimeout(200);
+  assert.equal(snapshotRequests(), pollBefore + 1, "the poll runs while active");
+  await page.locator("#pause").click();
+  const pausedAt = snapshotRequests();
+  assert.match(await page.locator("#health").innerText(), /自动刷新已暂停/);
+  assert.match(await page.locator("#announcer").innerText(), /自动刷新已暂停/);
+  await page.clock.runFor(9100);
+  await page.waitForTimeout(200);
+  assert.equal(snapshotRequests(), pausedAt, "pause stops the poll");
+  await page.locator("#pause").click();
+  await page.waitForTimeout(300);
+  assert.equal(snapshotRequests(), pausedAt + 1, "resume reads immediately");
+  assert.doesNotMatch(await page.locator("#health").innerText(), /自动刷新已暂停/);
+  results.push("pause stops the poll; resume reads immediately");
   await page.clock.resume();
   assert.deepEqual(
     requests.filter((requestUrl) => !requestUrl.startsWith(base.origin + "/")),
