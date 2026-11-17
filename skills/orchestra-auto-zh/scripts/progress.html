@@ -6,6 +6,8 @@
     <meta name="color-scheme" content="light" />
     <title>Orchestra · 进展指挥台</title>
     <style>
+      /* Legacy dashboard base: behaviour hooks and layout primitives. The report
+         theme near the end of this file owns the visual layer. */
       :root {
         --bg: #f5f7fb;
         --surface: #ffffff;
@@ -69,8 +71,10 @@
         color: var(--accent);
         text-decoration: none;
       }
-      a:hover {
-        text-decoration: underline;
+      @media (hover: hover) {
+        a:hover {
+          text-decoration: underline;
+        }
       }
       button {
         font: inherit;
@@ -82,10 +86,12 @@
         padding: 8px 13px;
         white-space: nowrap;
       }
-      button:hover:not(:disabled) {
-        border-color: var(--accent);
-        color: var(--accent);
-        background: var(--accent-soft);
+      @media (hover: hover) {
+        button:hover:not(:disabled) {
+          border-color: var(--accent);
+          color: var(--accent);
+          background: var(--accent-soft);
+        }
       }
       button:disabled {
         opacity: 0.45;
@@ -96,9 +102,11 @@
         border-color: var(--accent);
         color: #ffffff;
       }
-      button.primary:hover {
-        background: var(--accent-2);
-        color: #ffffff;
+      @media (hover: hover) {
+        button.primary:hover {
+          background: var(--accent-2);
+          color: #ffffff;
+        }
       }
       :focus-visible {
         outline: 3px solid #9db4ff;
@@ -187,9 +195,11 @@
         font-size: 13px;
         min-width: 0;
       }
-      .nav a:hover {
-        background: var(--surface-2);
-        text-decoration: none;
+      @media (hover: hover) {
+        .nav a:hover {
+          background: var(--surface-2);
+          text-decoration: none;
+        }
       }
       .nav a[aria-current="true"] {
         background: var(--accent-soft);
@@ -248,7 +258,6 @@
         padding: 18px 32px;
         background: rgba(255, 255, 255, 0.94);
         border-bottom: 1px solid var(--line);
-        backdrop-filter: blur(10px);
       }
       .identity {
         display: flex;
@@ -340,10 +349,12 @@
       .run-summary::-webkit-details-marker {
         display: none;
       }
-      .run-summary:hover {
-        border-color: var(--accent);
-        color: var(--accent);
-        background: var(--accent-soft);
+      @media (hover: hover) {
+        .run-summary:hover {
+          border-color: var(--accent);
+          color: var(--accent);
+          background: var(--accent-soft);
+        }
       }
       .run-menu[open] > .run-summary {
         border-color: var(--accent-line);
@@ -360,7 +371,6 @@
         flex: 0 0 auto;
         color: var(--faint);
         font-size: 10px;
-        transition: transform 120ms ease;
       }
       .run-menu[open] .run-summary-arrow {
         transform: rotate(180deg);
@@ -989,8 +999,8 @@
         border-bottom: 0;
       }
       .worker-row {
-        border-left: 2px solid var(--accent-line);
-        padding-left: 12px;
+        border-inline-start: 2px solid var(--accent-line);
+        padding-inline-start: 12px;
       }
       .row-head {
         display: flex;
@@ -1032,8 +1042,10 @@
         color: var(--muted);
         font-size: 12px;
       }
-      summary:hover {
-        color: var(--text-2);
+      @media (hover: hover) {
+        summary:hover {
+          color: var(--text-2);
+        }
       }
       dl {
         display: grid;
@@ -1333,6 +1345,1386 @@
         }
       }
     </style>
+    <style>
+      /* Report theme.
+         The dashboard cannot load Tailwind or Mermaid: its CSP forbids external
+         assets. This layer reproduces the architecture review's editorial language
+         with self-contained CSS: stone ground, slate ink, serif headings, flat
+         bordered cards, sparse emerald/amber status colour and dashed seams. */
+      :root {
+        --bg: #fafaf9;
+        --surface: #ffffff;
+        --surface-2: #f5f5f4;
+        --surface-3: #e7e5e4;
+        --line: #e7e5e4;
+        --line-strong: #d6d3d1;
+        --control-line: #8a817c;
+        --text: #0f172a;
+        --text-2: #334155;
+        --muted: #57534e;
+        --faint: #6b625c;
+        --accent: #4f46e5;
+        --accent-2: #4338ca;
+        --accent-soft: #eef2ff;
+        --accent-line: #c7d2fe;
+        --success: #047857;
+        --success-soft: #ecfdf5;
+        --warning: #92400e;
+        --warning-soft: #fffbeb;
+        --danger: #b91c1c;
+        --danger-soft: #fef2f2;
+        --danger-line: #fecaca;
+        --info: #4338ca;
+        --info-soft: #eef2ff;
+        --radius: 8px;
+        --radius-sm: 8px;
+        --shadow: none;
+        --font:
+          ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+          sans-serif;
+        --serif:
+          ui-serif, Georgia, Cambria, "Times New Roman", Times, "Songti SC",
+          "Noto Serif SC", serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html {
+        background: var(--bg);
+        scroll-padding-block-start: calc(
+          var(--sticky-topbar-height, 171px) + 9px
+        );
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 1rem;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      h1,
+      h2,
+      h3,
+      h4 {
+        font-family: var(--serif);
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      a {
+        color: var(--text);
+        text-decoration: underline;
+        text-decoration-color: var(--faint);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+      @media (hover: hover) {
+        a:hover {
+          color: var(--accent-2);
+          text-decoration-color: currentColor;
+        }
+      }
+      code,
+      .mono {
+        font-family: var(--mono);
+        font-size: 0.92em;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      button {
+        min-height: 30px;
+        border: 1px solid var(--control-line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text-2);
+        padding: 6px 11px;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.4;
+        letter-spacing: 0.02em;
+      }
+      @media (hover: hover) {
+        button:hover:not(:disabled) {
+          border-color: var(--text);
+          color: var(--text);
+          background: var(--surface);
+        }
+      }
+      button.primary {
+        background: var(--text);
+        border-color: var(--text);
+        color: #ffffff;
+      }
+      @media (hover: hover) {
+        button.primary:hover {
+          background: var(--text-2);
+          border-color: var(--text-2);
+          color: #ffffff;
+        }
+      }
+      .skip-link {
+        background: var(--surface);
+        border-color: var(--text);
+      }
+
+      /* Editorial shell: a margin index beside one long report column. */
+      .layout {
+        display: flex;
+        align-items: flex-start;
+        width: 100%;
+        max-width: 1240px;
+        margin: 0 auto;
+      }
+      .sidebar {
+        position: sticky;
+        top: 0;
+        inset: auto;
+        z-index: 30;
+        width: 216px;
+        flex: 0 0 216px;
+        height: 100vh;
+        height: 100dvh;
+        padding: 38px 22px 26px;
+        overflow-y: auto;
+        background: transparent;
+        border-right: 1px solid var(--line);
+        gap: 30px;
+      }
+      .brand {
+        gap: 11px;
+      }
+      .brand-mark {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+        border-radius: 5px;
+        background: var(--text);
+        color: #ffffff;
+        font-family: var(--serif);
+        font-size: 13px;
+      }
+      .brand-text strong {
+        font-family: var(--serif);
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+      .brand-text small {
+        margin-top: 1px;
+        color: var(--faint);
+        font-size: 10.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .nav {
+        gap: 1px;
+      }
+      .nav a {
+        padding: 7px 0 7px 13px;
+        border-left: 1px solid transparent;
+        border-radius: 0;
+        color: var(--muted);
+        font-size: 12.5px;
+        letter-spacing: 0.01em;
+        text-decoration: none;
+      }
+      @media (hover: hover) {
+        .nav a:hover {
+          background: transparent;
+          color: var(--text);
+        }
+      }
+      .nav a[aria-current="true"] {
+        background: transparent;
+        color: var(--text);
+        font-weight: 600;
+        border-left-color: var(--text);
+      }
+      .nav-index {
+        flex: 0 0 22px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.12em;
+      }
+      .nav a[aria-current="true"] .nav-index {
+        color: var(--text);
+      }
+      .side-note {
+        border-top: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 11.5px;
+        line-height: 1.6;
+      }
+      .side-note .badge {
+        font-size: 10px;
+      }
+      .side-note .mono {
+        font-size: 10.5px;
+      }
+
+      .shell {
+        flex: 1 1 auto;
+        width: 100%;
+        max-width: 1024px;
+        min-width: 0;
+        margin-left: 0;
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        align-items: flex-end;
+        gap: 24px;
+        padding: 30px 32px 18px;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+      }
+      .identity {
+        gap: 7px;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .topbar h1 {
+        max-width: 42ch;
+        font-family: var(--serif);
+        font-size: 31px;
+        font-weight: 600;
+        line-height: 1.15;
+        letter-spacing: -0.035em;
+        text-wrap: balance;
+        word-break: keep-all;
+        overflow-wrap: anywhere;
+      }
+      .identity-meta {
+        gap: 5px;
+        margin-top: 2px;
+      }
+      .report-date-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 10px;
+        margin-top: 3px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .report-date-row .report-meta-sep {
+        color: var(--line-strong);
+      }
+      .actions {
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+      .run-menu {
+        max-width: min(270px, 38vw);
+      }
+      .run-summary {
+        display: inline-flex;
+        min-height: 30px;
+        padding: 6px 10px;
+        border: 1px solid var(--control-line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text-2);
+        font-size: 12px;
+      }
+      @media (hover: hover) {
+        .run-summary:hover {
+          border-color: var(--text);
+          color: var(--text);
+          background: var(--surface);
+        }
+      }
+      .run-menu[open] > .run-summary {
+        border-color: var(--text);
+        color: var(--text);
+        background: var(--surface);
+      }
+      .run-summary-arrow {
+        color: var(--faint);
+      }
+      .run-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 18px 40px -24px rgba(15, 23, 42, 0.35);
+        overscroll-behavior: contain;
+      }
+      .runs-label {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.14em;
+        color: var(--faint);
+      }
+      .run-chips {
+        gap: 5px;
+      }
+      .run-chip {
+        min-height: 24px;
+        padding: 3px 8px;
+        border: 1px solid var(--control-line);
+        border-radius: 4px;
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-size: 11px;
+        text-decoration: none;
+      }
+      .run-chip-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .run-chip:focus-visible .run-chip-text {
+        white-space: normal;
+        overflow: visible;
+        overflow-wrap: anywhere;
+      }
+      @media (hover: hover) {
+        .run-chip:hover .run-chip-text {
+          white-space: normal;
+          overflow: visible;
+          overflow-wrap: anywhere;
+        }
+      }
+      .run-chip[aria-current="true"] {
+        border-color: var(--text);
+        background: var(--text);
+        color: #ffffff;
+      }
+      .run-chip[aria-current="true"] .run-chip-text {
+        color: #ffffff;
+      }
+      .run-chip-state {
+        flex: 0 0 auto;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+      }
+      .run-chip[aria-current="true"] .run-chip-state {
+        color: #e7e5e4;
+      }
+      .run-chip.unavailable {
+        border-style: dashed;
+        border-color: var(--warning);
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+      .run-dot.tone-success {
+        background: #059669;
+      }
+      .run-dot {
+        box-shadow: 0 0 0 1px var(--surface);
+      }
+      .run-dot.tone-warning {
+        background: #b45309;
+      }
+      .run-dot.tone-danger {
+        background: #dc2626;
+      }
+      .run-dot.tone-accent {
+        background: #4f46e5;
+      }
+      .run-dot.tone-info {
+        background: #6366f1;
+      }
+      .run-dot.tone-neutral {
+        background: #78716c;
+      }
+
+      .health {
+        padding: 9px 32px;
+        background: transparent;
+        border-bottom: 1px solid var(--line);
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.05em;
+      }
+      .health::before {
+        width: 6px;
+        height: 6px;
+        background: var(--faint);
+      }
+      .health.ok::before {
+        background: #059669;
+      }
+      .health.error {
+        background: var(--danger-soft);
+        border-bottom-color: var(--danger-line);
+        color: var(--danger);
+      }
+      .health.error::before {
+        background: var(--danger);
+      }
+      .health.loading::before {
+        background: var(--accent);
+      }
+
+      .report-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px 20px;
+        padding: 13px 32px;
+        border-bottom: 1px solid var(--line);
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .legend-key {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .key-box {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border: 1px solid var(--line-strong);
+        background: var(--surface);
+      }
+      .key-box.key-recorded {
+        background: var(--text);
+        border-color: var(--text);
+      }
+      .key-box.key-running {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .key-box.key-attention {
+        background: #fbbf24;
+        border-color: #d97706;
+      }
+      .key-box.key-failed {
+        background: #fecaca;
+        border-color: #dc2626;
+      }
+      .key-dashed {
+        display: inline-block;
+        width: 18px;
+        border-top: 1px dashed var(--faint);
+      }
+
+      .notice {
+        padding: 12px 32px;
+        border-bottom: 1px solid #fde68a;
+        background: var(--warning-soft);
+        color: var(--warning);
+        font-size: 12.5px;
+        line-height: 1.7;
+      }
+      .notice p + p {
+        margin-top: 4px;
+      }
+      .notice p {
+        max-width: 80ch;
+        text-wrap: pretty;
+      }
+      main {
+        width: 100%;
+        max-width: 1024px;
+        margin: 0 auto;
+        padding: 36px 32px 56px;
+        min-width: 0;
+      }
+      .page-footer {
+        width: 100%;
+        max-width: 1024px;
+        margin: 0 auto;
+        padding: 0 32px 46px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.8;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      /* Candidate-card anatomy: number, serif title, flat border, sparse meta. */
+      #content {
+        counter-reset: report-section;
+      }
+      .panel {
+        counter-increment: report-section;
+        margin-bottom: 30px;
+        padding: 30px 32px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: none;
+        scroll-margin-top: 0;
+      }
+      .panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: flex-start;
+        gap: 8px 16px;
+        flex-wrap: wrap;
+        margin-bottom: 18px;
+        padding-bottom: 13px;
+        border-bottom: 1px solid var(--line);
+      }
+      .panel-head::before {
+        content: counter(report-section, decimal-leading-zero);
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+      }
+      .panel-head h2 {
+        margin-right: auto;
+        font-family: var(--serif);
+        font-size: 23px;
+        font-weight: 600;
+        line-height: 1.2;
+        letter-spacing: -0.03em;
+        text-wrap: balance;
+      }
+      .panel-note {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .caption {
+        max-width: 68ch;
+        margin: 0 0 18px;
+        color: var(--muted);
+        font-size: 12.5px;
+        line-height: 1.75;
+        text-wrap: pretty;
+      }
+      .caption:last-child {
+        margin: 14px 0 0;
+      }
+      .empty {
+        padding: 20px 0;
+        color: var(--faint);
+        font-family: var(--serif);
+        font-size: 14px;
+        font-style: italic;
+      }
+      .note {
+        margin-top: 8px;
+        padding: 7px 11px;
+        border: 0;
+        border-left: 2px solid var(--line-strong);
+        border-radius: 0;
+        background: var(--surface-2);
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .note.warning {
+        border-left-color: #d97706;
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+      .note.danger {
+        border-left-color: #dc2626;
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .badge {
+        padding: 2px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 11.5px;
+        font-weight: 600;
+        line-height: 1.6;
+        letter-spacing: 0.03em;
+      }
+      .badge.tone-accent,
+      .badge.tone-info {
+        border-color: var(--accent-line);
+        background: var(--accent-soft);
+        color: var(--accent-2);
+      }
+      .badge.tone-success {
+        border-color: #a7f3d0;
+        background: var(--success-soft);
+        color: var(--success);
+      }
+      .badge.tone-warning {
+        border-color: #fde68a;
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+      .badge.tone-danger {
+        border-color: var(--danger-line);
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+      .badge.tone-neutral {
+        border-color: var(--line);
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+
+      /* Overview: editorial fact table rather than dashboard tiles. */
+      .run-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        margin-bottom: 20px;
+        color: var(--faint);
+        font-size: 11.5px;
+        letter-spacing: 0.01em;
+      }
+      .run-meta span {
+        overflow-wrap: anywhere;
+      }
+      .overview-grid {
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+        gap: 36px;
+      }
+      .meta-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0;
+        border-top: 1px solid var(--line);
+      }
+      .fact {
+        padding: 12px 16px 12px 0;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        background: transparent;
+      }
+      .fact span,
+      .time-tile span {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .fact strong {
+        margin-top: 4px;
+        font-family: var(--serif);
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 1.35;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .time-tiles {
+        gap: 0;
+        border-top: 1px solid var(--line);
+      }
+      .time-tile {
+        padding: 12px 0;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        background: transparent;
+      }
+      .time-tile.primary-time {
+        background: transparent;
+        border-color: var(--line);
+        box-shadow: inset 3px 0 0 var(--accent);
+        padding-left: 14px;
+      }
+      .time-tile.primary-time span {
+        color: var(--faint);
+      }
+      .time-tile strong {
+        margin-top: 4px;
+        font-family: var(--serif);
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 1.35;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .time-tile small {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.65;
+      }
+      .time-tile.primary-time small {
+        color: var(--muted);
+      }
+
+      /* Attention is the report's amber callout: the first thing to act on. */
+      #attention {
+        border-color: #fde68a;
+        background: #fffbeb;
+      }
+      #attention .panel-head {
+        border-bottom-color: #fde68a;
+      }
+      .attention-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .attention-card {
+        padding: 14px;
+        border: 1px solid #fde68a;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+      .attention-card.tone-warning {
+        border-color: #fde68a;
+        background: rgba(255, 255, 255, 0.78);
+      }
+      .attention-card.tone-danger {
+        border-color: var(--danger-line);
+        background: #fffafa;
+      }
+      .attention-head {
+        margin-bottom: 10px;
+      }
+      .attention-dot {
+        width: 7px;
+        height: 7px;
+        background: #d97706;
+      }
+      .attention-card.tone-warning .attention-dot {
+        background: #d97706;
+      }
+      .attention-card.tone-danger .attention-dot {
+        background: #dc2626;
+      }
+      .attention-title {
+        font-family: var(--serif);
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .attention-num {
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        font-variant-numeric: tabular-nums;
+      }
+      .attention-list {
+        gap: 8px;
+      }
+      .attention-list li {
+        padding-top: 8px;
+        border-top: 1px dashed #e7d3a8;
+        font-size: 12px;
+      }
+      .attention-list li:first-child {
+        border-top: 0;
+      }
+      .attention-item-title {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .attention-item-detail,
+      .attention-item-meta {
+        color: var(--muted);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+      .attention-none {
+        color: var(--faint);
+        font-size: 11.5px;
+        font-style: italic;
+      }
+
+      /* Stats: a measured figure, not a wall of KPI cards. */
+      .stat-row {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px;
+        margin-bottom: 24px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--line);
+      }
+      .stat {
+        padding: 15px 17px;
+        border: 0;
+        border-radius: 0;
+        background: var(--surface);
+      }
+      .stat span {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .stat strong {
+        margin-top: 5px;
+        font-family: var(--serif);
+        font-size: 33px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        font-variant-numeric: tabular-nums;
+      }
+      .distribution {
+        grid-template-columns: 188px minmax(0, 1fr);
+        gap: 28px;
+      }
+      .donut {
+        width: 176px;
+        height: 176px;
+      }
+      .donut-center strong {
+        font-family: var(--serif);
+        font-size: 38px;
+        font-weight: 600;
+        letter-spacing: -0.04em;
+        font-variant-numeric: tabular-nums;
+      }
+      .donut-center small {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .legend {
+        gap: 0;
+        border-top: 1px solid var(--line);
+      }
+      .legend button {
+        padding: 8px 0;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      @media (hover: hover) {
+        .legend button:hover {
+          background: transparent;
+          color: var(--text);
+        }
+      }
+      .legend button[aria-pressed="true"] {
+        background: transparent;
+        color: var(--text);
+        font-weight: 600;
+        box-shadow: inset 2px 0 0 var(--text);
+        padding-left: 10px;
+      }
+      .legend .legend-count {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .legend button[aria-pressed="true"] .legend-count {
+        color: var(--text);
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+      }
+
+      /* Flow: one continuous mass; observed stages carry the only tint. */
+      .flow {
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--line);
+      }
+      .flow .step {
+        padding: 15px 12px;
+        border: 0;
+        border-radius: 0;
+        background: var(--surface-2);
+      }
+      .flow .step.observed {
+        background: var(--accent-soft);
+        box-shadow: inset 0 2px 0 var(--accent);
+      }
+      .flow .step::after {
+        display: none;
+      }
+      .step-index {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.12em;
+      }
+      .step b {
+        min-height: 0;
+        margin: 5px 0 6px;
+        font-family: var(--serif);
+        font-size: 12.5px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+      .step .count {
+        color: var(--text);
+        font-family: var(--serif);
+        font-size: 27px;
+        font-weight: 600;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+      .step.observed .count {
+        color: var(--accent);
+      }
+      .step small {
+        margin-top: 4px;
+        color: var(--faint);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .branches {
+        margin-top: 14px;
+        gap: 6px;
+      }
+
+      /* Dependencies: the graph keeps its geometry, re-inked in slate. */
+      .scroll {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface-2);
+        max-height: 480px;
+      }
+
+      /* Tasks and workers: editorial list with a dashed verification seam. */
+      .split {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 46px;
+      }
+      .column-title {
+        margin-bottom: 10px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .filterbar {
+        padding: 8px 0;
+        margin-bottom: 2px;
+        border: 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        background: transparent;
+        color: var(--faint);
+        font-size: 11.5px;
+      }
+      .filterbar button {
+        padding: 4px 9px;
+        font-size: 11px;
+      }
+      .task-row,
+      .worker-row,
+      .artifact-row {
+        padding: 15px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .worker-row {
+        border-inline-start: 1px solid var(--line-strong);
+        padding-inline-start: 15px;
+      }
+      .row-head h3 {
+        font-family: var(--serif);
+        font-size: 15.5px;
+        font-weight: 600;
+        line-height: 1.4;
+        letter-spacing: -0.015em;
+        overflow-wrap: anywhere;
+      }
+      .row-badges {
+        gap: 4px;
+      }
+      .row-meta {
+        margin-top: 4px;
+        color: var(--faint);
+        font-size: 11.5px;
+        line-height: 1.6;
+      }
+      .worker-row .badge {
+        margin: 1px 0;
+      }
+
+      details {
+        margin-top: 10px;
+        font-size: 11.5px;
+      }
+      summary {
+        min-height: 24px;
+        padding-block: 4px;
+        color: var(--faint);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+        letter-spacing: 0.02em;
+      }
+      @media (hover: hover) {
+        summary:hover {
+          color: var(--text);
+        }
+      }
+      dl {
+        grid-template-columns: 132px minmax(0, 1fr);
+        gap: 6px 16px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed var(--line-strong);
+        font-size: 11.5px;
+      }
+      dt {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      dd {
+        line-height: 1.65;
+        overflow-wrap: anywhere;
+      }
+
+      /* Delivery evidence: four independent facts, one measured row. */
+      .delivery-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px;
+        margin-bottom: 22px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--line);
+      }
+      .delivery-cell {
+        padding: 15px 17px;
+        border: 0;
+        border-radius: 0;
+        background: var(--surface);
+      }
+      .delivery-cell span {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .delivery-cell strong {
+        margin: 6px 0 4px;
+        font-family: var(--serif);
+        font-size: 31px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        font-variant-numeric: tabular-nums;
+      }
+      .delivery-cell small {
+        color: var(--muted);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .artifact-row {
+        gap: 6px 10px;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .artifact-task {
+        color: var(--faint);
+        font-size: 10.5px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* Events: a quiet timeline with one dot per observation. */
+      .timeline li {
+        position: relative;
+        padding: 0 0 18px 18px;
+        border-left: 1px solid var(--line-strong);
+        font-size: 12px;
+      }
+      .timeline li::before {
+        content: "";
+        position: absolute;
+        left: -3.5px;
+        top: 5px;
+        width: 6px;
+        height: 6px;
+        border: 1px solid var(--line-strong);
+        border-radius: 50%;
+        background: var(--surface);
+      }
+      .timeline li:first-child::before {
+        border-color: var(--accent);
+        background: var(--accent);
+      }
+      .timeline time {
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.03em;
+      }
+      .timeline strong {
+        margin-top: 2px;
+        font-family: var(--serif);
+        font-size: 13.5px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .timeline p {
+        margin-top: 3px;
+        color: var(--text-2);
+      }
+      .timeline li:last-child {
+        padding-bottom: 0;
+      }
+
+      @media (max-width: 1180px) {
+        .layout {
+          max-width: none;
+        }
+        .sidebar {
+          width: 196px;
+          flex-basis: 196px;
+          padding: 30px 18px 22px;
+        }
+        .topbar {
+          padding-left: 26px;
+          padding-right: 26px;
+        }
+        .health,
+        .report-legend,
+        .notice {
+          padding-left: 26px;
+          padding-right: 26px;
+        }
+        main,
+        .page-footer {
+          padding-left: 26px;
+          padding-right: 26px;
+        }
+        .attention-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .flow {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .distribution {
+          grid-template-columns: 168px minmax(0, 1fr);
+          gap: 20px;
+        }
+        .donut {
+          width: 160px;
+          height: 160px;
+        }
+      }
+      @media (max-width: 900px) {
+        html {
+          scroll-padding-block-start: 24px;
+        }
+        .layout {
+          display: block;
+          max-width: none;
+        }
+        .sidebar {
+          position: static;
+          inset: auto;
+          width: auto;
+          height: auto;
+          flex: none;
+          gap: 14px;
+          padding: 18px 20px 0;
+          overflow: visible;
+          border-right: 0;
+          border-bottom: 0;
+        }
+        .brand-text small {
+          display: none;
+        }
+        .nav {
+          flex-direction: row;
+          flex-wrap: wrap;
+          gap: 2px 14px;
+          overflow: visible;
+        }
+        .nav a {
+          padding: 4px 0;
+          border-left: 0;
+          border-bottom: 1px solid transparent;
+        }
+        .nav a[aria-current="true"] {
+          border-left: 0;
+          border-bottom-color: var(--text);
+        }
+        .nav-index {
+          display: none;
+        }
+        .side-note {
+          display: none;
+        }
+        .shell {
+          max-width: none;
+        }
+        .topbar {
+          position: static;
+          padding: 22px 20px 16px;
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+        .topbar h1 {
+          font-size: 27px;
+        }
+        .actions {
+          width: 100%;
+          justify-content: flex-end;
+        }
+        .run-menu {
+          position: static;
+        }
+        .health,
+        .report-legend,
+        .notice {
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+        main,
+        .page-footer {
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+        .overview-grid {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 24px;
+        }
+        .split {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 34px;
+        }
+        .panel {
+          padding: 26px;
+          scroll-margin-top: 0;
+        }
+        .attention-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 620px) {
+        body {
+          font-size: 0.875rem;
+        }
+        .topbar {
+          padding: 18px 14px 14px;
+        }
+        .topbar h1 {
+          font-size: 23px;
+        }
+        .actions {
+          gap: 5px;
+        }
+        .actions button {
+          padding: 6px 9px;
+          font-size: 11.5px;
+        }
+        .health,
+        .report-legend,
+        .notice {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+        main,
+        .page-footer {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+        main {
+          padding-top: 24px;
+        }
+        .panel {
+          padding: 20px;
+          border-radius: 7px;
+        }
+        .panel-head h2 {
+          font-size: 20px;
+        }
+        .stat-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .stat strong {
+          font-size: 28px;
+        }
+        .distribution {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 18px;
+        }
+        .donut {
+          width: 156px;
+          height: 156px;
+        }
+        .flow {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .delivery-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .attention-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .overview-grid {
+          gap: 18px;
+        }
+        .meta-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        dl {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 2px 0;
+        }
+        dt {
+          margin-top: 6px;
+        }
+        .row-head {
+          flex-direction: column;
+        }
+        .row-badges {
+          justify-content: flex-start;
+        }
+      }
+    </style>
   </head>
   <body>
     <a class="skip-link" id="skip-link" href="#overview">跳到主要内容</a>
@@ -1358,10 +2750,17 @@
             <span class="eyebrow" id="crumb">工作区 / 进展指挥台</span>
             <h1 id="run-heading">等待快照</h1>
             <div class="identity-meta" id="identity-meta"></div>
+            <div class="report-date-row">
+              <time id="report-date"></time>
+              <span class="report-meta-sep" aria-hidden="true">·</span>
+              <span data-zh="只读观测" data-en="Read-only observation"
+                >只读观测</span
+              >
+            </div>
           </div>
           <div class="actions">
             <details id="runs" class="run-menu" hidden>
-              <summary id="run-summary" class="run-summary" aria-label="切换 Run · 已注册 Run">
+              <summary id="run-summary" class="run-summary" aria-label="切换 Run · 已注册 Run" aria-describedby="run-summary-status">
                 <span
                   id="run-summary-dot"
                   class="run-dot tone-neutral"
@@ -1371,6 +2770,7 @@
                 <span id="run-summary-label" class="run-summary-text"
                   >已注册 Run</span
                 >
+                <span id="run-summary-status" class="sr-only"></span>
                 <span class="run-summary-arrow" aria-hidden="true">▾</span>
               </summary>
               <div class="run-panel">
@@ -1386,30 +2786,94 @@
                 ></button>
               </div>
             </details>
-            <button id="language" type="button" aria-label="切换语言">
+            <button
+              id="pause"
+              type="button"
+              aria-label="暂停自动刷新"
+            >
+              暂停
+            </button>
+            <button id="language" type="button" aria-label="English · 切换语言">
               English
             </button>
-            <button id="refresh" class="primary" type="button">↻ 刷新</button>
+            <button
+              id="refresh"
+              class="primary"
+              type="button"
+              aria-label="刷新快照"
+            >
+              ↻ 刷新
+            </button>
           </div>
         </header>
-        <div id="health" class="health loading" role="status" aria-live="polite">
+        <div
+          class="report-legend"
+          id="report-legend"
+          role="group"
+          aria-label="报告图例"
+        >
+          <span class="legend-key">
+            <i class="key-box key-recorded" aria-hidden="true"></i>
+            <span data-zh="已记录" data-en="Recorded">已记录</span>
+          </span>
+          <span class="legend-key">
+            <i class="key-box key-running" aria-hidden="true"></i>
+            <span data-zh="实施中" data-en="Running">实施中</span>
+          </span>
+          <span class="legend-key">
+            <i class="key-box key-attention" aria-hidden="true"></i>
+            <span data-zh="待决 / 阻塞" data-en="Decision / blocked"
+              >待决 / 阻塞</span
+            >
+          </span>
+          <span class="legend-key">
+            <i class="key-box key-failed" aria-hidden="true"></i>
+            <span data-zh="失败 / 失联" data-en="Failed / lost"
+              >失败 / 失联</span
+            >
+          </span>
+          <span class="legend-key">
+            <i class="key-dashed" aria-hidden="true"></i>
+            <span data-zh="未核验 / 虚线" data-en="Unverified / dashed"
+              >未核验 / 虚线</span
+            >
+          </span>
+        </div>
+        <div id="health" class="health loading">
           正在加载快照…
         </div>
-        <p class="notice" id="notice">
-          <strong>警告不是启动失败 · a warning is not a start failure.</strong>
-          记录或看板警告只表示「继续编排」：失败只记录 gap，派发和运行不会因此被判定为启动失败。
-          A recording or dashboard warning only means "continue orchestration"; it never
-          turns a dispatch into a failed start.
-        </p>
-        <main id="content"><p class="empty">尚无有效快照。</p></main>
+        <p
+          id="announcer"
+          class="sr-only"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+        <div class="notice" id="notice">
+          <p lang="zh-CN">
+            <strong>警告不是启动失败。</strong>
+            记录或看板警告只表示「继续编排」：失败只记录 gap，派发和运行不会因此被判定为启动失败。
+          </p>
+          <p lang="en">
+            <strong>A warning is not a start failure.</strong>
+            A recording or dashboard warning only means “continue orchestration”; it
+            never turns a dispatch into a failed start.
+          </p>
+        </div>
+        <main id="content">
+          <p class="empty">
+            尚无有效快照。正在等待首次记录；如长时间未更新，请确认服务已启动并点击刷新。
+          </p>
+        </main>
         <footer class="page-footer" id="footer">
-          只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照 · 不估算完成百分比或剩余时间
+          只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照（可暂停） · 不估算完成百分比或剩余时间
         </footer>
       </div>
     </div>
     <script>
       "use strict";
       const content = document.getElementById("content");
+      const topbar = document.querySelector(".topbar");
       const health = document.getElementById("health");
       const nav = document.getElementById("nav");
       const runHeading = document.getElementById("run-heading");
@@ -1420,16 +2884,34 @@
       const sideNoteText = document.getElementById("side-note-text");
       const footer = document.getElementById("footer");
       const skipLink = document.getElementById("skip-link");
+      const pauseButton = document.getElementById("pause");
       const languageButton = document.getElementById("language");
       const refreshButton = document.getElementById("refresh");
       const runMenu = document.getElementById("runs");
       const runSummary = document.getElementById("run-summary");
       const runSummaryDot = document.getElementById("run-summary-dot");
       const runSummaryLabel = document.getElementById("run-summary-label");
+      const runSummaryStatus = document.getElementById("run-summary-status");
       const runsLabel = document.getElementById("runs-label");
       const runChips = document.getElementById("run-chips");
       const runToggle = document.getElementById("run-toggle");
-      const notice = document.getElementById("notice");
+      const announcer = document.getElementById("announcer");
+
+      function syncStickyOffset() {
+        document.documentElement.style.setProperty(
+          "--sticky-topbar-height",
+          `${topbar.getBoundingClientRect().height}px`,
+        );
+      }
+
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(syncStickyOffset).observe(topbar);
+      }
+      window.addEventListener("resize", syncStickyOffset, { passive: true });
+      syncStickyOffset();
+      const reportDate = document.getElementById("report-date");
+      const reportLegend = document.getElementById("report-legend");
+      const reportDateValue = new Date();
 
       const NAV = [
         ["overview", "运行概览", "Overview"],
@@ -1462,18 +2944,18 @@
         "failed",
       ]);
       const TERMS = {
-        unknown: { zh: "未知", en: "Unknown", tone: "neutral", color: "#98a2b3" },
-        pending: { zh: "待计划", en: "Pending", tone: "neutral", color: "#cbd5e1" },
-        ready: { zh: "就绪", en: "Ready", tone: "info", color: "#7c9bef" },
-        running: { zh: "实施中", en: "Running", tone: "accent", color: "#2f5bea" },
-        blocked: { zh: "阻塞", en: "Blocked", tone: "warning", color: "#d97917" },
-        waiting_user: { zh: "待用户", en: "Waiting user", tone: "warning", color: "#b26a00" },
-        reported: { zh: "已报告", en: "Reported", tone: "info", color: "#3b9ac4" },
-        accepted: { zh: "已验收", en: "Accepted", tone: "success", color: "#0c7d62" },
-        rejected: { zh: "已打回", en: "Rejected", tone: "danger", color: "#d4564a" },
-        failed: { zh: "失败", en: "Failed", tone: "danger", color: "#b3362f" },
-        paused: { zh: "暂停", en: "Paused", tone: "neutral", color: "#7c6fa8" },
-        cancelled: { zh: "取消", en: "Cancelled", tone: "neutral", color: "#6b7686" },
+        unknown: { zh: "未知", en: "Unknown", tone: "neutral", color: "#78716c" },
+        pending: { zh: "待计划", en: "Pending", tone: "neutral", color: "#8a817c" },
+        ready: { zh: "就绪", en: "Ready", tone: "info", color: "#6366f1" },
+        running: { zh: "实施中", en: "Running", tone: "accent", color: "#4f46e5" },
+        blocked: { zh: "阻塞", en: "Blocked", tone: "warning", color: "#b45309" },
+        waiting_user: { zh: "待用户", en: "Waiting user", tone: "warning", color: "#92400e" },
+        reported: { zh: "已报告", en: "Reported", tone: "info", color: "#4338ca" },
+        accepted: { zh: "已验收", en: "Accepted", tone: "success", color: "#059669" },
+        rejected: { zh: "已打回", en: "Rejected", tone: "danger", color: "#dc2626" },
+        failed: { zh: "失败", en: "Failed", tone: "danger", color: "#b91c1c" },
+        paused: { zh: "暂停", en: "Paused", tone: "neutral", color: "#57534e" },
+        cancelled: { zh: "取消", en: "Cancelled", tone: "neutral", color: "#78716c" },
         active: { zh: "运行中", en: "Active", tone: "success" },
         completed: { zh: "已结束", en: "Completed", tone: "success" },
         current: { zh: "观测有效", en: "Current", tone: "success" },
@@ -1509,6 +2991,8 @@
       let lastLoaded = null;
       let filter = null;
       let language = "zh";
+      let autoRefresh = true;
+      let refreshTimer = null;
       // Every page read is bounded: a hung service must not strand the view. The same
       // timeout covers /snapshot and /health, and an explicit refresh aborts a read
       // that is still in flight instead of waiting for it.
@@ -1523,6 +3007,7 @@
       let renderedLanguage = null;
       let navLanguage = null;
       let healthState = { kind: "loading", at: null, message: "" };
+      let announcedHealth = null;
 
       const tr = (zh, en) => (language === "zh" ? zh : en);
       const locale = () => (language === "zh" ? "zh-CN" : "en-US");
@@ -1655,11 +3140,28 @@
         item.dataset.key = key;
         node(
           "summary",
-          summaryText || tr("核验与完整字段", "Verification & full fields"),
+          summaryText ||
+            tr("查看核验与完整字段", "View verification & full fields"),
           item,
         );
         facts(item, object);
         return item;
+      }
+
+      function announce(message) {
+        if (message) announcer.textContent = message;
+      }
+
+      function renderPauseControl() {
+        pauseButton.textContent = autoRefresh
+          ? tr("暂停", "Pause")
+          : tr("恢复", "Resume");
+        pauseButton.setAttribute(
+          "aria-label",
+          autoRefresh
+            ? tr("暂停自动刷新", "Pause auto-refresh")
+            : tr("恢复自动刷新", "Resume auto-refresh"),
+        );
       }
 
       function buildNav() {
@@ -1678,6 +3180,16 @@
 
       function renderChrome(snap) {
         if (navLanguage !== language) buildNav();
+        document.querySelectorAll("[data-zh][data-en]").forEach((element) => {
+          element.textContent = tr(element.dataset.zh, element.dataset.en);
+        });
+        reportLegend.setAttribute("aria-label", tr("报告图例", "Report legend"));
+        reportDate.dateTime = reportDateValue.toISOString();
+        reportDate.textContent = reportDateValue.toLocaleDateString(locale(), {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
         crumb.textContent = tr(
           "工作区 / 进展指挥台",
           "Workspace / progress console",
@@ -1689,22 +3201,26 @@
           "Local snapshot · no scheduling",
         );
         footer.textContent = tr(
-          "只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照 · 不估算完成百分比或剩余时间",
-          "Read-only observations · no scheduling, acceptance or queries · local snapshot every 3s · no estimated completion percentage or remaining time",
+          "只读观察 · 不做调度、验收或查询 · 每 3 秒读取本地快照（可暂停） · 不估算完成百分比或剩余时间",
+          "Read-only observations · no scheduling, acceptance or queries · local snapshot every 3s (pausable) · no estimated completion percentage or remaining time",
         );
         skipLink.textContent = tr("跳到主要内容", "Skip to main content");
         languageButton.textContent = language === "zh" ? "English" : "中文";
         languageButton.setAttribute(
           "aria-label",
-          tr("切换语言", "Switch language"),
+          language === "zh" ? "English · 切换语言" : "中文 · Switch language",
         );
         refreshButton.textContent = tr("↻ 刷新", "↻ Refresh");
+        refreshButton.setAttribute(
+          "aria-label",
+          tr("刷新快照", "Refresh snapshot"),
+        );
+        renderPauseControl();
         document.title = tr(
           "Orchestra · 进展指挥台",
           "Orchestra · Progress console",
         );
         document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
-        notice.lang = language === "zh" ? "zh-CN" : "en";
         renderRuns();
         runHeading.textContent = snap
           ? value(snap.run.title || snap.run.id)
@@ -1757,6 +3273,11 @@
           selectedRun ? runState(selectedRun) : "unknown",
         );
         runSummaryLabel.textContent = summaryText;
+        runSummary.title = summaryText;
+        const summaryState = selectedRun ? runState(selectedRun) : "unknown";
+        runSummaryStatus.textContent = selectedRun
+          ? tr("状态：", "Status: ") + label(summaryState)
+          : "";
         runSummary.setAttribute(
           "aria-label",
           selectedRun
@@ -1786,24 +3307,41 @@
           const dot = node("span", undefined, chip);
           paintRunDot(dot, current);
           dot.setAttribute("aria-hidden", "true");
+          const chipLabel = runLabels[runId] || runId;
           const chipText = node(
             "span",
-            (runLabels[runId] || runId) +
-              (unavailable ? tr(" · 不可用", " · unavailable") : ""),
+            chipLabel + (unavailable ? tr(" · 不可用", " · unavailable") : ""),
             chip,
           );
           chipText.className = "run-chip-text";
-          // The full Run ID stays reachable on hover even when the label is shown.
+          const chipState = node(
+            "span",
+            tr(" · 状态：", " · status: ") + label(current),
+            chip,
+          );
+          chipState.className = "run-chip-state";
+          // The full Run ID stays reachable on hover; the label expands on
+          // hover or keyboard focus when its chip would otherwise truncate.
           chip.title = runId;
           chip.className = "run-chip" + (unavailable ? " unavailable" : "");
           chip.href = "/?run=" + encodeURIComponent(runId);
           chip.dataset.run = runId;
+          chip.setAttribute(
+            "aria-label",
+            chipLabel +
+              (unavailable ? tr(" · 不可用", " · unavailable") : "") +
+              tr(" · 状态：", " · status: ") +
+              label(current),
+          );
           if (runId === selectedRun) chip.setAttribute("aria-current", "true");
           chip.addEventListener("click", (event) => {
             event.preventDefault();
             // A choice always closes the dropdown, even for the current Run.
             runMenu.open = false;
-            if (selectedRun === runId) return;
+            if (selectedRun === runId) {
+              if (event.detail === 0) runSummary.focus();
+              return;
+            }
             selectedRun = runId;
             history.replaceState(
               null,
@@ -1820,6 +3358,7 @@
             // The selection changed, so a read still in flight for the old Run must not
             // land on the new one: abort it and read the newly selected Run now.
             refresh({ force: true });
+            if (event.detail === 0) runSummary.focus();
           });
         }
         const hiddenCount = listed.filter(foldedByDefault).length;
@@ -1922,7 +3461,32 @@
               clock(lastLoaded) +
               tr(" 的最后有效快照", " as the last valid snapshot")
             : tr(" · 尚无有效快照", " · no valid snapshot yet");
+          text += autoRefresh
+            ? tr(
+                " · 3 秒后自动重试，或点击刷新",
+                " · retrying in 3s, or select Refresh",
+              )
+            : tr(
+                " · 自动刷新已暂停，点击刷新",
+                " · auto-refresh paused; select Refresh",
+              );
           health.textContent = text;
+          if (announcedHealth !== "error") {
+            announce(
+              tr("读取快照失败。", "Snapshot read failed. ") +
+                healthState.message +
+                (autoRefresh
+                  ? tr(
+                      " 3 秒后自动重试，或点击刷新。",
+                      " Retrying in 3 seconds, or select Refresh.",
+                    )
+                  : tr(
+                      " 自动刷新已暂停，点击刷新。",
+                      " Auto-refresh is paused; select Refresh.",
+                    )),
+            );
+            announcedHealth = "error";
+          }
           return;
         }
         const loadedAt = lastLoaded ? clock(lastLoaded) : tr("未知", "unknown");
@@ -1931,16 +3495,27 @@
           loadedAt +
           " · " +
           label(snapshot && snapshot.run ? snapshot.run.freshness : "unknown") +
-          tr(
-            " · 每 3 秒自动刷新 · 仅显式观察记录",
-            " · auto-refresh every 3s · explicit observations only",
-          );
+          (autoRefresh
+            ? tr(
+                " · 每 3 秒自动刷新 · 仅显式观察记录",
+                " · auto-refresh every 3s · explicit observations only",
+              )
+            : tr(
+                " · 自动刷新已暂停 · 仅显式观察记录",
+                " · auto-refresh paused · explicit observations only",
+              ));
+        if (announcedHealth === "error")
+          announce(tr("快照读取已恢复。", "Snapshot reads have recovered."));
+        announcedHealth = "ok";
       }
 
       function renderPlaceholder() {
         const paragraph = node(
           "p",
-          tr("尚无有效快照。", "No valid snapshot yet."),
+          tr(
+            "尚无有效快照。正在等待首次记录；如长时间未更新，请确认服务已启动并点击刷新。",
+            "No valid snapshot yet. Waiting for the first record; if this persists, confirm the service is running and select Refresh.",
+          ),
           content,
         );
         paragraph.className = "empty";
@@ -1959,6 +3534,7 @@
       function clearFilter() {
         filter = null;
         rerender();
+        announce(tr("筛选已重置。", "Filter cleared."));
       }
       function needsDecision(task) {
         return Boolean(task.pending_decision) || task.status === "waiting_user";
@@ -1967,11 +3543,10 @@
       function updateActiveNav() {
         const sections = [...content.querySelectorAll("section[id]")];
         if (!sections.length) return;
-        const offset =
-          (document.querySelector(".topbar")?.getBoundingClientRect().height ||
-            0) +
-          (health.getBoundingClientRect().height || 0) +
-          24;
+        const topbarBottom =
+          document.querySelector(".topbar")?.getBoundingClientRect().bottom ||
+          0;
+        const offset = Math.max(0, topbarBottom) + 16;
         let current = sections[0].id;
         for (const section of sections) {
           if (section.getBoundingClientRect().top <= offset)
@@ -2053,7 +3628,7 @@
           section,
           "run-full",
           snap.run,
-          tr("Run 完整字段", "Full Run fields"),
+          tr("查看 Run 完整字段", "View full Run fields"),
         );
         return section;
       }
@@ -2250,7 +3825,7 @@
             cy: 90,
             r: 70,
             fill: "none",
-            stroke: "#e8edf5",
+            stroke: "#e7e5e4",
             "stroke-width": 17,
           },
           svg,
@@ -2295,6 +3870,15 @@
           button.onclick = () => {
             filter = filter === state ? null : state;
             rerender();
+            announce(
+              filter
+                ? tr("筛选：", "Filter: ") +
+                    label(state) +
+                    tr(" · ", " · ") +
+                    counts.get(state) +
+                    tr(" 项任务", " tasks")
+                : tr("筛选已重置。", "Filter cleared."),
+            );
           };
         }
         if (!states.length)
@@ -2384,7 +3968,7 @@
           );
           const basisDetails = node("details", undefined, step);
           basisDetails.dataset.key = "basis" + index;
-          node("summary", tr("统计依据", "Count basis"), basisDetails);
+          node("summary", tr("查看统计依据", "View count basis"), basisDetails);
           node("p", basis, basisDetails);
         });
         const branches = node("div", undefined, section);
@@ -2405,7 +3989,10 @@
         branchBasis.dataset.key = "branch-basis";
         node(
           "summary",
-          tr("等待与返工的统计依据", "Wait & rework count basis"),
+          tr(
+            "查看等待与返工的统计依据",
+            "View wait & rework count basis",
+          ),
           branchBasis,
         );
         node(
@@ -2455,7 +4042,7 @@
         split.className = "split";
         const taskColumn = node("div", undefined, split);
         taskColumn.className = "column";
-        node("h3", tr("任务清单", "Task list"), taskColumn).className =
+        node("p", tr("任务清单", "Task list"), taskColumn).className =
           "column-title";
         const filterbar = node("div", undefined, taskColumn);
         filterbar.className = "filterbar";
@@ -2475,15 +4062,21 @@
           emptyState(
             taskColumn,
             filter
-              ? tr("没有匹配当前筛选的任务。", "No tasks match this filter.")
-              : tr("暂无任务记录。", "No task records yet."),
+              ? tr(
+                  "没有匹配当前筛选的任务。使用「重置筛选」恢复全部任务。",
+                  "No tasks match this filter. Select Reset filter to show all tasks.",
+                )
+              : tr(
+                  "暂无任务记录。任务写入快照后会显示在这里。",
+                  "No task records yet. Tasks appear here after they are written to the snapshot.",
+                ),
           );
         for (const task of shown) {
           const row = node("article", undefined, taskColumn);
           row.className = "task-row";
           const rowHead = node("div", undefined, row);
           rowHead.className = "row-head";
-          node("h4", value(task.title || task.id), rowHead);
+          node("h3", value(task.title || task.id), rowHead);
           const badges = node("div", undefined, rowHead);
           badges.className = "row-badges";
           badge(label(task.status), badges, tone(task.status));
@@ -2516,14 +4109,17 @@
         const workerColumn = node("div", undefined, split);
         workerColumn.className = "column";
         node(
-          "h3",
+          "p",
           tr("Worker 层级", "Worker hierarchy"),
           workerColumn,
         ).className = "column-title";
         if (!workers.length)
           emptyState(
             workerColumn,
-            tr("暂无 Worker 记录。", "No worker records yet."),
+            tr(
+              "暂无 Worker 记录。Worker 启动并写入快照后会显示在这里。",
+              "No worker records yet. Workers appear here after they start and are written to the snapshot.",
+            ),
           );
         const byId = new Map(workers.map((worker) => [worker.id, worker]));
         function depth(worker) {
@@ -2558,10 +4154,10 @@
         for (const worker of ordered) {
           const row = node("article", undefined, workerColumn);
           row.className = "worker-row";
-          row.style.marginLeft = depth(worker) * 14 + "px";
+          row.style.marginInlineStart = depth(worker) * 14 + "px";
           const rowHead = node("div", undefined, row);
           rowHead.className = "row-head";
-          node("h4", value(worker.task_id) + " · " + value(worker.id), rowHead);
+          node("h3", value(worker.task_id) + " · " + value(worker.id), rowHead);
           const badges = node("div", undefined, rowHead);
           badges.className = "row-badges";
           badge(
@@ -2588,7 +4184,10 @@
             report.dataset.key = "report:" + worker.id;
             node(
               "summary",
-              tr("自报摘要（未核验）", "Self-reported summary (unverified)"),
+              tr(
+                "查看自报摘要（未核验）",
+                "View self-reported summary (unverified)",
+              ),
               report,
             );
             node("p", worker.reported_summary, report);
@@ -2643,15 +4242,21 @@
         node(
           "p",
           tr(
-            "未核验指字段为 null 或缺失；缺少 delivery 记录的任务：",
-            "Unverified means null or missing; tasks without a delivery record: ",
+            "字段为 null 或缺失即「未核验」 · 缺少 delivery 记录的任务：",
+            "Null or missing means unverified · tasks without a delivery record: ",
           ) +
             tasks.filter((task) => !deliveryIds.has(task.id)).length,
           section,
         ).className = "caption";
-        node("h3", tr("产物", "Artifacts"), section).className = "column-title";
+        node("p", tr("产物", "Artifacts"), section).className = "column-title";
         if (!artifacts.length)
-          emptyState(section, tr("暂无产物记录。", "No artifacts recorded."));
+          emptyState(
+            section,
+            tr(
+              "暂无产物记录。交付产物写入快照后会显示在这里。",
+              "No artifacts recorded. Deliverables appear here after they are written to the snapshot.",
+            ),
+          );
         for (const artifact of artifacts) {
           const row = node("div", undefined, section);
           row.className = "artifact-row";
@@ -2689,7 +4294,7 @@
               },
               value(delivery.task_id) +
                 " · " +
-                tr("交付核验明细", "Delivery verification"),
+                tr("查看交付核验明细", "View delivery verification"),
             );
             for (const ref of delivery.evidence || [])
               reference(node("p", undefined, item), ref);
@@ -2707,7 +4312,13 @@
           head,
         ).className = "panel-note";
         if (!events.length)
-          emptyState(section, tr("暂无事件记录。", "No events recorded."));
+          emptyState(
+            section,
+            tr(
+              "暂无事件记录。写入首个事件后会显示在这里。",
+              "No events recorded. Events appear here after the first one is written to the snapshot.",
+            ),
+          );
         const ordered = [...events].reverse();
         if (ordered.length) {
           const list = node("ol", undefined, section);
@@ -2719,7 +4330,9 @@
           older.dataset.key = "older-events";
           node(
             "summary",
-            tr("更早事件", "Earlier events") + " · " + (ordered.length - 6),
+            tr("查看更早事件", "View earlier events") +
+              " · " +
+              (ordered.length - 6),
             older,
           );
           const oldList = node("ol", undefined, older);
@@ -2927,7 +4540,7 @@
                     ? `M ${x1} ${y1} C ${bend} ${y1 - 38} ${bend} ${y2 + 38} ${x2} ${y2}`
                     : `M ${x1} ${y1} C ${bend} ${y1} ${bend} ${y2} ${x2} ${y2}`,
                 fill: "none",
-                stroke: back ? "#c48458" : "#9aaccb",
+                stroke: back ? "#b45309" : "#64748b",
                 "stroke-width": 1.6,
               },
               svg,
@@ -2939,7 +4552,7 @@
               {
                 d: `M ${x2 + direction * 7} ${y2 - 4} L ${x2} ${y2} L ${x2 + direction * 7} ${y2 + 4}`,
                 fill: "none",
-                stroke: back ? "#c48458" : "#9aaccb",
+                stroke: back ? "#b45309" : "#64748b",
                 "stroke-width": 1.6,
               },
               svg,
@@ -2973,7 +4586,7 @@
             {
               x: position.x + 12,
               y: position.y + 22,
-              fill: "#1c2b45",
+              fill: "#0f172a",
               "font-size": 12,
             },
             group,
@@ -2984,7 +4597,7 @@
             {
               x: position.x + 12,
               y: position.y + 43,
-              fill: "#66738b",
+              fill: "#64748b",
               "font-size": 11,
             },
             group,
@@ -3000,8 +4613,8 @@
         node(
           "summary",
           tr(
-            "完整依赖文本（含未知节点）",
-            "Full dependency text (including unknown nodes)",
+            "查看完整依赖文本（含未知节点）",
+            "View full dependency text (including unknown nodes)",
           ),
           detail,
         );
@@ -3110,6 +4723,20 @@
         refreshRuns({ force: true });
         refresh({ force: true });
       });
+      pauseButton.addEventListener("click", () => {
+        autoRefresh = !autoRefresh;
+        if (autoRefresh) {
+          announcedHealth = null;
+          announce(tr("自动刷新已恢复。", "Auto-refresh resumed."));
+          refreshRuns({ force: true });
+          refresh({ force: true });
+        } else {
+          announce(tr("自动刷新已暂停。", "Auto-refresh paused."));
+        }
+        renderPauseControl();
+        renderHealth();
+        scheduleRefresh();
+      });
       languageButton.addEventListener("click", () => {
         language = language === "zh" ? "en" : "zh";
         renderChrome(snapshot);
@@ -3121,6 +4748,7 @@
       // collapses the burst into one read; a read already in flight is replaced, not queued.
       let foregroundTimer = null;
       function refreshForeground() {
+        if (!autoRefresh) return;
         if (foregroundTimer) return;
         foregroundTimer = setTimeout(() => {
           foregroundTimer = null;
@@ -3157,10 +4785,18 @@
       renderHealth();
       refreshRuns();
       refresh();
-      setInterval(() => {
-        refreshRuns();
-        refresh();
-      }, 3000);
+      function scheduleRefresh() {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+        if (!autoRefresh) return;
+        refreshTimer = setInterval(() => {
+          refreshRuns();
+          refresh();
+        }, 3000);
+      }
+      scheduleRefresh();
     </script>
   </body>
 </html>
