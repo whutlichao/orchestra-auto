@@ -252,6 +252,99 @@ class MessagingCapabilityTests(unittest.TestCase):
                 self.assertFalse(overrides[0]['applied'])
                 self.assertTrue(module._blocking_decision([item], overrides)['blocked'])
 
+class MessagingNegationScopeTests(unittest.TestCase):
+    """A negation fails the gate only when it lands on the handled contract.
+
+    Orca documents every check mode on one help page, so a bare phrase scan reads an
+    unrelated sentence as a contract change: ``--peek`` says it returns unread messages
+    "without marking them read", and that is about a read cursor, not about the consuming
+    check marking its FIFO batch handled. The gate must ignore it and still fail closed
+    when the selected CLI really drops the handled semantics.
+    """
+
+    REAL_CHECK_HELP = (
+        "Usage: orca orchestration check [--terminal <handle>] [--run <run_id>] "
+        "[--ack <delivery_id>] [--unread | --peek | --all] [--retry-request <id>] [--json]\n"
+        "  default: return the bound Run's oldest unread FIFO batch and mark it handled.\n"
+        "  --ack: optional; acknowledges a batch from an older Orca that does not mark it.\n"
+        "  --peek: return only unread messages without marking them read.\n"
+        "  --all: return recent messages for the handle; does not mark read.\n"
+        "Notes:\n"
+        "  A consuming check marks the batch it returns as handled, so the next check "
+        "returns newer mail; no --ack is needed.\n"
+        "  A script that only watches the inbox must use --peek (including --peek --wait) "
+        "and must never --ack, or it takes mail the agent never sees.\n"
+        "  If a check response was lost, rerun it with the --retry-request it printed to "
+        "get the same batch. To find mail after losing context, run orca orchestration "
+        "inbox --terminal <mailbox> --limit <n> --full\n"
+    )
+
+    @staticmethod
+    def _module(package):
+        import importlib.util
+        path = ROOT / "skills" / package / "scripts" / "preflight.py"
+        spec = importlib.util.spec_from_file_location("negation_scope_preflight", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_unrelated_negations_do_not_fail_the_contract(self):
+        for package in PACKAGES:
+            module = self._module(package)
+            # The gate probes exactly what _check_messaging probes: whitespace collapsed
+            # and lower-cased, because the help page wraps and changes case freely.
+            check = module._collapse(self.REAL_CHECK_HELP).lower()
+            with self.subTest(package=package):
+                self.assertEqual(module._handled_negation(check), "")
+                self.assertTrue(module._messaging_contract_known("orca wakes you.", check))
+
+    def test_negations_aimed_at_handled_still_fail_closed(self):
+        negations = (
+            "default: return the oldest unread FIFO batch; it does not mark it handled.",
+            "default: return the oldest unread FIFO batch. It never marks it handled.",
+            "default: return the FIFO batch without marking it handled.",
+            "default: return the FIFO batch without marking the batch as handled.",
+            "checks no longer mark the batch as handled; --retry-request replays the same batch.",
+            "a check leaves its FIFO batch unhandled; --retry-request replays the same batch.",
+            "a lost response discards the batch; --retry-request replays the same batch.",
+        )
+        for package in PACKAGES:
+            module = self._module(package)
+            for text in negations:
+                with self.subTest(package=package, text=text):
+                    self.assertTrue(module._handled_negation(text.lower()), text)
+                    self.assertFalse(
+                        module._messaging_contract_known("Orca wakes you.", text.lower()), text)
+
+    def test_message_capability_passes_on_the_current_help_page(self):
+        for package in PACKAGES:
+            module = self._module(package)
+            self_help = self.REAL_CHECK_HELP
+
+            class Runner:
+                def run(self, argv, timeout=None):
+                    outputs = {
+                        ("--version",): "1.4.248\n",
+                        ("skills", "get", "orchestration"): "Orca wakes you.\n",
+                        ("orchestration", "check", "--help"): self_help,
+                        ("orchestration", "inbox", "--help"): "--terminal --full",
+                    }
+                    key = tuple(argv[1:])
+                    return {"returncode": 0 if key in outputs else 1,
+                            "stdout": outputs.get(key, ""), "stderr": ""}
+
+            context = {"messaging": {
+                "native_wake_confirmed": True, "source": "live_preamble",
+                "evidence_ref": "session evidence", "legacy_migration_complete": True,
+                "migration_evidence_ref": "inventory evidence"}}
+            with self.subTest(package=package):
+                item = module._check_messaging(context, Runner())
+                self.assertEqual(item["result"], "pass", item["note"])
+                self.assertEqual(item["observed"]["semantic_basis"], "documented_contract")
+                self.assertEqual(item["observed"]["handled_negation"], "")
+                self.assertEqual(item["evidence_ref"], "session evidence")
+
 class MessagingVersionAdaptationTests(unittest.TestCase):
     def test_first_session_and_evidence_bound_human_review(self):
         import hashlib
