@@ -374,22 +374,44 @@ def _terminal_binding(runner, guide):
 
 
 _HANDLED_NEGATIONS = (
-    "does not mark it handled",
-    "do not mark it handled",
-    "not mark it handled",
-    "not marked handled",
-    "never marks it handled",
-    "never mark it handled",
-    "without marking",
-    "discard the batch",
+    # A negation only counts when it lands on the act of marking or consuming a batch
+    # as handled, inside one clause. Scanning the whole help for a bare token is wrong:
+    # the same page documents other modes, and ``--peek`` says it returns unread
+    # messages "without marking them read", which says nothing about the consuming
+    # check's handled semantics. Binding the negation to the handled verb keeps the gate
+    # fail-closed (a genuine "does not mark it handled" still matches) while ignoring
+    # negations aimed at an unrelated object.
+    re.compile(
+        r"(?:\b(?:not|never|no\s+longer|without)\b|n't\b)"
+        r"[^.;]{0,80}?"
+        r"\b(?:mark(?:s|ed|ing)?|consume[sd]?|consuming)\b"
+        r"[^.;]{0,40}?"
+        r"\b(?:handled|consumed)\b"
+    ),
+    re.compile(r"\bunhandled\b"),
+    re.compile(r"\bdiscard(?:s|ed|ing)?\s+(?:the|this|any|a)\s+batch\b"),
 )
+
+
+def _handled_negation(text):
+    """Return the clause that negates the handled contract, or ``''``.
+
+    The help text documents every mode at once, so context decides whether a negation
+    is a contract change. A match here means the selected CLI says out loud that a check
+    does not mark (or no longer consumes) its batch as handled.
+    """
+    for pattern in _HANDLED_NEGATIONS:
+        match = pattern.search(text)
+        if match is not None:
+            return match.group(0)
+    return ""
 
 
 def _messaging_contract_known(guide, check):
     """Verify wake, FIFO handled read, --retry-request replay, and inbox recovery."""
     if not guide or not check:
         return False
-    if any(phrase in check for phrase in _HANDLED_NEGATIONS):
+    if _handled_negation(check):
         return False
     wake_ok = ("orca wakes you" in guide) or ("orca" in guide and "wakes you" in guide)
     fifo_handled_ok = (
@@ -485,6 +507,7 @@ def _check_messaging(context, runner):
                         f"{terminal_probe['handle']} to this pane; "
                         "orca orchestration inbox --terminal "
                         f"{terminal_probe['handle']} --json reached its mailbox")
+    handled_negation = _handled_negation(check)
     known = _messaging_contract_known(guide, check)
     review = messaging.get("human_verification")
     review = review if isinstance(review, dict) else {}
@@ -508,6 +531,7 @@ def _check_messaging(context, runner):
                   "migration_confirmed": migration_ready,
                   "migration_evidence_ref": migration_ref if isinstance(migration_ref, str) else "",
                   "version": version, "probes": observations,
+                  "handled_negation": handled_negation,
                   "semantic_basis": "documented_contract" if known else "human_review" if reviewed else "unknown",
                   "reviewed_by": reviewer if reviewed else "",
                   "review_evidence_ref": review_ref if reviewed else ""},
