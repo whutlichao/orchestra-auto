@@ -1062,14 +1062,68 @@ def _row_matches_ticket(row, subject):
     return bool(subject.get("ticket")) and row.get("ticket") == subject["ticket"]
 
 
-#: Worker states that prove a stop/abandon/release reached a terminal point.
+#: Worker states that prove the worker's own process reached a terminal point.
+#: These are *process* states: the live projection reports them in ``state`` (task
+#: outcome), and older hosts reported them in ``worker_state``/``workerState``.
 TERMINAL_WORKER_STATES = (
-    "stopped", "abandoned", "closed", "done", "settled", "exited", "released",
+    "stopped", "abandoned", "closed", "done", "settled", "exited",
+    "succeeded", "failed",
 )
+
+#: Terminal accounting that proves a release took effect. This is separate from
+#: :data:`TERMINAL_WORKER_STATES` because the two answer different questions: a process
+#: that ended is not a terminal that was released. The live projection reports it in
+#: ``terminalState``/``terminal_state``, older hosts in ``worker_state``.
+RELEASED_TERMINAL_STATES = ("released",)
+
+
+def _worker_process_state(row):
+    """The worker's own process state, read from the task outcome before accounting.
+
+    ``state`` is the live task outcome (``succeeded``/``failed``/``stopped``) and
+    ``worker_state``/``workerState`` is the older host's spelling of the same signal.
+    ``terminal_state``/``terminalState`` is resource accounting and is consulted only
+    when no process signal exists, because it outlives the process: a live worker was
+    measured ``state=ready, terminalState=retained``.
+    """
+    for key in ("state", "worker_state", "workerState"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
 
 
 def _terminal_worker(row):
-    return str(row.get("worker_state", "")).lower() in TERMINAL_WORKER_STATES
+    """Whether a proof row shows a worker whose process reached a terminal point.
+
+    Only a process signal can answer this directly: ``state`` on the live projection and
+    ``worker_state``/``workerState`` on an older one. Terminal accounting is read only
+    for the one inference it licenses: a ``released`` terminal is reachable only after
+    its worker settled, so it proves the stop. ``retained``/``reclaimable``/``release_*``
+    prove nothing here — a live worker was measured ``state=ready, terminalState:
+    retained`` — and are left to :func:`_released_worker`, which answers the different
+    question of whether a release took effect. The legacy ``settled`` flag stays a
+    separate proof where the release branch already consults it.
+    """
+    if _worker_process_state(row) in TERMINAL_WORKER_STATES:
+        return True
+    return _released_worker(row)
+
+
+def _released_worker(row):
+    """Whether a proof row shows a terminal that was actually released.
+
+    A finished worker is not a released terminal: the live projection reports a settled
+    worker as ``state=succeeded, terminalState=retained``, and a ``release_unknown``
+    terminal is precisely the case where the release did *not* take effect. Only terminal
+    accounting can prove the effect, so this reads ``terminalState``/``terminal_state``
+    first and falls back to ``worker_state``/``workerState`` for older hosts.
+    """
+    for key in ("terminal_state", "terminalState", "worker_state", "workerState"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower() in RELEASED_TERMINAL_STATES
+    return False
 
 
 def _projection_repair(intent, probe, evidence):
@@ -1217,10 +1271,13 @@ def _probe(snapshot, intent):
                 result["effect"] = result["observable"] and bool(proof) and all(
                     _terminal_worker(row) for row in proof)
             elif action == "release":
-                # worker-show and worker-list are both allowed proof sources; the union
-                # is safe because every proof row must be terminal or settled.
+                # Only terminal accounting proves a release took effect. A finished
+                # worker is not a released terminal: the live projection reports a
+                # settled worker as ``state=succeeded, terminalState=retained``, and a
+                # ``release_unknown`` terminal is exactly the case where the release did
+                # not land. ``settled`` remains the older host's proof.
                 result["effect"] = result["observable"] and bool(proof) and all(
-                    _terminal_worker(row) or row.get("settled") is True for row in proof)
+                    _released_worker(row) or row.get("settled") is True for row in proof)
             elif action == "retain":
                 result["effect"] = bool(matching) and not all(
                     _terminal_worker(row) for row in matching)
@@ -1473,8 +1530,12 @@ def _classify_open_intent(snapshot, intent):
             return _outcome("unknown", "W3", intent, evidence=evidence,
                             decision=decision)
         if replay == "settled":
+            # A worker is settled when its own run ended (the live ``state`` reports
+            # ``succeeded``/``stopped``/``failed``) or, on an older host, when the legacy
+            # ``settled`` flag says so. Without either proof the release is not replayed.
             settled = [row for kind, row in probe["rows"]
-                       if kind == "worker" and row.get("settled") is True]
+                       if kind == "worker"
+                       and (row.get("settled") is True or _terminal_worker(row))]
             if not settled:
                 decision = _decision(
                     "unsettled_release",
@@ -2456,21 +2517,39 @@ def _snake_aliases(raw, aliases):
 
 
 def _normalized_worker_row(raw):
+    """Normalize one worker row from either the live projection or an older host.
+
+    The live CLI (Orca 1.4.263) emits ``state`` for the task outcome and ``terminalState``
+    for terminal accounting, and never emits ``workerState``/``worker_state``/``settled``.
+    Both live keys are carried into the normalized row alongside the legacy aliases, so a
+    proof row keeps the state a replay decision reads. ``worktree`` falls back through
+    ``workspace`` (the live spelling) to the older keys; a value of the wrong type is
+    dropped rather than coerced, keeping the normalization fail-closed.
+    """
     row = _snake_aliases(raw, {
         "taskId": "task_id", "dispatchId": "dispatch_id", "runId": "run_id",
-        "workerState": "worker_state",
+        "workerState": "worker_state", "terminalState": "terminal_state",
     })
     attempt = row.get("attempt")
     if isinstance(attempt, str) and attempt.isdigit():
         row["attempt"] = int(attempt)
     if "attempt" in row and (type(row["attempt"]) is not int or row["attempt"] < 1):
         row.pop("attempt")
-    for key in ("task_id", "dispatch_id", "run_id", "worker_state", "worktree"):
+    for key in ("task_id", "dispatch_id", "run_id", "worker_state", "terminal_state",
+                "state", "worktree"):
         if key in row and not isinstance(row[key], str):
             row.pop(key)
     for key in ("settled", "remote"):
         if key in row and not isinstance(row[key], bool):
             row.pop(key)
+    # The live spelling wins over the legacy one, so a hybrid row that carries both
+    # cannot smuggle a stale path into the progress projection. An empty string is not
+    # a name, so it falls through like an absent key.
+    for key in ("workspace", "worktree", "worktreePath"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            row["worktree"] = value
+            break
     return row
 
 

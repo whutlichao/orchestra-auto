@@ -141,17 +141,24 @@ def authority(orca=None, pr_host=None, tracker=None, git=None, progress=None,
 
 
 def worker_row(task_id="task-1", dispatch_id="dispatch-1", attempt=1, run_id=RUN_ID,
-               settled=True, remote=False, worker_state="ready"):
-    """One normalized ``worker-list`` row (a fixture, not an Orca contract)."""
-    return {
+               state="ready", remote=False, terminal_state=None, **legacy):
+    """One normalized ``worker-list`` row in the live projection's own fields.
+
+    The live CLI emits ``state`` (task outcome) and ``terminalState`` (resource
+    accounting). ``legacy`` accepts the pre-1.4.263 spellings (``settled``,
+    ``worker_state``) so the fallback paths keep a fixture of their own.
+    """
+    row = {
         "task_id": task_id,
         "dispatch_id": dispatch_id,
         "attempt": attempt,
         "run_id": run_id,
-        "settled": settled,
+        "state": state,
         "remote": remote,
-        "worker_state": worker_state,
+        "terminal_state": terminal_state,
     }
+    row.update(legacy)
+    return row
 
 
 def task_row(task_id="task-1", orca_task_id="task-1", provisional=False):
@@ -1165,6 +1172,198 @@ class AuthoritySnapshotTests(LedgerTestCase):
             self.ledger.classify([intent_record()], snapshot)
 
 
+class LiveWorkerProjectionTests(LedgerTestCase):
+    """The live worker-row shape (``state``/``terminalState``/``workspace``).
+
+    Orca 1.4.263 never emits ``workerState``, ``worker_state`` or ``settled``. The
+    normalized row must carry the live keys so the release replay can be proven from a
+    real ``terminalState=released`` row, while terminal accounting alone never proves a
+    process ended.
+    """
+
+    #: Verbatim candidates from the live projection, one per terminal accounting state.
+    LIVE_RELEASED = {
+        "dispatchId": "ctx_example_released", "taskId": "task_1",
+        "state": "failed", "outcome": None, "liveness": "exited",
+        "terminal": "term_45ed13e73523", "terminalState": "released",
+        "workspace": "repo::/work/failed-dispatch", "host": "local",
+    }
+    LIVE_RETAINED_LIVE = {
+        "dispatchId": "ctx_example_live", "taskId": "task_2",
+        "state": "ready", "liveness": "live", "terminal": "term_5005becb6396",
+        "terminalState": "retained", "workspace": "repo::/work/live",
+        "host": "local",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = load_ledger(SKILL_DIRS[0])
+
+    def test_the_normalized_row_carries_the_live_state_and_terminal_state(self):
+        row = self.ledger._normalized_worker_row(dict(self.LIVE_RELEASED))
+        self.assertEqual(row["dispatch_id"], "ctx_example_released")
+        self.assertEqual(row["task_id"], "task_1")
+        self.assertEqual(row["state"], "failed")
+        self.assertEqual(row["terminal_state"], "released")
+        self.assertEqual(row["worktree"], "repo::/work/failed-dispatch")
+        self.assertNotIn("worker_state", row)
+
+    def test_a_terminal_state_of_released_proves_a_terminal_worker(self):
+        """The release replay effect is provable from a recorded ``terminalState`` row."""
+        for raw in (self.LIVE_RELEASED, self.ledger._normalized_worker_row(
+                dict(self.LIVE_RELEASED))):
+            with self.subTest(normalized="terminal_state" in raw):
+                self.assertTrue(self.ledger._terminal_worker(raw))
+
+    def test_retain_is_decided_by_the_process_state_not_by_accounting(self):
+        """``retain`` holds while the worker runs; terminal accounting is not the process.
+
+        ``state=ready, terminalState=retained`` still has a live process, so its retain
+        effect holds. ``state=failed, terminalState=retained`` has ended, so that same
+        retain effect does not.
+        """
+        live = self.ledger._normalized_worker_row(dict(self.LIVE_RETAINED_LIVE))
+        ended = self.ledger._normalized_worker_row({**self.LIVE_RELEASED,
+                                                    "state": "failed",
+                                                    "terminalState": "retained"})
+        self.assertFalse(self.ledger._terminal_worker(live))
+        self.assertTrue(self.ledger._terminal_worker(ended))
+        # The retain effect is "a matching live row exists", read from the process state.
+        self.assertFalse(all(self.ledger._terminal_worker(row) for row in [live]))
+        self.assertTrue(all(self.ledger._terminal_worker(row) for row in [ended]))
+
+    def test_live_resource_accounting_never_proves_a_process_ended(self):
+        """``terminalState=retained`` on a live worker must not read as terminal."""
+        for raw in (self.LIVE_RETAINED_LIVE,
+                    self.ledger._normalized_worker_row(dict(self.LIVE_RETAINED_LIVE))):
+            with self.subTest(normalized="terminal_state" in raw):
+                self.assertFalse(self.ledger._terminal_worker(raw))
+
+    def test_legacy_keys_still_prove_termination(self):
+        for row in ({"worker_state": "stopped"}, {"workerState": "stopped"},
+                    {"state": "succeeded"}, {"worker_state": "ready"}):
+            with self.subTest(row=row):
+                self.assertEqual(
+                    self.ledger._terminal_worker(row),
+                    row.get("worker_state") != "ready")
+
+    def test_an_unreadable_row_proves_nothing(self):
+        for row in ({}, {"state": None}, {"state": 7},
+                    {"terminal_state": "retained"}, {"state": "ready"}):
+            with self.subTest(row=row):
+                self.assertFalse(self.ledger._terminal_worker(row))
+
+    def test_a_live_released_row_makes_the_release_effect_provable(self):
+        """A completed release against a real released row is ``matched``, not divergent."""
+        intent = intent_record(action="release", idempotency="replay_safe",
+                               subject={"task_id": "task_1",
+                                        "dispatch_id": "ctx_example_released"},
+                               detail={"expected_effect": "release"})
+        completed = result_record(intent, state="completed")
+        report = self.ledger.classify([intent, completed], authority(orca=orca_section(
+            request_show={intent["request_id"]: {"state": "completed"}},
+            workers={"state": "ok", "reason": "",
+                     "rows": [self.ledger._normalized_worker_row(dict(self.LIVE_RELEASED))]},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "matched",
+                         report["classifications"][0])
+        self.assertEqual(report["classifications"][0]["conflicts"], [])
+
+    def test_a_live_retained_worker_never_proves_a_release(self):
+        intent = intent_record(action="release", idempotency="replay_safe",
+                               subject={"task_id": "task_2",
+                                        "dispatch_id": "ctx_example_live"},
+                               detail={"expected_effect": "release"})
+        completed = result_record(intent, state="completed")
+        report = self.ledger.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": [
+                self.ledger._normalized_worker_row(dict(self.LIVE_RETAINED_LIVE))]},
+        )))
+        self.assertEqual(report["classifications"][0]["classification"], "divergent")
+
+    def test_a_settled_worker_is_not_a_released_terminal(self):
+        """A finished worker whose terminal is unknown never proves a release landed.
+
+        The live projection reports a settled worker as ``state=succeeded`` with its
+        terminal accounting beside it. ``release_unknown`` is precisely the case where
+        the release did not land, and ``retained`` is a terminal nobody released, so
+        reading the task outcome as the effect would record an unfinished release as
+        observed and swallow the decision that the ledger owes a human.
+        """
+        for terminal_state in ("release_unknown", "retained", "release_pending",
+                               "reclaimable", "active"):
+            with self.subTest(terminal_state=terminal_state):
+                intent = intent_record(
+                    action="release", idempotency="replay_safe",
+                    subject={"task_id": "task_1",
+                             "dispatch_id": "ctx_example_settled_unknown"},
+                    detail={"expected_effect": "release"})
+                completed = result_record(intent, state="completed")
+                row = self.ledger._normalized_worker_row({
+                    "dispatchId": "ctx_example_settled_unknown", "taskId": "task_1",
+                    "state": "succeeded", "liveness": "unverifiable",
+                    "terminalState": terminal_state,
+                    "workspace": "repo::/work/settled",
+                })
+                report = self.ledger.classify(
+                    [intent, completed],
+                    authority(orca=orca_section(
+                        workers={"state": "ok", "reason": "", "rows": [row]})))
+                self.assertEqual(
+                    report["classifications"][0]["classification"], "divergent",
+                    report["classifications"][0])
+
+    def test_a_settled_worker_never_holds_a_retain(self):
+        """``retain`` keeps a worker that is still there; a settled one is not retained.
+
+        The retain effect is "a matching non-terminal row exists". Once the worker's own
+        run ended the retain no longer describes the worker, so a completed retain over
+        that row is divergent — the coordinator decides, the ledger does not assume.
+        """
+        intent = intent_record(action="retain", idempotency="replay_safe",
+                               subject={"task_id": "task_1",
+                                        "dispatch_id": "ctx_example_kept"},
+                               detail={"expected_effect": "retain"})
+        completed = result_record(intent, state="completed")
+        row = self.ledger._normalized_worker_row({
+            "dispatchId": "ctx_example_kept", "taskId": "task_1",
+            "state": "succeeded", "liveness": "unverifiable",
+            "terminalState": "retained", "workspace": "repo::/work/kept",
+        })
+        report = self.ledger.classify([intent, completed], authority(orca=orca_section(
+            workers={"state": "ok", "reason": "", "rows": [row]})))
+        self.assertEqual(report["classifications"][0]["classification"], "divergent",
+                         report["classifications"][0])
+
+    def test_the_live_workspace_wins_over_a_legacy_worktree(self):
+        """The read priority is ``workspace -> worktree -> worktreePath``, not the reverse."""
+        row = self.ledger._normalized_worker_row({
+            "dispatchId": "d1", "taskId": "t1", "state": "ready",
+            "terminalState": "retained",
+            "workspace": "repo::/work/live", "worktree": "/stale/worktree",
+        })
+        self.assertEqual(row["worktree"], "repo::/work/live")
+        legacy = self.ledger._normalized_worker_row({
+            "dispatchId": "d2", "taskId": "t2", "state": "ready",
+            "terminalState": "retained", "worktree": "/legacy/worktree"})
+        self.assertEqual(legacy["worktree"], "/legacy/worktree")
+        empty = self.ledger._normalized_worker_row({
+            "dispatchId": "d3", "taskId": "t3", "state": "ready",
+            "terminalState": "retained", "workspace": "",
+            "worktreePath": "/path/worktree"})
+        self.assertEqual(empty["worktree"], "/path/worktree")
+
+    def test_the_live_worker_show_row_normalizes_and_proves_a_stop(self):
+        shown = self.ledger._normalized_worker_row({
+            "dispatchId": "ctx_example_stopped", "taskId": "task_3",
+            "runId": RUN_ID, "state": "stopped", "stage": "settled",
+            "liveness": "exited", "terminalState": "retained",
+            "waitingOnHuman": "unknown",
+        })
+        self.assertEqual(shown["state"], "stopped")
+        self.assertTrue(self.ledger._terminal_worker(shown))
+
+
 class ClassifierTests(LedgerTestCase):
     """The pure classifier covers matched, orphan_intent, orphan_effect, divergent, unknown."""
 
@@ -1486,7 +1685,7 @@ class ForbiddenReplayTests(LedgerTestCase):
         report = self.classify([intent], authority(orca=orca_section(
             request_show={intent["request_id"]: {"state": "pending"}},
             workers={"state": "ok", "reason": "",
-                     "rows": [worker_row(settled=False, worker_state="ready")]},
+                     "rows": [worker_row(state="ready", settled=False)]},
         )))
         self.assertNotIn("replay", self.repair_kinds(report))
         self.assertIn("unsettled_release", self.decision_classes(report))
@@ -1497,7 +1696,7 @@ class ForbiddenReplayTests(LedgerTestCase):
         report = self.classify([intent], authority(orca=orca_section(
             request_show={intent["request_id"]: {"state": "pending"}},
             workers={"state": "ok", "reason": "",
-                     "rows": [worker_row(settled=True, worker_state="settled")]},
+                     "rows": [worker_row(state="succeeded")]},
         )))
         self.assertEqual(self.repair_kinds(report), ["replay"])
         self.assertEqual(report["repairs"][0]["request_id"], intent["request_id"])
@@ -1535,7 +1734,7 @@ class ActionMatrixTests(LedgerTestCase):
         report = self.classify([intent], authority(orca=orca_section(
             request_show={intent["request_id"]: {"state": "absent"}},
             workers={"state": "ok", "reason": "",
-                     "rows": [worker_row(worker_state="ready")]},
+                     "rows": [worker_row(state="ready")]},
         )))
         self.assertEqual(report["classifications"][0]["classification"], "orphan_intent")
         self.assertIn("stop_abandon_no_retry", self.decisions(report))
@@ -1587,7 +1786,7 @@ class ActionMatrixTests(LedgerTestCase):
         completed = result_record(intent, state="completed")
         report = self.classify([intent, completed], authority(orca=orca_section(
             workers={"state": "ok", "reason": "",
-                     "rows": [worker_row(worker_state="stopped")]},
+                     "rows": [worker_row(state="stopped")]},
             worker_show={"dispatch-1": {
                 "state": "unknown", "reason": "worker-show failed", "worker": {}}},
         )))
@@ -1607,7 +1806,7 @@ class ActionMatrixTests(LedgerTestCase):
         completed = result_record(intent, state="completed")
         report = self.classify([intent, completed], authority(orca=orca_section(
             workers={"state": "ok", "reason": "",
-                     "rows": [worker_row(worker_state="ready")]},
+                     "rows": [worker_row(state="ready")]},
             worker_show={"dispatch-1": {
                 "state": "ok",
                 "worker": {"task_id": "task-1", "dispatch_id": "dispatch-1",
@@ -2022,10 +2221,12 @@ class LiveAuthorityTests(LedgerTestCase):
             worker_show={
                 "dispatch-1": {
                     "state": "ok",
-                    "worker": {"dispatchId": "dispatch-1", "workerState": "ready"}},
+                    "worker": {"dispatchId": "dispatch-1", "state": "ready", "liveness": "live",
+                               "terminalState": "retained"}},
                 "dispatch-2": {
                     "state": "ok",
-                    "worker": {"dispatchId": "dispatch-2", "workerState": "ready"}},
+                    "worker": {"dispatchId": "dispatch-2", "state": "ready", "liveness": "live",
+                               "terminalState": "retained"}},
             },
             task_pages=[{"tasks": [task_row()]}],
         )
@@ -2039,7 +2240,7 @@ class LiveAuthorityTests(LedgerTestCase):
         self.assertEqual(normalized["orca"]["request_show"][intent["request_id"]]["state"],
                          "completed")
         self.assertEqual(
-            normalized["orca"]["worker_show"]["dispatch-1"]["worker"]["worker_state"],
+            normalized["orca"]["worker_show"]["dispatch-1"]["worker"]["state"],
             "ready")
         self.assertEqual(normalized["orca"]["tasks"]["rows"][0]["orca_task_id"], "task-1")
 
@@ -2278,7 +2479,8 @@ class ReconcileCliTests(LedgerTestCase):
             ],
             "worker_show": {"dispatch-1": {
                 "state": "ok",
-                "worker": {"dispatchId": "dispatch-1", "workerState": "ready"}}},
+                "worker": {"dispatchId": "dispatch-1", "state": "ready", "liveness": "live",
+                               "terminalState": "retained"}}},
             "task_pages": [{"tasks": [task_row()]}],
             "lock_probe": self.home / "runs" / RUN_ID / "ledger.lock",
         }
@@ -2604,7 +2806,8 @@ class DispatchCompositionTests(LedgerTestCase):
             mutations={"worker-start": [receipt]},
             worker_show={"dispatch-1": {
                 "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
-                "workerState": "running", "runId": RUN_ID}},
+                "state": "ready", "liveness": "live", "terminalState": "retained",
+                "runId": RUN_ID}},
         )
         captured = {}
         preflight = make_record(
@@ -2701,7 +2904,8 @@ class DispatchCompositionTests(LedgerTestCase):
             request_show={request_id: {"state": "completed", "receipt": receipt}},
             worker_pages=[{"workers": [{
                 "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
-                "runId": RUN_ID, "workerState": "running", "settled": True}]}],
+                "runId": RUN_ID, "state": "ready", "liveness": "live",
+                "terminalState": "retained"}]}],
         )
         intent = make_record(
             kind="intent", state="intent", action="worker-start",
@@ -2772,7 +2976,8 @@ class DispatchCompositionTests(LedgerTestCase):
             request_show={request_id: {"state": "completed", "receipt": receipt}},
             worker_pages=[{"workers": [{
                 "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
-                "runId": RUN_ID, "workerState": "running"}]}],
+                "runId": RUN_ID, "state": "ready", "liveness": "live",
+                "terminalState": "retained"}]}],
         )
         intent = make_record(
             kind="intent", state="intent", action="worker-start",
@@ -2826,8 +3031,8 @@ class DispatchCompositionTests(LedgerTestCase):
             request_show={request_id: {"state": "completed", "receipt": receipt}},
             worker_pages=[{"workers": [{
                 "taskId": "orca-task-1", "dispatchId": "dispatch-1", "attempt": 1,
-                "worktree": "wt-1", "runId": RUN_ID, "workerState": "running",
-                "settled": True}]}],
+                "worktree": "wt-1", "runId": RUN_ID, "state": "ready", "liveness": "live",
+                "terminalState": "retained"}]}],
             task_pages=[{"tasks": [{"taskId": "local-1",
                                     "orcaTaskId": "orca-task-1"}]}],
         )

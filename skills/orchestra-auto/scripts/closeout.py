@@ -131,6 +131,20 @@ AUTHORITY_SECTIONS = (
 SECTION_STATES = ("ok", "unknown")
 RELEASE_VERIFICATION_KEYS = ("source", "at", "version_scope")
 MAPPING_KEYS = ("dispatch_id", "task_id", "attempt", "worktree")
+#: Where a mapping entry's ``attempt`` came from. ``orca`` is a value the authority
+#: reported; ``local`` is this process's first-attempt count, which the design record
+#: forbids using for authoritative reconciliation (§5.1.6) — the entries carry the
+#: marker so a reader can never mistake one for the other. It is validated by
+#: ``_valid_mapping`` rather than added to ``MAPPING_KEYS``, so the failure-recovery
+#: input shape stays the four identity fields.
+ATTEMPT_SOURCES = ("orca", "local")
+#: What a *stored* mapping entry must carry: the identity fields plus the source of its
+#: attempt. ``--print-schema`` prints this for ``mapping``, because a document written from
+#: that schema has to be one ``_valid_mapping`` accepts. ``failure_recovery`` keeps printing
+#: :data:`MAPPING_KEYS`, which is the shape ``_failure_mapping`` *takes* — it supplies the
+#: source itself, so its callers do not type that field. The tuple is derived rather than
+#: written out, so the identity fields cannot be listed twice and drift apart.
+MAPPING_ENTRY_FIELDS = MAPPING_KEYS + ("attempt_source",)
 
 #: The row shape each authority section's row list holds, as read by the planner
 #: (``_row_two`` through ``_row_ten``). ``--print-schema`` prints these so a reader is told
@@ -140,7 +154,8 @@ SECTION_ROWS = {
     "git": ("ancestry", ("ancestor", "descendant", "result")),
     "tickets": ("tickets", ("ticket", "integrated", "evidence_ref")),
     "tracker": ("tickets", ("ticket", "state", "closed_at")),
-    "workers": ("rows", ("dispatch_id", "task_id", "attempt", "worktree", "worker_state")),
+    "workers": ("rows", ("dispatch_id", "task_id", "attempt", "attempt_source",
+                         "worktree", "worker_state")),
 }
 #: ``git`` also carries the local-main object ``_row_five`` checks.
 MAIN_KEYS = ("branch", "head", "local_branch", "local_head", "upstream", "clean", "synced")
@@ -242,7 +257,7 @@ def schema():
             "note": "reconcile --authority takes a JSON object with only these keys",
         },
         "mapping": {
-            "fields": list(MAPPING_KEYS),
+            "fields": list(MAPPING_ENTRY_FIELDS),
             "required_for": "a success closeout before release",
         },
         "failure_recovery": {
@@ -251,6 +266,8 @@ def schema():
             "classifications": list(FAILURE_CLASSES),
             "next_actions": list(FAILURE_NEXT_ACTIONS),
             "mapping_fields": list(MAPPING_KEYS),
+            "read_back_fields": ["source", "state", "worker_state", "stage",
+                                 "liveness", "settled"],
             "note": "failure-record refuses without a settled read-back; only failure-plan "
                     "emits the worker-release command, and only when authorize_release "
                     "allows it",
@@ -1143,6 +1160,25 @@ def plan(facts):
     return checklist
 
 
+def _release_dispatch_id(record):
+    """The Dispatch a ``release_unknown`` decision is about, or ``None`` when unnamed.
+
+    ``release_decision`` is only reached through ``failure_plan``, which resolves a
+    Dispatch before it asks. The record's mapping is the durable statement of which
+    Dispatch the closeout covers, so the settlement proof is bound to it. The read-back
+    is deliberately not consulted: a read-back that supplied its own binding would make
+    the identity comparison vacuous, which is the substitution the proof exists to stop.
+    Only a mapping naming exactly one Dispatch binds; two names are ambiguous, and none
+    proves nothing.
+    """
+    mapping = record.get("mapping") if isinstance(record, dict) else None
+    if isinstance(mapping, list) and len(mapping) == 1 and isinstance(mapping[0], dict):
+        dispatch_id = mapping[0].get("dispatch_id")
+        if ACCEPTANCE.is_nonempty(dispatch_id):
+            return dispatch_id
+    return None
+
+
 def release_decision(closeout, health_state, settled=None, read_back=None,
                      release_state="", decided_by=None):
     """Decide whether a worker may be released; health never decides it alone.
@@ -1184,7 +1220,24 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
                 "an unsettled worker is never released")
             decision["decided_by"] = "coordinator"
             return decision
-        settled = _settled_from(read_back)
+        # Bind the proof to the Dispatch this decision is about. Reading it unbound would
+        # let any settled worker's read-back authorize this release, which is exactly the
+        # substitution the settlement proof exists to prevent. The binding is decided
+        # *before* the proof is read: calling ``_settled_from`` without a binding skips the
+        # comparison against *this* Dispatch (its identity requirement still applies) and
+        # would report ``settled: True`` from a read-back that was never tied to this
+        # release, and ``settled`` is the field a caller reads to learn whether settlement
+        # was proven.
+        bound = _release_dispatch_id(record)
+        if bound is None:
+            decision["settled"] = None
+            decision["read_back"] = dict(read_back, settled=None)
+            decision["reason"] = (
+                "the closeout record names no single Dispatch, so a read-back cannot be "
+                "bound to this release")
+            decision["decided_by"] = "coordinator"
+            return decision
+        settled = _settled_from(read_back, bound)
         decision["settled"] = settled
         decision["read_back"] = dict(read_back, settled=settled)
         if settled is not True:
@@ -1257,34 +1310,108 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
     return decision
 
 
-def _settled_from(read_back, dispatch_id=None):
-    """The settled flag of a ``worker-show`` read-back, bound to one Dispatch when asked.
+def _read_back_parts(read_back):
+    """Split a ``worker-show`` read-back into ``(readable, worker)``.
 
-    A settled worker proves only its own Dispatch settled. When ``dispatch_id`` is given,
-    a read-back that names another Dispatch (or names none) proves nothing about this
-    one, so the recovery cannot borrow a healthy worker's settlement for a failed
-    Dispatch's release.
+    Two envelopes are accepted because both reach this module: the live CLI prints
+    ``{"ok": true, "result": {...}}`` (what ``--read-back <file>`` holds verbatim), and
+    older hosts — plus this module's own callers — pass either that outer envelope or the
+    already-unwrapped worker object. A failed read is never made readable: ``ok: false``,
+    a missing worker object and an unreadable shape all report ``False`` so every caller
+    keeps failing closed.
     """
-    if not isinstance(read_back, dict) or read_back.get("state") != "ok":
+    if not isinstance(read_back, dict):
+        return False, {}
+    if read_back.get("ok") is False:
+        return False, {}
+    inner = read_back.get("result")
+    if isinstance(inner, dict):
+        return bool(inner), inner
+    # A legacy ``{"state": "ok", "worker": {...}}`` read-back: the worker is the subject.
+    if isinstance(read_back.get("worker"), dict):
+        if read_back.get("state") != "ok":
+            return False, {}
+        return True, read_back["worker"]
+    # An already-unwrapped live result names its Dispatch at the top level. Requiring the
+    # identity — not merely a familiar field name — keeps a truncated object such as
+    # ``{"state": "ok"}`` unreadable, so the recovery still asks for a fresh read-back.
+    if ACCEPTANCE.is_nonempty(read_back.get("dispatchId")) or ACCEPTANCE.is_nonempty(
+            read_back.get("dispatch_id")):
+        return True, read_back
+    return False, {}
+
+
+def _settled_from(read_back, dispatch_id=None):
+    """Whether a ``worker-show`` read-back proves its Dispatch settled.
+
+    Settlement is proven by the worker having stopped, never by terminal accounting:
+    a live worker was measured carrying ``terminalState: retained``, so treating
+    ``terminalState`` as proof would release a running Dispatch. ``stage: settled`` or
+    ``liveness: exited`` prove the stop; a readable worker still ``ready``/``live`` is
+    positively *not* settled (``False``); a record whose stop proof and liveness proof
+    contradict each other, and unreadable input, prove nothing (``None``).
+
+    Identity is required unconditionally, not only when a binding was supplied. A
+    read-back proves only the Dispatch it names, so an anonymous one — a bare
+    ``{"stage": "settled"}``, or a truncated envelope that kept a familiar field but lost
+    ``dispatchId`` — proves nothing at all. When ``dispatch_id`` is also given, the named
+    Dispatch must be that one, so the recovery cannot borrow a healthy worker's
+    settlement for a failed Dispatch's release.
+    """
+    readable, worker = _read_back_parts(read_back)
+    if not readable:
         return None
-    worker = read_back.get("worker")
-    if not isinstance(worker, dict):
+    recorded = worker.get("dispatchId") or worker.get("dispatch_id")
+    if not ACCEPTANCE.is_nonempty(recorded):
         return None
-    if dispatch_id is not None:
-        recorded = worker.get("dispatch_id")
-        if not ACCEPTANCE.is_nonempty(recorded) or recorded != dispatch_id:
-            return None
+    if dispatch_id is not None and recorded != dispatch_id:
+        return None
+    stopped = worker.get("stage") == "settled" or worker.get("liveness") == "exited"
+    alive = worker.get("state") == "ready" or worker.get("liveness") == "live"
+    if stopped and alive:
+        # Two proofs that disagree prove nothing. ``stage: settled`` beside
+        # ``liveness: live`` is a host anomaly, and reading it as settled is the
+        # permissive direction, so it must not authorize a release.
+        return None
+    if stopped:
+        return True
+    if alive:
+        return False
     settled = worker.get("settled")
-    return settled if isinstance(settled, bool) else None
+    if isinstance(settled, bool):
+        return settled
+    # A readable record that proves neither direction proves nothing. A terminal process
+    # state is deliberately not consulted: it outlives the process, so it cannot decide
+    # whether this worker has stopped.
+    return None
 
 
 def _valid_mapping(mapping):
+    """Whether a mapping entry carries every field release depends on.
+
+    Every field in :data:`MAPPING_ENTRY_FIELDS` is required: the four identity fields and
+    the ``attempt_source`` that says where the attempt came from. The count is deliberately
+    not restated here — a docstring that names a number drifts the moment the tuple grows,
+    which is how this function came to advertise four fields while enforcing five.
+    ``--print-schema`` prints the same list for ``mapping``, so a document written from the
+    schema is one this function accepts; the two are pinned together by a test rather than
+    by a comment.
+
+    Whether a given Orca version returns an ``attempt`` is version-dependent — check
+    ``worker-show --help`` and the current guide rather than assuming either answer. The
+    number is the authority's only when a receipt carried it; the design record forbids
+    using a locally invented attempt for authoritative reconciliation (§5.1.6) and requires
+    the entry to say where the number came from. A mapping without that declaration is
+    rejected, so an undeclared number can never reach a release decision.
+    """
     if not isinstance(mapping, list) or not mapping:
         return False
     for entry in mapping:
         if not isinstance(entry, dict):
             return False
-        if any(key not in entry for key in MAPPING_KEYS):
+        if any(key not in entry for key in MAPPING_ENTRY_FIELDS):
+            return False
+        if entry.get("attempt_source") not in ATTEMPT_SOURCES:
             return False
         if not ACCEPTANCE.is_nonempty(entry.get("dispatch_id")) or not ACCEPTANCE.is_nonempty(entry.get("task_id")):
             return False
@@ -1301,18 +1428,28 @@ def _valid_mapping(mapping):
 
 
 def _failure_mapping(dispatch):
-    """Validate the dispatch -> task -> attempt -> worktree mapping of one failure."""
+    """Validate the dispatch -> task -> attempt -> worktree mapping of one failure.
+
+    The caller supplies the four identity fields and may declare ``attempt_source``.
+    An undeclared source becomes ``local``, never ``orca``: this function receives a
+    number and nothing that proves where the number came from, so claiming the
+    authority's provenance would assert evidence it never saw. ``local`` is the honest
+    statement and the one the design record asks for when the receipt carries no
+    ``attempt`` (§5.1.6); a caller that did read the value from an Orca receipt declares
+    ``orca`` explicitly.
+    """
     if not isinstance(dispatch, dict):
         _invalid("failure recovery needs a dispatch mapping object with "
                  + ", ".join(MAPPING_KEYS))
-    unknown = sorted(set(dispatch) - set(MAPPING_KEYS))
+    unknown = sorted(set(dispatch) - set(MAPPING_KEYS) - {"attempt_source"})
     if unknown:
         _invalid("unknown dispatch mapping fields: " + ", ".join(unknown)
                  + "; the mapping takes {" + ", ".join(MAPPING_KEYS) + "}")
     mapping = {key: dispatch.get(key) for key in MAPPING_KEYS}
+    mapping["attempt_source"] = dispatch.get("attempt_source", "local")
     if not _valid_mapping([mapping]):
         _invalid("the dispatch mapping needs a non-empty dispatch_id, task_id and "
-                 "worktree, and an attempt >= 1")
+                 "worktree, an attempt >= 1, and a known attempt_source")
     return mapping
 
 
@@ -1455,7 +1592,7 @@ def failure_record(run_id, read_back, dispatch, classification, evidence_refs,
     evidence = _failure_evidence(evidence_refs)
     verification = _failure_verification(release_verification)
     settled = _settled_from(read_back, mapping["dispatch_id"])
-    readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
+    readable, worker = _read_back_parts(read_back)
     result = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -1517,7 +1654,6 @@ def failure_record(run_id, read_back, dispatch, classification, evidence_refs,
         result["commands"] = [_failure_plan_command(run_id, mapping["dispatch_id"])]
         return result
 
-    worker = read_back.get("worker") if isinstance(read_back.get("worker"), dict) else {}
     detail = {
         "outcome": "failure",
         "classification": classification,
@@ -1529,10 +1665,18 @@ def failure_record(run_id, read_back, dispatch, classification, evidence_refs,
         "failure_recovery": {
             "dispatch_id": mapping["dispatch_id"],
             "settled": True,
+            # The durable proof is what authorized the release, so it is persisted in the
+            # same shape ``failure_plan`` reports: the live read-back names its terminal
+            # accounting, and the legacy block is read the same way. Writing the legacy
+            # keys unread from a live envelope recorded ``state: null`` beside
+            # ``settled: true`` — an audit record that contradicts itself.
             "read_back": {
                 "source": "worker-show",
-                "state": read_back.get("state"),
-                "worker_state": worker.get("worker_state", ""),
+                "state": "ok" if readable else "unknown",
+                "worker_state": _first_text(worker, "terminalState", "worker_state",
+                                            "workerState"),
+                "stage": _first_text(worker, "stage"),
+                "liveness": _first_text(worker, "liveness"),
                 "settled": True,
             },
         },
@@ -1596,10 +1740,8 @@ def failure_plan(run_id, dispatch_id, read_back, home=None, dispatch=None,
         _invalid("failure_plan needs a non-empty run_id")
     if not ACCEPTANCE.is_nonempty(dispatch_id):
         _invalid("failure_plan needs the failed dispatch id")
-    readable = isinstance(read_back, dict) and read_back.get("state") == "ok"
+    readable, worker = _read_back_parts(read_back)
     settled = _settled_from(read_back, dispatch_id)
-    worker = (read_back.get("worker")
-              if readable and isinstance(read_back.get("worker"), dict) else {})
     result = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -1607,8 +1749,9 @@ def failure_plan(run_id, dispatch_id, read_back, home=None, dispatch=None,
         "settled": settled,
         "settled_proof": {
             "source": "worker-show",
-            "state": read_back.get("state") if isinstance(read_back, dict) else "absent",
-            "worker_state": worker.get("worker_state", ""),
+            "state": ("ok" if readable else "unknown"),
+            "worker_state": _first_text(worker, "terminalState", "worker_state",
+                                        "workerState"),
             "settled": settled,
         },
         "closeout_record_id": "",
@@ -1784,6 +1927,22 @@ def _facts_for(run_id, records, sections, answer_location, observed_at):
 
 
 def _mapping(workers):
+    """The dispatch -> task -> attempt -> worktree mapping of an observed worker list.
+
+    A row that names a Dispatch and a Task but not a worktree, or whose attempt is
+    unreadable, makes the whole mapping empty. Dropping just that row would let the
+    remaining rows satisfy ``_valid_mapping`` and authorize a release for a closeout
+    whose mapping never covered every worker the authority reported — the same
+    fail-closed answer the pre-#101 collector reached by carrying the incomplete row
+    through to ``_valid_mapping``, without recording an ``attempt: 0`` that names
+    nothing.
+
+    Each entry also declares ``attempt_source``, and the declaration travels with the
+    row: a row that carried no ``attempt`` key was given this process's first-attempt
+    count by ``_collect_workers`` and arrives marked ``local``, and a row whose attempt
+    came from the authority arrives marked ``orca``. A reader that would have to guess
+    the provenance refuses instead.
+    """
     if workers.get("state") != "ok":
         return []
     mapping = []
@@ -1791,11 +1950,20 @@ def _mapping(workers):
         if not ACCEPTANCE.is_nonempty(row.get("dispatch_id")) or not ACCEPTANCE.is_nonempty(row.get("task_id")):
             continue
         attempt = row.get("attempt")
+        worktree = row.get("worktree")
+        if type(attempt) is not int or attempt < 1:
+            return []
+        if not ACCEPTANCE.is_nonempty(worktree):
+            return []
+        source = row.get("attempt_source")
+        if source not in ATTEMPT_SOURCES:
+            return []
         mapping.append({
             "dispatch_id": row["dispatch_id"],
             "task_id": row["task_id"],
-            "attempt": attempt if type(attempt) is int else 0,
-            "worktree": row.get("worktree", "") if isinstance(row.get("worktree"), str) else "",
+            "attempt": attempt,
+            "attempt_source": source,
+            "worktree": worktree,
         })
     return mapping
 
@@ -2316,6 +2484,73 @@ def _collect_tracker(records, repo_dir, run_fn):
     return {"state": "ok", "reason": "", "tickets": rows}
 
 
+def _first_text(entry, *keys):
+    """The first key that carries a non-empty string; the field-read priority in code.
+
+    The live projection renames fields between Orca versions (``terminalState`` replaced
+    ``workerState``; ``workspace`` replaced ``worktree``). Reading a priority list keeps
+    the collector correct on the live host and on an older one without inventing a value,
+    and an absent field stays absent rather than becoming ``""``.
+    """
+    for key in keys:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _terminal_accounting(entry):
+    """Return ``(readable, state)`` for one worker-list row's terminal accounting.
+
+    Two observations mean "this Dispatch was never handed a terminal", and both are
+    positive: ``terminalState`` is ``null``, or the row omits ``terminalState``
+    altogether. Orca 1.4.263 computes the field from the row's terminal resource and
+    handle — it is ``null`` only when both are ``null`` — and the CLI drops keys whose
+    value is ``null``, which is why the two shapes alternate. Measured over 100 live
+    rows, all 12 without a ``terminalState`` key also carried no ``terminal`` key, none
+    of the reclaim family appeared, and every row that did name a state named one of
+    ``retained``/``released``. So for those rows there is nothing to reclaim and nothing
+    retained, and row 8 classifying them from their task outcome is the correct answer.
+
+    The first readable value wins, in the documented priority order: an unreadable value
+    at a higher priority is skipped rather than short-circuiting, or a real
+    ``worker_state: release_unknown`` beside a malformed ``terminalState`` would become
+    unreachable and the reclaim could never be reported.
+
+    Only when no key carries a readable value does the explicit/absent distinction decide.
+    A ``null`` and an absent key mean the same thing — this row names no terminal state —
+    and both are read as "no terminal" only when the row also reports no ``terminal``
+    resource. A row that names a terminal and withholds its state is contradictory in
+    either spelling, so it proves nothing and the section degrades to ``unknown`` rather
+    than letting row 8 declare a lifecycle it never observed.
+    """
+    unreadable_value = False
+    for key in ("terminalState", "worker_state", "workerState"):
+        if key not in entry:
+            continue
+        value = entry[key]
+        if isinstance(value, str) and value.strip():
+            return True, value
+        if value is not None:
+            # A value of the wrong type cannot be read, but it also cannot be explained
+            # away as "no accounting": the host tried to say something.
+            unreadable_value = True
+    # No readable accounting. A state value that was present but malformed proves the
+    # host meant to report something, and a row that names a terminal resource cannot be
+    # explained as "never had a terminal"; both stay unreadable. Measured over 100 live
+    # rows, every row with no state also had no ``terminal``.
+    if unreadable_value:
+        return False, ""
+    # The row is explained as "never had a terminal" only when it names none. ``null`` and
+    # the empty string are the two spellings of "no name" and are treated alike; any other
+    # value is a resource the host asserted exists, and without its accounting the row is
+    # contradictory and proves nothing.
+    terminal = entry.get("terminal")
+    if terminal is None or (isinstance(terminal, str) and not terminal.strip()):
+        return True, ""
+    return False, ""
+
+
 def _collect_workers(run_id, orca_cli, run_fn):
     cli = orca_cli or _COMMON.resolve_orca_cli()
     res = run_fn(
@@ -2336,14 +2571,57 @@ def _collect_workers(run_id, orca_cli, run_fn):
     for entry in raw_workers:
         if not isinstance(entry, dict):
             continue
-        wstate = entry.get("workerState") or entry.get("worker_state") or entry.get("status") or ""
-        rows.append({
+        # The live projection (Orca 1.4.263) separates process accounting from the task
+        # outcome: ``terminalState`` is the terminal resource state, ``state`` the task.
+        # Row 8 classifies the terminal resource state, so that chain is read first and
+        # the pre-1.4.263 keys stay as fallbacks for older hosts. ``state`` is the last
+        # resort, only reached when the row positively has no terminal at all (see
+        # :func:`_terminal_accounting`); a reclaimable or retained terminal is never
+        # masked by it, because those always arrive as a non-empty ``terminalState``.
+        readable, wstate = _terminal_accounting(entry)
+        if not readable:
+            # The row's terminal accounting is unreadable, and an unclassifiable worker
+            # could be the one that still needs a reclaim action. Row 8 reports ``ok``
+            # from an empty state, so returning the list here would let the checklist
+            # declare a clean lifecycle it never proved. The whole section goes unknown
+            # instead, matching how every other unreadable worker-list degrades.
+            return _unknown_section(
+                "orca worker-list row " + str(entry.get("dispatchId") or entry.get("dispatch_id") or "?")
+                + " carries unreadable terminal accounting")
+        if not wstate:
+            # The documented task-outcome chain: ``state -> status -> workerState ->
+            # worker_state``. ``state`` must stay first: on the live projection it is the
+            # task outcome, while ``status`` is the older host's spelling of the same
+            # signal and only fills in when ``state`` is absent or unreadable.
+            wstate = _first_text(entry, "state", "status", "workerState", "worker_state")
+            if not wstate:
+                return _unknown_section(
+                    "orca worker-list row "
+                    + str(entry.get("dispatchId") or entry.get("dispatch_id") or "?")
+                    + " names no terminal and no task outcome")
+        row = {
             "dispatch_id": entry.get("dispatchId") or entry.get("dispatch_id") or "",
             "task_id": entry.get("taskId") or entry.get("task_id") or "",
-            "attempt": ACCEPTANCE.as_int(entry.get("attempt")) or 1,
-            "worktree": entry.get("worktree") or entry.get("worktreePath") or "",
-            "worker_state": str(wstate),
-        })
+            "worktree": _first_text(entry, "workspace", "worktree", "worktreePath"),
+            "worker_state": wstate,
+        }
+        # The live projection carries no ``attempt`` at all (``worker-list``,
+        # ``worker-show`` and ``task-list`` all omit it), so a row that omits it gets
+        # this process's first-attempt count and is marked ``local``. The marker is what
+        # keeps that number from passing as authority: the design record forbids using a
+        # local attempt for authoritative reconciliation. A row that did carry a
+        # readable attempt keeps the authority's value and is marked ``orca``; an
+        # unreadable value leaves the key absent so ``_mapping`` refuses the mapping
+        # rather than falling back to a local count.
+        if "attempt" not in entry:
+            row["attempt"] = 1
+            row["attempt_source"] = "local"
+        else:
+            attempt = ACCEPTANCE.as_int(entry.get("attempt"))
+            if attempt is not None:
+                row["attempt"] = attempt
+                row["attempt_source"] = "orca"
+        rows.append(row)
     return {"state": "ok", "reason": "", "rows": rows}
 
 

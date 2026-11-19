@@ -1453,14 +1453,19 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
                 return {"returncode": 0, "stderr": "", "stdout": json.dumps({
                     "ok": True,
                     "result": {"workers": [
-                        {"dispatchId": "d1", "workerState": "running"},
-                        {"dispatchId": "d2", "workerState": "reclaimable", "settled": True},
+                        {"dispatchId": "d1", "state": "ready", "liveness": "live",
+                         "terminalState": "retained"},
+                        {"dispatchId": "d2", "state": "succeeded",
+                         "terminalState": "reclaimable"},
                     ]},
                 })}
             if "worker-show" in argv:
                 return {"returncode": 0, "stderr": "", "stdout": json.dumps({
                     "ok": True,
-                    "result": {"worker": {"workerState": "reclaimable", "settled": True}},
+                    "result": {"worker": {
+                        "dispatchId": "d2", "state": "succeeded", "stage": "settled",
+                        "terminalState": "reclaimable", "waitingOnHuman": "unknown",
+                    }},
                 })}
             return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
 
@@ -1481,6 +1486,216 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
             )
             self.assertEqual(broken["mode"], "native")
             self.assertNotIn("worker_list", broken)
+
+    def _reason(self, result, signal):
+        for item in result["reasons"]:
+            if item["signal"] == signal:
+                return item["reason"]
+        return None
+
+    def test_a_settled_live_status_is_terminal_and_never_unknown(self):
+        """``succeeded``/``stopped`` classify; only genuinely unknown input stays unknown.
+
+        Regression for the retired enums: the live projection reports settled workers as
+        ``succeeded``/``stopped``, which fell through both the terminated and live lists
+        and produced ``unknown_worker_status`` for every real worker.
+        """
+        for status in ("succeeded", "stopped", "abandoned"):
+            with self.subTest(status=status):
+                done = self.health.evaluate(self.healthy_signals(
+                    worker_show={"observed_at": at(60), "status": status,
+                                 "worker_done": True, "agent_wait": None}))
+                self.assertEqual(done["state"], "healthy", done)
+                missing = self.health.evaluate(self.healthy_signals(
+                    worker_show={"observed_at": at(60), "status": status,
+                                 "worker_done": None, "agent_wait": None}))
+                self.assertEqual(missing["state"], "lost", missing)
+                self.assertNotIn("unknown_worker_status",
+                                 [item["reason"] for item in missing["reasons"]])
+
+    def test_a_failed_worker_keeps_the_failure_direction(self):
+        """``failed`` is never healthy and never ``unknown``: it is positive termination.
+
+        The state stays ``lost`` whether or not a completion signal arrived, but the
+        evidence must not claim a ``worker_done`` is missing when one was recorded:
+        ``lost`` is defined as exited *without* one (§5.4), so a present one rules out
+        that reason, not the state.
+        """
+        status = "failed"
+        for done in (False, None):
+            result = self.health.evaluate(self.healthy_signals(
+                worker_show={"observed_at": at(60), "status": status,
+                             "worker_done": done, "agent_wait": None}))
+            self.assertEqual(result["state"], "lost", result)
+            self.assertEqual(
+                self._reason(result, "worker_show"),
+                "agent_failed_without_worker_done")
+        recorded = self.health.evaluate(self.healthy_signals(
+            worker_show={"observed_at": at(60), "status": status,
+                         "worker_done": True, "agent_wait": None}))
+        self.assertEqual(recorded["state"], "lost", recorded)
+        self.assertEqual(self._reason(recorded, "worker_show"),
+                         "agent_failed_after_worker_done")
+        evidence = next(item["evidence"] for item in recorded["reasons"]
+                        if item["signal"] == "worker_show")
+        self.assertNotIn("with no worker_done", evidence)
+
+    def test_a_genuinely_unknown_status_is_still_unknown(self):
+        # ``cancelled`` is in this list on purpose: the word belongs to CI check
+        # conclusions and GitHub run states, not to the host's worker-state enum, so a
+        # worker reporting it is an anomaly to investigate, not a failure to grade.
+        for status in ("", None, "mystery", "retained", "cancelled"):
+            with self.subTest(status=status):
+                result = self.health.evaluate(self.healthy_signals(
+                    worker_show={"observed_at": at(60), "status": status,
+                                 "worker_done": True, "agent_wait": None}))
+                self.assertEqual(result["state"], "unknown", result)
+                self.assertEqual(self._reason(result, "worker_show"),
+                                 "unknown_worker_status")
+
+    def test_the_collector_reads_the_live_shape_and_inspects_the_newest_dispatch(self):
+        """The recorded two-row fixture: newest ``succeeded`` first, oldest ``failed``."""
+        shown = []
+
+        def fake_runner(argv):
+            if "worker-list" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True, "result": {"workers": [
+                        {"dispatchId": "ctx_new", "taskId": "task_new",
+                         "state": "succeeded", "liveness": "unverifiable",
+                         "terminalState": "retained", "workspace": "repo::/work/new",
+                         "attention": ["unverifiable"]},
+                        {"dispatchId": "ctx_old", "taskId": "task_old",
+                         "state": "failed", "liveness": "unverifiable",
+                         "terminalState": None, "workspace": "repo::/work/old"},
+                    ]},
+                })}
+            if "worker-show" in argv:
+                shown.append(argv[argv.index("--dispatch") + 1])
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True, "result": {
+                        "dispatchId": "ctx_new", "state": "succeeded",
+                        "stage": "settled", "liveness": "unverifiable",
+                        "terminalState": "retained", "waitingOnHuman": "unknown"}})}
+            return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = self.health.collect_signals(
+                RUN_ID, ledger_home=tmp, runner=fake_runner, observed_at=NOW)
+        self.assertEqual(shown, ["ctx_new"])
+        self.assertEqual(snapshot["worker_show"]["status"], "succeeded")
+        self.assertEqual(snapshot["worker_list"]["active_workers"], 0)
+        # ``waitingOnHuman: "unknown"`` is not "no wait": the field stays unobserved.
+        self.assertNotIn("agent_wait", snapshot["worker_show"])
+        result = self.health.evaluate({
+            **snapshot,
+            "turnStart": {"status": "observed", "observed_at": at(30)},
+            "last_effective_progress": {"rounds_without_progress": 0},
+        })
+        self.assertEqual(result["state"], "healthy", result)
+
+    def test_the_collector_counts_only_live_workers_as_active(self):
+        rows = [
+            {"dispatchId": "d-live", "state": "ready", "terminalState": "retained"},
+            {"dispatchId": "d-live-2", "state": "working", "terminalState": "active"},
+            {"dispatchId": "d-done", "state": "succeeded", "terminalState": "retained"},
+            {"dispatchId": "d-stop", "state": "stopped", "terminalState": "released"},
+            {"dispatchId": "d-fail", "state": "failed", "terminalState": None},
+        ]
+
+        def fake_runner(argv):
+            if "worker-list" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                    {"ok": True, "result": {"workers": rows}})}
+            return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = self.health.collect_signals(
+                RUN_ID, ledger_home=tmp, runner=fake_runner, observed_at=NOW)
+        self.assertEqual(snapshot["worker_list"]["active_workers"], 2)
+
+    def test_waiting_on_human_keeps_its_three_way_meaning(self):
+        """A string waits, ``"unknown"`` is unobserved, absent is a positive no-wait."""
+        absent = object()
+        cases = (
+            ("review the diff", "blocked"),
+            ("unknown", "unknown"),
+            (None, "healthy"),
+            (absent, "healthy"),
+        )
+        for waiting, expected in cases:
+            with self.subTest(waitingOnHuman=waiting):
+                worker = {"dispatchId": "d1", "state": "ready", "liveness": "live",
+                          "terminalState": "retained"}
+                if waiting is not absent:
+                    worker["waitingOnHuman"] = waiting
+
+                def fake_runner(argv, worker=worker):
+                    if "worker-show" in argv:
+                        return {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                            {"ok": True, "result": worker})}
+                    return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    snapshot = self.health.collect_signals(
+                        RUN_ID, dispatch_id="d1", ledger_home=tmp,
+                        runner=fake_runner, observed_at=NOW)
+                result = self.health.evaluate({
+                    **self.healthy_signals(),
+                    "worker_list": {"observed_at": NOW, "active_workers": 0},
+                    "worker_show": snapshot["worker_show"],
+                })
+                self.assertEqual(result["state"], expected, result)
+
+    def test_terminal_accounting_alone_is_never_a_process_status(self):
+        """``terminalState: retained`` describes a terminal, not a running worker.
+
+        Falling back to accounting for the status keeps this ``unknown``; promoting
+        ``retained`` into the enums would instead report a live worker as terminated.
+        """
+        worker = {"dispatchId": "d1", "terminalState": "retained"}
+
+        def fake_runner(argv):
+            if "worker-show" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                    {"ok": True, "result": worker})}
+            return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = self.health.collect_signals(
+                RUN_ID, dispatch_id="d1", ledger_home=tmp,
+                runner=fake_runner, observed_at=NOW)
+        self.assertEqual(snapshot["worker_show"]["status"], "retained")
+        result = self.health.evaluate({
+            **self.healthy_signals(),
+            "worker_list": {"observed_at": NOW, "active_workers": 0},
+            "worker_show": snapshot["worker_show"],
+        })
+        self.assertEqual(result["state"], "unknown", result)
+        self.assertEqual(self._reason(result, "worker_show"), "unknown_worker_status")
+
+    def test_an_agent_wait_object_from_the_full_view_still_blocks(self):
+        worker = {"dispatchId": "d1", "state": "ready", "liveness": "live",
+                  "observation": {"agentWait": {"prompt": "approve the release"}}}
+
+        def fake_runner(argv):
+            if "worker-show" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                    {"ok": True, "result": worker})}
+            return {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = self.health.collect_signals(
+                RUN_ID, dispatch_id="d1", ledger_home=tmp,
+                runner=fake_runner, observed_at=NOW)
+        self.assertEqual(snapshot["worker_show"]["agent_wait"],
+                         {"prompt": "approve the release"})
+        result = self.health.evaluate({
+            **self.healthy_signals(),
+            "worker_list": {"observed_at": NOW, "active_workers": 0},
+            "worker_show": snapshot["worker_show"],
+        })
+        self.assertEqual(result["state"], "blocked", result)
 
     def test_disk_pending_survives_cleared_memory_and_retries(self):
         real_ledger = load_ledger(SKILL_DIRS[0]) if "load_ledger" in globals() else self.health.load_ledger()
