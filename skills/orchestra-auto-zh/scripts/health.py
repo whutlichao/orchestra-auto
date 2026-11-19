@@ -143,9 +143,21 @@ DEFAULT_CONFIG = {
 }
 
 #: Terminal worker statuses that prove the agent is gone, not merely quiet.
-TERMINATED_STATUSES = ("exited", "terminated", "dead")
+#: ``succeeded``/``stopped``/``abandoned`` are the live Orca task outcomes of a settle:
+#: the worker stopped, so the only question left is whether ``worker_done`` was seen.
+#: ``released``/``retained``/``reclaimable``/``release_pending``/``release_unknown`` are
+#: terminal *resource* states that outlive the process and are never read as termination.
+TERMINATED_STATUSES = (
+    "exited", "terminated", "dead", "succeeded", "stopped", "abandoned",
+)
 #: Statuses that prove the worker is alive; a waiting worker is alive, not failed.
 LIVE_STATUSES = ("running", "ready", "waiting", "idle", "working", "active", "started")
+#: A worker whose own process failed. It keeps the failure direction (:func:`_worker_show`
+#: reports ``lost``) instead of becoming healthy or silently ``unknown``.
+FAILED_STATUSES = ("failed",)
+#: Process states the live projection reports in ``state`` for a superseded lifecycle.
+#: A ``cancelled`` worker did not succeed, so it is graded like a failure, not a settle.
+CANCELLED_STATUSES = ("cancelled", "canceled")
 
 #: Inbox phases that are expected to keep moving; ``error`` is immediate.
 INBOX_LIVE_PHASES = ("waiting", "checking", "backoff")
@@ -355,6 +367,14 @@ def _worker_show(snapshot, config, now):
     if block is None:
         return _absent("worker_show")
     status = block.get("status")
+    if status in FAILED_STATUSES or status in CANCELLED_STATUSES:
+        # A failed worker keeps the failure direction: the agent is gone and its own run
+        # did not complete, so this is never healthy. It is not reported as a settle.
+        return _finding(
+            "worker_show", "lost", "agent_failed_without_worker_done",
+            "status " + status + " with no worker_done",
+            detail={"status": status},
+        )
     if status in TERMINATED_STATUSES:
         if block.get("worker_done") is True:
             return None
@@ -1314,6 +1334,121 @@ def _orca_json(orca_cli, argv, runner=None):
     return inner if isinstance(inner, dict) else None
 
 
+#: Marker for "the source never told us": distinct from ``None``, which is a positive
+#: observation that Orca looked and found no wait.
+_UNOBSERVED = object()
+
+#: The two fields every live ``worker-show`` record carries regardless of state. Their
+#: presence identifies a host whose absent ``waitingOnHuman`` is a positive no-wait; a
+#: record without them is treated as an older host, where absence stays unobserved.
+_LIVE_SHAPE_FIELDS = frozenset(("stage", "liveness"))
+
+
+def _first_text(row, *keys):
+    """The first key carrying a non-empty string; the documented field-read priority."""
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def _process_state(row):
+    """The worker's own process/task state, read from the live projection first.
+
+    Orca 1.4.263 publishes the task outcome as ``state`` and keeps terminal/process
+    accounting in a separate ``terminalState``. ``terminalState`` proves nothing about
+    whether the worker is still running (a live worker was measured ``retained``), so the
+    process state is read from ``state`` first and the pre-1.4.263 keys stay as fallbacks
+    for older hosts.
+    """
+    return _first_text(row, "state", "status", "workerState", "worker_state")
+
+
+def _terminal_state(row):
+    """The terminal resource state, which is accounting rather than a process signal."""
+    return _first_text(row, "terminalState", "worker_state", "workerState")
+
+
+def _worker_status(worker):
+    """The worker-show status, preferring a process signal over terminal accounting.
+
+    A live row is ``state=ready, terminalState=retained``; reading ``terminalState`` as
+    the status would misreport a live worker, so terminal accounting is consulted only
+    when no process signal exists at all.
+    """
+    return _process_state(worker) or _terminal_state(worker) or "unknown"
+
+
+def _worker_done(worker):
+    """Whether a completion signal was observed; an absent field stays unknown.
+
+    The live projection has no ``worker_done``/``settled`` field at all: ``state:
+    succeeded`` *is* the completion record, so the collector translates it into the
+    signal vocabulary the evaluator already understands. Without that translation every
+    real worker would read as terminated-without-completion, which is the same silently
+    dead signal the status enums caused, only inverted. ``stopped``/``abandoned`` and
+    ``failed`` deliberately do not map to a completion.
+    """
+    for key in ("workerDone", "worker_done"):
+        if isinstance(worker.get(key), bool):
+            return worker[key]
+    if isinstance(worker.get("settled"), bool):
+        return worker["settled"]
+    if _process_state(worker) == "succeeded":
+        return True
+    return None
+
+
+def _waiting_on_human(worker):
+    """The three-way human-wait observation, or ``_UNOBSERVED`` when Orca never looked.
+
+    The concise ``--json`` view carries ``waitingOnHuman``: a string names the wait,
+    ``"unknown"`` means Orca never evaluated it, and an absent field means Orca evaluated
+    it and found no wait. ``observation.agentWait`` (``--full`` only) and the legacy
+    ``agentWait``/``agent_wait`` remain fallbacks for older hosts. A present ``null`` is a
+    positive no-wait observation; a present string other than ``"unknown"`` is a wait.
+    Only those two types are recognized: any other value is a present-but-unreadable
+    field and stays unobserved rather than reading as "no wait".
+    """
+    if "waitingOnHuman" in worker:
+        value = worker["waitingOnHuman"]
+        if isinstance(value, str):
+            if not value.strip() or value.strip().lower() == "unknown":
+                return _UNOBSERVED
+            return {"waiting": True, "waiting_on_human": value}
+        if value is None:
+            return None
+        # Only a string or null is a recognized observation. Any other type is a field
+        # that exists but cannot be read, so it proves nothing and must not fall through
+        # to the live-shape branch and read as a positive no-wait.
+        return _UNOBSERVED
+    observation = worker.get("observation")
+    if isinstance(observation, dict) and "agentWait" in observation:
+        return _agent_wait(observation["agentWait"])
+    for key in ("agentWait", "agent_wait"):
+        if key in worker:
+            return _agent_wait(worker[key])
+    # No wait field at all. On the live projection the concise view omits
+    # ``waitingOnHuman`` only after evaluating it, so absence there is a positive no-wait.
+    # A record without the live markers is an older host, where an absent ``agentWait``
+    # stays unobserved rather than being read as "not waiting".
+    if _LIVE_SHAPE_FIELDS.intersection(worker):
+        return None
+    return _UNOBSERVED
+
+
+def _agent_wait(value):
+    """Normalize an ``agentWait`` value: ``null`` is no wait, an object is a wait."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if value is True:
+        return {"waiting": True}
+    return _UNOBSERVED
+
+
 def collect_signals(run_id, *, dispatch_id=None, progress_dir=None, long_horizon=False,
                     rounds_without_progress=0, ledger_home=None, ledger_module=None,
                     orca_cli=None, runner=None, observed_at=None):
@@ -1346,22 +1481,20 @@ def collect_signals(run_id, *, dispatch_id=None, progress_dir=None, long_horizon
     workers = []
     if worker_list_result is not None and isinstance(worker_list_result.get("workers"), list):
         workers = [row for row in worker_list_result["workers"] if isinstance(row, dict)]
-        active = [
-            row for row in workers
-            if str(row.get("workerState") or row.get("worker_state") or row.get("status") or "").lower()
-            not in TERMINATED_STATUSES and not row.get("settled")
-        ]
+        active = [row for row in workers if _process_state(row) in LIVE_STATUSES]
         signals["worker_list"] = {"observed_at": now, "active_workers": len(active)}
         reclaimable = []
         for row in workers:
-            wstate = str(row.get("workerState") or row.get("worker_state") or "").lower()
-            if wstate == "reclaimable":
+            # Terminal accounting, not the process state: ``reclaimable`` describes the
+            # terminal resource, which outlives the worker that used it.
+            if _terminal_state(row) == "reclaimable":
                 reclaimable.append({"observed_at": row.get("settledAt") or now})
         signals["reclaimable"] = {"terminals": reclaimable}
 
     target_dispatch = dispatch_id
     if not target_dispatch and workers:
-        target_dispatch = workers[-1].get("dispatchId") or workers[-1].get("dispatch_id")
+        # ``worker-list`` is newest first, so the first row is the current Dispatch.
+        target_dispatch = workers[0].get("dispatchId") or workers[0].get("dispatch_id")
     if target_dispatch:
         wshow = _orca_json(
             cli, ["orchestration", "worker-show", "--dispatch", target_dispatch, "--json"],
@@ -1372,15 +1505,14 @@ def collect_signals(run_id, *, dispatch_id=None, progress_dir=None, long_horizon
             if isinstance(worker, dict) and isinstance(worker.get("worker"), dict):
                 worker = worker["worker"]
             if isinstance(worker, dict):
-                wstate = str(worker.get("workerState") or worker.get("worker_state") or worker.get("status") or "").lower()
-                raw_wait = worker.get("agentWait") if "agentWait" in worker else worker.get("agent_wait")
-                agent_wait = raw_wait if isinstance(raw_wait, dict) else ({"waiting": True} if raw_wait is True else None)
                 signals["worker_show"] = {
                     "observed_at": now,
-                    "status": wstate or "unknown",
-                    "worker_done": bool(worker.get("settled")) if "settled" in worker else None,
-                    "agent_wait": agent_wait,
+                    "status": _worker_status(worker),
+                    "worker_done": _worker_done(worker),
                 }
+                waiting = _waiting_on_human(worker)
+                if waiting is not _UNOBSERVED:
+                    signals["worker_show"]["agent_wait"] = waiting
                 if worker.get("turnStart") == "observed" or worker.get("turn_start") == "observed":
                     signals["turnStart"] = {"status": "observed", "observed_at": now}
 
