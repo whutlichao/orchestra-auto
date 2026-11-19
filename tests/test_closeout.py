@@ -1970,6 +1970,30 @@ class ReleaseUnknownBindingTests(unittest.TestCase):
                 self.assertFalse(result["allowed"], result)
                 self.assertIn("names no single Dispatch", result["reason"])
 
+    def test_an_unbound_proof_never_reports_settlement(self):
+        """``settled`` must not claim proof that was never bound to a Dispatch.
+
+        Regression: the branch computed ``_settled_from(read_back, bound)`` *before*
+        checking that ``bound`` was ``None``. Called without a binding, that function still
+        enforces identity but skips the comparison against *this* Dispatch, so a settled
+        read-back for any worker returned ``True`` — and a record naming two Dispatches
+        published ``settled: True`` beside ``allowed: False``. Nothing was released, but
+        the field a caller reads to learn whether settlement was proven said it had been.
+        """
+        two_dispatches = self.closeout(mapping=[
+            {"dispatch_id": "ctx_example_a", "task_id": "task_a", "attempt": 1,
+             "attempt_source": "orca", "worktree": "repo::/work/a"},
+            {"dispatch_id": "ctx_example_b", "task_id": "task_b", "attempt": 1,
+             "attempt_source": "orca", "worktree": "repo::/work/b"}])
+        read_back = {"ok": True, "result": {
+            "dispatchId": "ctx_example_a", "stage": "settled"}}
+        self.assertIsNone(self.module._release_dispatch_id(two_dispatches))
+        result = self.decision(read_back, two_dispatches)
+        self.assertFalse(result["allowed"], result)
+        self.assertIsNone(result["settled"])
+        self.assertIsNone(result["read_back"]["settled"])
+        self.assertEqual(result["decided_by"], "coordinator")
+
 
 class TerminalAccountingTests(unittest.TestCase):
     """Row 8's terminal accounting: priority, explicit null, and contradictions."""
@@ -2651,8 +2675,41 @@ class SchemaDiscoveryTests(unittest.TestCase):
                          self.module.PENDING_ITEM_KEYS)
         self.assertEqual(tuple(self.schema["authority_file"]["fields"]),
                          self.module.AUTHORITY_SECTIONS)
+        # The *stored* mapping shape, not the failure-recovery input shape: the two
+        # constants are deliberately separate and the schema prints each where it belongs.
         self.assertEqual(tuple(self.schema["mapping"]["fields"]),
+                         self.module.MAPPING_ENTRY_FIELDS)
+        self.assertEqual(tuple(self.schema["failure_recovery"]["mapping_fields"]),
                          self.module.MAPPING_KEYS)
+
+    def test_the_printed_mapping_fields_are_exactly_what_valid_mapping_requires(self):
+        """The printed mapping shape must be one ``_valid_mapping`` actually accepts.
+
+        Regression: ``schema()["mapping"]["fields"]`` printed the four ``MAPPING_KEYS``
+        while ``_valid_mapping`` had begun requiring ``attempt_source``, so an entry written
+        from the published schema was rejected — the published contract and the enforced
+        one disagreed. Round 2 pinned the sibling half (the worker row) and left this one.
+
+        The assertion is against behaviour, not against a constant: it builds an entry from
+        the printed field list and asks ``_valid_mapping``. A field added to the validator
+        and not to the schema therefore fails here, which an equality-with-a-constant
+        assertion could never catch.
+        """
+        fields = self.schema["mapping"]["fields"]
+        # A value for every field the module knows, so a field added to the tuple cannot
+        # turn this test into a KeyError instead of an assertion about the schema.
+        values = {"dispatch_id": "c-1", "task_id": "t-1", "attempt": 1,
+                  "worktree": "repo::/work/x", "attempt_source": "local"}
+        printed_entry = {key: values.get(key, "value-for-" + key) for key in fields}
+        self.assertTrue(self.module._valid_mapping([printed_entry]), printed_entry)
+        # Every field the validator requires is a field the schema prints: dropping any one
+        # of them must be refused, so the two lists cannot drift apart in either direction.
+        for key in fields:
+            with self.subTest(missing=key):
+                short = {k: v for k, v in printed_entry.items() if k != key}
+                self.assertFalse(self.module._valid_mapping([short]), short)
+        # ``_valid_mapping`` tolerates extra keys; rejecting unknown ones is
+        # ``_failure_mapping``'s job, so no assertion here about fields the schema omits.
 
     def test_a_worker_row_written_to_the_printed_schema_can_be_mapped(self):
         """The printed worker-row shape must be one ``_mapping`` actually accepts.

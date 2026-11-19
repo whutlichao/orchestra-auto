@@ -138,6 +138,13 @@ MAPPING_KEYS = ("dispatch_id", "task_id", "attempt", "worktree")
 #: ``_valid_mapping`` rather than added to ``MAPPING_KEYS``, so the failure-recovery
 #: input shape stays the four identity fields.
 ATTEMPT_SOURCES = ("orca", "local")
+#: What a *stored* mapping entry must carry: the identity fields plus the source of its
+#: attempt. ``--print-schema`` prints this for ``mapping``, because a document written from
+#: that schema has to be one ``_valid_mapping`` accepts. ``failure_recovery`` keeps printing
+#: :data:`MAPPING_KEYS`, which is the shape ``_failure_mapping`` *takes* — it supplies the
+#: source itself, so its callers do not type that field. The tuple is derived rather than
+#: written out, so the identity fields cannot be listed twice and drift apart.
+MAPPING_ENTRY_FIELDS = MAPPING_KEYS + ("attempt_source",)
 
 #: The row shape each authority section's row list holds, as read by the planner
 #: (``_row_two`` through ``_row_ten``). ``--print-schema`` prints these so a reader is told
@@ -250,7 +257,7 @@ def schema():
             "note": "reconcile --authority takes a JSON object with only these keys",
         },
         "mapping": {
-            "fields": list(MAPPING_KEYS),
+            "fields": list(MAPPING_ENTRY_FIELDS),
             "required_for": "a success closeout before release",
         },
         "failure_recovery": {
@@ -1215,17 +1222,24 @@ def release_decision(closeout, health_state, settled=None, read_back=None,
             return decision
         # Bind the proof to the Dispatch this decision is about. Reading it unbound would
         # let any settled worker's read-back authorize this release, which is exactly the
-        # substitution the settlement proof exists to prevent.
+        # substitution the settlement proof exists to prevent. The binding is decided
+        # *before* the proof is read: calling ``_settled_from`` without a binding skips the
+        # comparison against *this* Dispatch (its identity requirement still applies) and
+        # would report ``settled: True`` from a read-back that was never tied to this
+        # release, and ``settled`` is the field a caller reads to learn whether settlement
+        # was proven.
         bound = _release_dispatch_id(record)
-        settled = _settled_from(read_back, bound)
-        decision["settled"] = settled
-        decision["read_back"] = dict(read_back, settled=settled)
         if bound is None:
+            decision["settled"] = None
+            decision["read_back"] = dict(read_back, settled=None)
             decision["reason"] = (
                 "the closeout record names no single Dispatch, so a read-back cannot be "
                 "bound to this release")
             decision["decided_by"] = "coordinator"
             return decision
+        settled = _settled_from(read_back, bound)
+        decision["settled"] = settled
+        decision["read_back"] = dict(read_back, settled=settled)
         if settled is not True:
             decision["reason"] = (
                 "the worker is not proven settled; release waits for settlement")
@@ -1373,22 +1387,29 @@ def _settled_from(read_back, dispatch_id=None):
 
 
 def _valid_mapping(mapping):
-    """Whether a mapping entry proves the four fields release depends on.
+    """Whether a mapping entry carries every field release depends on.
 
-    ``attempt_source`` is required beside the four identity fields. Whether a given Orca
-    version returns an ``attempt`` is version-dependent — check ``worker-show --help``
-    and the current guide rather than assuming either answer. The number is the
-    authority's only when a receipt carried it; the design record forbids using a locally
-    invented attempt for authoritative reconciliation (§5.1.6) and requires the entry to
-    say where the number came from. A mapping without that declaration is rejected, so an
-    undeclared number can never reach a release decision.
+    Every field in :data:`MAPPING_ENTRY_FIELDS` is required: the four identity fields and
+    the ``attempt_source`` that says where the attempt came from. The count is deliberately
+    not restated here — a docstring that names a number drifts the moment the tuple grows,
+    which is how this function came to advertise four fields while enforcing five.
+    ``--print-schema`` prints the same list for ``mapping``, so a document written from the
+    schema is one this function accepts; the two are pinned together by a test rather than
+    by a comment.
+
+    Whether a given Orca version returns an ``attempt`` is version-dependent — check
+    ``worker-show --help`` and the current guide rather than assuming either answer. The
+    number is the authority's only when a receipt carried it; the design record forbids
+    using a locally invented attempt for authoritative reconciliation (§5.1.6) and requires
+    the entry to say where the number came from. A mapping without that declaration is
+    rejected, so an undeclared number can never reach a release decision.
     """
     if not isinstance(mapping, list) or not mapping:
         return False
     for entry in mapping:
         if not isinstance(entry, dict):
             return False
-        if any(key not in entry for key in MAPPING_KEYS):
+        if any(key not in entry for key in MAPPING_ENTRY_FIELDS):
             return False
         if entry.get("attempt_source") not in ATTEMPT_SOURCES:
             return False
