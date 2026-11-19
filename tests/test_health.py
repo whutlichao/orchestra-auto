@@ -1514,20 +1514,37 @@ class RecordingTests(SnapshotMixin, unittest.TestCase):
                                  [item["reason"] for item in missing["reasons"]])
 
     def test_a_failed_worker_keeps_the_failure_direction(self):
-        """``failed`` is never healthy and never ``unknown``: it is positive termination."""
-        for status in ("failed", "cancelled"):
-            with self.subTest(status=status):
-                for done in (True, False, None):
-                    result = self.health.evaluate(self.healthy_signals(
-                        worker_show={"observed_at": at(60), "status": status,
-                                     "worker_done": done, "agent_wait": None}))
-                    self.assertEqual(result["state"], "lost", result)
-                    self.assertEqual(
-                        self._reason(result, "worker_show"),
-                        "agent_failed_without_worker_done")
+        """``failed`` is never healthy and never ``unknown``: it is positive termination.
+
+        The state stays ``lost`` whether or not a completion signal arrived, but the
+        evidence must not claim a ``worker_done`` is missing when one was recorded:
+        ``lost`` is defined as exited *without* one (§5.4), so a present one rules out
+        that reason, not the state.
+        """
+        status = "failed"
+        for done in (False, None):
+            result = self.health.evaluate(self.healthy_signals(
+                worker_show={"observed_at": at(60), "status": status,
+                             "worker_done": done, "agent_wait": None}))
+            self.assertEqual(result["state"], "lost", result)
+            self.assertEqual(
+                self._reason(result, "worker_show"),
+                "agent_failed_without_worker_done")
+        recorded = self.health.evaluate(self.healthy_signals(
+            worker_show={"observed_at": at(60), "status": status,
+                         "worker_done": True, "agent_wait": None}))
+        self.assertEqual(recorded["state"], "lost", recorded)
+        self.assertEqual(self._reason(recorded, "worker_show"),
+                         "agent_failed_after_worker_done")
+        evidence = next(item["evidence"] for item in recorded["reasons"]
+                        if item["signal"] == "worker_show")
+        self.assertNotIn("with no worker_done", evidence)
 
     def test_a_genuinely_unknown_status_is_still_unknown(self):
-        for status in ("", None, "mystery", "retained"):
+        # ``cancelled`` is in this list on purpose: the word belongs to CI check
+        # conclusions and GitHub run states, not to the host's worker-state enum, so a
+        # worker reporting it is an anomaly to investigate, not a failure to grade.
+        for status in ("", None, "mystery", "retained", "cancelled"):
             with self.subTest(status=status):
                 result = self.health.evaluate(self.healthy_signals(
                     worker_show={"observed_at": at(60), "status": status,

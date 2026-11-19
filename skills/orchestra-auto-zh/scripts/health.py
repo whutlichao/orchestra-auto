@@ -153,11 +153,11 @@ TERMINATED_STATUSES = (
 #: Statuses that prove the worker is alive; a waiting worker is alive, not failed.
 LIVE_STATUSES = ("running", "ready", "waiting", "idle", "working", "active", "started")
 #: A worker whose own process failed. It keeps the failure direction (:func:`_worker_show`
-#: reports ``lost``) instead of becoming healthy or silently ``unknown``.
+#: reports ``lost``) instead of becoming healthy or silently ``unknown``. ``failed`` is a
+#: member of the host's measured worker-state enum; no separate ``cancelled`` list is
+#: kept, because that word belongs to CI check conclusions and GitHub run states, not to
+#: a worker lifecycle — an unrecognized status stays ``unknown`` by the branch below.
 FAILED_STATUSES = ("failed",)
-#: Process states the live projection reports in ``state`` for a superseded lifecycle.
-#: A ``cancelled`` worker did not succeed, so it is graded like a failure, not a settle.
-CANCELLED_STATUSES = ("cancelled", "canceled")
 
 #: Inbox phases that are expected to keep moving; ``error`` is immediate.
 INBOX_LIVE_PHASES = ("waiting", "checking", "backoff")
@@ -367,9 +367,18 @@ def _worker_show(snapshot, config, now):
     if block is None:
         return _absent("worker_show")
     status = block.get("status")
-    if status in FAILED_STATUSES or status in CANCELLED_STATUSES:
+    if status in FAILED_STATUSES:
         # A failed worker keeps the failure direction: the agent is gone and its own run
-        # did not complete, so this is never healthy. It is not reported as a settle.
+        # did not complete, so this is never healthy. It is not reported as a settle
+        # either, but the evidence must not claim a worker_done is missing when one was
+        # recorded: ``lost`` means exited *without* a completion signal (§5.4), and a
+        # present one contradicts that reason, not the state.
+        if block.get("worker_done") is True:
+            return _finding(
+                "worker_show", "lost", "agent_failed_after_worker_done",
+                "status " + status + " after the worker reported worker_done",
+                detail={"status": status, "worker_done": True},
+            )
         return _finding(
             "worker_show", "lost", "agent_failed_without_worker_done",
             "status " + status + " with no worker_done",

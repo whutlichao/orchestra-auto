@@ -183,6 +183,7 @@ def facts(**overrides):
         ]},
         "workers": {"state": "ok", "reason": "", "rows": [{
             "dispatch_id": "dispatch-1", "task_id": "task-39", "attempt": 1,
+            "attempt_source": "orca",
             "worktree": "worktrees/task-39", "worker_state": "released",
         }]},
         "dashboard": {"state": "ok", "reason": "", "gap": None},
@@ -207,7 +208,7 @@ LIVE_WORKER_LIST_ROW = {
     "liveness": "unverifiable",
     "terminal": "term_example_release_unknown",
     "terminalState": "release_unknown",
-    "workspace": "24b6d07b-443f-4010-b6d3-030025c96b43::/work/task-0dd6c049f5e4",
+    "workspace": "00000000-0000-4000-8000-000000000001::/work/example-task-one",
     "host": "local",
     "attention": ["unverifiable"],
     "next": "orca orchestration worker-release --dispatch ctx_example_release_unknown",
@@ -222,7 +223,7 @@ LIVE_WORKER_SHOW = {"ok": True, "result": {
     "liveness": "unverifiable",
     "terminal": "term_example_settled",
     "terminalState": "retained",
-    "workspace": "353ba2d2-de73-473b-84a8-73eb56218b8b::/work/chief-router-integration",
+    "workspace": "00000000-0000-4000-8000-000000000002::/work/example-task-two",
     "attention": ["unverifiable"],
     "waitingOnHuman": "unknown",
 }}
@@ -237,7 +238,7 @@ LIVE_WORKER_SHOW_LIVE = {"ok": True, "result": {
     "activity": "working",
     "terminal": "structworker_example_live",
     "terminalState": "retained",
-    "workspace": "24b6d07b-443f-4010-b6d3-030025c96b43::/work/fix-worker-field-mapping",
+    "workspace": "00000000-0000-4000-8000-000000000001::/work/example-task-live",
     "waitingOnHuman": "unknown",
 }}
 
@@ -953,7 +954,7 @@ class RowSixToEightTests(unittest.TestCase):
                 # A row with no terminal still names its workspace, so it maps.
                 self.assertEqual(self.module._mapping(section), [{
                     "dispatch_id": "d-null", "task_id": "t1", "attempt": 1,
-                    "worktree": "repo::/work/x"}])
+                    "attempt_source": "local", "worktree": "repo::/work/x"}])
 
     def test_the_collector_reads_the_process_state_chain_and_the_workspace(self):
         """``terminalState`` wins over the legacy keys; ``workspace`` is the worktree."""
@@ -1096,7 +1097,8 @@ class ReleaseTests(unittest.TestCase):
             "classification": "ready" if outcome == "success" else "tracker_unclosed",
             "acceptance_record_ids": [ACCEPTANCE_RECORD_ID],
             "mapping": [{"dispatch_id": "dispatch-1", "task_id": "task-39",
-                         "attempt": 1, "worktree": "worktrees/task-39"}],
+                         "attempt": 1, "attempt_source": "orca",
+                         "worktree": "worktrees/task-39"}],
             "evidence_refs": ["ledger:acceptance:" + ACCEPTANCE_RECORD_ID],
             "release_verification": {
                 "source": "worker-release --help (fixture)",
@@ -1292,7 +1294,7 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(closeouts[0]["detail"]["outcome"], "success")
         self.assertEqual(closeouts[0]["detail"]["mapping"], [{
             "dispatch_id": "dispatch-1", "task_id": "task-39", "attempt": 1,
-            "worktree": "worktrees/task-39"}])
+            "attempt_source": "orca", "worktree": "worktrees/task-39"}])
         self.assertEqual(closeouts[0]["detail"]["acceptance_record_ids"],
                          [self.recorded_acceptance_id])
 
@@ -1748,7 +1750,8 @@ class LiveReadBackTests(unittest.TestCase):
             result = self.module.failure_record(
                 RUN_ID, {"state": "ok"},
                 {"dispatch_id": "ctx_example_settled", "task_id": "task_example_settled",
-                 "attempt": 1, "worktree": "repo::/work/example"},
+                 "attempt": 1, "attempt_source": "orca",
+                 "worktree": "repo::/work/example"},
                 "transient_infrastructure", ["evidence/receipt.json"],
                 home=Path(raw_tmp).resolve() / "ledger-home",
                 answer_location="tickets/task-answer.md")
@@ -1770,7 +1773,39 @@ class LiveReadBackTests(unittest.TestCase):
         self.assertIs(self.settled(legacy, "ctx_example_settled"), True)
         self.assertIsNone(self.settled(legacy, "ctx_other"))
         self.assertIs(self.settled(
-            {"state": "ok", "worker": {"settled": False}}), False)
+            {"state": "ok", "worker": {
+                "dispatch_id": "ctx_example_live", "settled": False}}), False)
+
+    def test_an_anonymous_read_back_proves_nothing_in_every_envelope(self):
+        """Identity is required unconditionally, not only when a binding is supplied.
+
+        A read-back proves only the Dispatch it names. All three envelopes must agree:
+        an anonymous one is unreadable even though it carries a settle-shaped field, and
+        one naming a different Dispatch proves nothing about the Dispatch it is offered
+        for.
+        """
+        envelopes = {
+            "result": lambda worker: {"ok": True, "result": worker},
+            "legacy": lambda worker: {"state": "ok", "worker": worker},
+            "unwrapped": lambda worker: worker,
+        }
+        for name, wrap in envelopes.items():
+            with self.subTest(envelope=name):
+                # Identity present: the proof is readable and binds.
+                named = wrap({"dispatchId": "ctx_example_settled", "stage": "settled"})
+                self.assertIs(self.settled(named), True)
+                self.assertIs(self.settled(named, "ctx_example_settled"), True)
+                # Identity absent: a settle-shaped field no longer proves anything.
+                anonymous = wrap({"stage": "settled"})
+                self.assertIsNone(self.settled(anonymous))
+                self.assertIsNone(self.settled(anonymous, "ctx_example_settled"))
+                # Identity mismatched: never borrows another Dispatch's settlement.
+                other = wrap({"dispatchId": "ctx_example_other", "stage": "settled"})
+                self.assertIsNone(self.settled(other, "ctx_example_settled"))
+                # A liveness proof follows the same rule as a stage proof.
+                anonymous_live = wrap({"liveness": "exited"})
+                self.assertIsNone(self.settled(anonymous_live))
+                self.assertIsNone(self.settled(anonymous_live, "ctx_example_settled"))
 
     def test_the_live_read_back_drives_failure_record_and_failure_plan(self):
         """The end-to-end acceptance: a live read-back authorizes the recovery sequence."""
@@ -1778,7 +1813,7 @@ class LiveReadBackTests(unittest.TestCase):
             home = Path(raw_tmp).resolve() / "ledger-home"
             dispatch = {"dispatch_id": "ctx_example_settled",
                         "task_id": "task_example_settled", "attempt": 1,
-                        "worktree": "353ba2d2::/work/chief-router-integration"}
+                        "worktree": "00000000-0000-4000-8000-000000000002::/work/example-task-two"}
             recorded = self.module.failure_record(
                 RUN_ID, LIVE_WORKER_SHOW, dispatch, "transient_infrastructure",
                 ["evidence/receipt.json"], home=home,
@@ -1821,6 +1856,245 @@ class LiveReadBackTests(unittest.TestCase):
             self.assertEqual(live["next_action"], "escalate")
 
 
+class ReleaseUnknownBindingTests(unittest.TestCase):
+    """A ``release_unknown`` release is bound to the Dispatch it is deciding about.
+
+    ``release_decision`` is the one path that reads a read-back to prove settlement
+    before releasing. Reading it unbound would let any settled worker's read-back
+    authorize this release, which is the substitution the proof exists to prevent.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+
+    def closeout(self, **overrides):
+        record = {
+            "record_id": "closeout-example-1",
+            "durable": True,
+            "outcome": "failure",
+            "classification": "transient_infrastructure",
+            "evidence_refs": ["evidence/receipt.json"],
+            "mapping": [{"dispatch_id": "ctx_example_target", "task_id": "task_example",
+                         "attempt": 1, "attempt_source": "orca",
+                         "worktree": "repo::/work/example"}],
+            "release_verification": {
+                "source": "worker-release --help (fixture)",
+                "at": "2026-11-19T00:00:00Z",
+                "version_scope": "help text only",
+            },
+            "observed_at": "2026-11-19T00:00:00Z",
+        }
+        record.update(overrides)
+        return record
+
+    def decision(self, read_back, record=None):
+        return self.module.release_decision(
+            self.closeout() if record is None else record,
+            health_state="healthy", settled=None, read_back=read_back,
+            release_state="release_unknown", decided_by="coordinator")
+
+    def test_an_anonymous_read_back_never_authorizes_a_release(self):
+        """A bare settle-shaped envelope names no Dispatch, so it proves nothing.
+
+        Regression: the identity check used to be skipped entirely when no binding was
+        supplied, so ``{"ok": true, "result": {"stage": "settled"}}`` released a Dispatch
+        it never named.
+        """
+        for read_back in (
+            {"ok": True, "result": {"stage": "settled"}},
+            {"ok": True, "result": {"liveness": "exited"}},
+            {"result": {"stage": "settled"}},
+            {"ok": True, "result": {"settled": True}},
+        ):
+            with self.subTest(read_back=read_back):
+                self.assertIsNone(self.module._settled_from(read_back))
+                result = self.decision(read_back)
+                self.assertFalse(result["allowed"], result)
+                self.assertIsNone(result["settled"])
+
+    def test_another_dispatches_settlement_never_authorizes_this_release(self):
+        """A settled read-back for a different Dispatch proves nothing about this one."""
+        read_back = {"ok": True, "result": {
+            "dispatchId": "ctx_example_other", "stage": "settled"}}
+        result = self.decision(read_back)
+        self.assertFalse(result["allowed"], result)
+        self.assertIsNone(result["settled"])
+        self.assertIn("settl", result["reason"])
+
+    def test_contradicting_stop_and_liveness_proofs_prove_nothing(self):
+        """Two proofs that disagree settle nothing; the permissive reading is refused.
+
+        Regression: ``stage: settled`` was checked before ``liveness: live``, so a host
+        anomaly that reported both released the Dispatch on the strength of the field the
+        code happened to read first.
+        """
+        for worker in ({"dispatchId": "ctx_example_target", "stage": "settled",
+                        "liveness": "live"},
+                       {"dispatchId": "ctx_example_target", "stage": "settled",
+                        "state": "ready"},
+                       {"dispatchId": "ctx_example_target", "liveness": "exited",
+                        "state": "ready"}):
+            with self.subTest(worker=worker):
+                self.assertIsNone(self.module._settled_from(worker))
+                read_back = {"ok": True, "result": worker}
+                self.assertIsNone(self.module._settled_from(read_back,
+                                                            "ctx_example_target"))
+                result = self.decision(read_back)
+                self.assertFalse(result["allowed"], result)
+                self.assertIsNone(result["settled"])
+
+    def test_the_records_own_dispatch_is_what_the_proof_binds_to(self):
+        """The read-back must name the Dispatch the closeout record covers."""
+        matching = {"ok": True, "result": {
+            "dispatchId": "ctx_example_target", "stage": "settled"}}
+        allowed = self.decision(matching)
+        self.assertTrue(allowed["allowed"], allowed)
+        self.assertIs(allowed["settled"], True)
+        self.assertTrue(allowed["read_back"]["settled"])
+
+    def test_a_record_naming_no_dispatch_cannot_bind_a_proof(self):
+        """Without a Dispatch in the record the decision refuses instead of guessing.
+
+        The read-back cannot supply its own binding: doing so would make the identity
+        comparison compare a name with itself, and any settled worker could authorize
+        the release.
+        """
+        for record in (self.closeout(mapping=[]), self.closeout(mapping=None),
+                       self.closeout(mapping=[{"dispatch_id": "ctx_example_a"},
+                                              {"dispatch_id": "ctx_example_b"}])):
+            with self.subTest(mapping=record["mapping"]):
+                read_back = {"ok": True, "result": {
+                    "dispatchId": "ctx_example_target", "stage": "settled"}}
+                result = self.decision(read_back, record)
+                self.assertFalse(result["allowed"], result)
+                self.assertIn("names no single Dispatch", result["reason"])
+
+
+class TerminalAccountingTests(unittest.TestCase):
+    """Row 8's terminal accounting: priority, explicit null, and contradictions."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module(SKILL_DIRS[0], "closeout.py")
+
+    def collect(self, row):
+        def run_fn(_argv):
+            return {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                {"ok": True, "result": {"workers": [row]}})}
+
+        return self.module._collect_workers("run_x", "/fake/orca", run_fn)
+
+    def test_an_explicit_null_and_an_absent_key_agree(self):
+        """Both spellings of "no terminal state" must reach the same answer.
+
+        Regression: with a ``terminal`` resource named, the explicit-``null`` row was
+        readable (row 8 ``ok``) while the key-absent row was unreadable — the two
+        spellings of the same logical row disagreed, and the explicit one was the
+        fail-open direction.
+        """
+        rows = [
+            {"dispatchId": "d-null", "taskId": "t1", "state": "succeeded",
+             "terminal": "term_example_1", "terminalState": None,
+             "workspace": "repo::/work/x"},
+            {"dispatchId": "d-absent", "taskId": "t2", "state": "succeeded",
+             "terminal": "term_example_2", "workspace": "repo::/work/y"},
+        ]
+        answers = [self.module._terminal_accounting(row) for row in rows]
+        self.assertEqual(answers, [(False, ""), (False, "")])
+        for row in rows:
+            with self.subTest(dispatch=row["dispatchId"]):
+                section = self.collect(row)
+                self.assertEqual(section["state"], "unknown")
+                self.assertEqual(
+                    self.module._row_eight({"workers": section})["status"], "unknown")
+
+    def test_a_malformed_high_priority_value_does_not_mask_a_readable_one(self):
+        """An unreadable value is skipped, not used to short-circuit the chain.
+
+        Regression: ``terminalState: 123`` returned unreadable immediately, so a real
+        ``worker_state: release_unknown`` was unreachable and the reclaim could never be
+        reported.
+        """
+        row = {"dispatchId": "d-typed", "taskId": "t1", "terminalState": 123,
+               "worker_state": "release_unknown", "workspace": "repo::/work/x"}
+        self.assertEqual(self.module._terminal_accounting(row),
+                         (True, "release_unknown"))
+        section = self.collect(row)
+        self.assertEqual(section["state"], "ok")
+        detail = self.module._row_eight({"workers": section})["detail"]
+        self.assertEqual([entry["dispatch_id"] for entry in detail["reclaimable"]],
+                         ["d-typed"])
+
+    def test_nothing_readable_and_nothing_named_still_fails_closed(self):
+        """A row whose every candidate is unreadable proves nothing, terminal or not."""
+        for row in (
+            {"dispatchId": "d1", "taskId": "t1", "terminalState": 123},
+            {"dispatchId": "d2", "taskId": "t2", "terminalState": 123,
+             "worker_state": None},
+            {"dispatchId": "d3", "taskId": "t3", "terminalState": ["released"]},
+        ):
+            with self.subTest(row=row):
+                self.assertEqual(self.module._terminal_accounting(row), (False, ""))
+                self.assertEqual(self.collect(row)["state"], "unknown")
+
+    def test_the_documented_task_outcome_chain_includes_status(self):
+        """``state -> status -> workerState -> worker_state``: ``status`` is a fallback.
+
+        Regression: ``status`` was dropped from the chain, so an older-host row that
+        carries only ``status`` became unreadable although the base commit parsed it as
+        ``reclaimable`` and blocked row 8.
+        """
+        section = self.collect({"dispatchId": "d1", "taskId": "t1",
+                                "status": "reclaimable",
+                                "workspace": "repo::/work/x"})
+        self.assertEqual(section["state"], "ok")
+        self.assertEqual([(row["dispatch_id"], row["worker_state"])
+                          for row in section["rows"]], [("d1", "reclaimable")])
+        self.assertEqual(
+            self.module._row_eight({"workers": section})["status"], "blocked")
+
+    def test_state_still_wins_over_status(self):
+        """The live task outcome must never be displaced by the legacy spelling."""
+        section = self.collect({"dispatchId": "d1", "taskId": "t1",
+                                "state": "succeeded", "status": "release_unknown",
+                                "terminalState": None,
+                                "workspace": "repo::/work/x"})
+        self.assertEqual([(row["dispatch_id"], row["worker_state"])
+                          for row in section["rows"]], [("d1", "succeeded")])
+
+    def test_a_named_terminal_without_its_accounting_stays_unreadable(self):
+        """Any named terminal is a resource the host asserted exists.
+
+        Regression: the check narrowed to "is a non-empty string", so a ``terminal`` of
+        ``123``, ``{}`` or ``[1]`` read as "never had a terminal" and row 8 declared a
+        clean lifecycle from the task outcome. ``null`` and ``""`` are the two spellings
+        of "no name" and stay readable; every other value proves nothing.
+        """
+        for terminal in (123, {"handle": "term_1"}, ["term_1"], 0, True):
+            with self.subTest(terminal=terminal):
+                row = {"dispatchId": "d1", "taskId": "t1", "state": "succeeded",
+                       "terminal": terminal, "workspace": "repo::/work/x"}
+                self.assertEqual(self.module._terminal_accounting(row), (False, ""))
+                section = self.collect(row)
+                self.assertEqual(section["state"], "unknown")
+                self.assertEqual(
+                    self.module._row_eight({"workers": section})["status"], "unknown")
+        # A named terminal beside an explicit ``null`` state is the same contradiction in
+        # the other spelling: the explicit null must not explain away a resource the host
+        # said exists.
+        for terminal in (123, "term_example_1"):
+            with self.subTest(terminal=terminal, state="null"):
+                self.assertEqual(
+                    self.module._terminal_accounting(
+                        {"terminal": terminal, "terminalState": None}), (False, ""))
+        for unnamed in (None, "", "   "):
+            with self.subTest(terminal=unnamed):
+                self.assertEqual(
+                    self.module._terminal_accounting(
+                        {"terminal": unnamed, "terminalState": None}), (True, ""))
+
+
 class WorkerMappingTests(unittest.TestCase):
     """The success closeout mapping names a real worktree from the live row shape."""
 
@@ -1836,23 +2110,65 @@ class WorkerMappingTests(unittest.TestCase):
         return self.module._collect_workers("run_x", "/fake/orca", run_fn)
 
     def test_a_live_row_yields_a_non_empty_worktree_the_mapping_accepts(self):
-        """The verbatim recorded row, with no invented ``attempt`` or ``worktree``."""
+        """The verbatim recorded row, with no invented ``worktree``.
+
+        The attempt is the local first-attempt count, because the live projection has no
+        ``attempt`` field at all; the entry says so instead of passing the number off as
+        the authority's.
+        """
         section = self.collect([dict(LIVE_WORKER_LIST_ROW)])
         mapping = self.module._mapping(section)
         self.assertEqual(mapping, [{
             "dispatch_id": "ctx_example_release_unknown", "task_id": "task_example_release_unknown",
-            "attempt": 1,
-            "worktree": "24b6d07b-443f-4010-b6d3-030025c96b43::/work/task-0dd6c049f5e4",
+            "attempt": 1, "attempt_source": "local",
+            "worktree": "00000000-0000-4000-8000-000000000001::/work/example-task-one",
         }])
         self.assertTrue(self.module._valid_mapping(mapping))
 
     def test_an_empty_worktree_is_rejected_by_the_mapping_validator(self):
         mapping = [{"dispatch_id": "d-1", "task_id": "task-1", "attempt": 1,
-                    "worktree": ""}]
+                    "attempt_source": "orca", "worktree": ""}]
         self.assertFalse(self.module._valid_mapping(mapping))
         self.assertFalse(self.module._valid_mapping(
             [{"dispatch_id": "d-1", "task_id": "task-1", "attempt": 0,
-              "worktree": "w"}]))
+              "attempt_source": "orca", "worktree": "w"}]))
+
+    def test_a_recovery_that_cannot_prove_its_attempt_is_local(self):
+        """An undeclared source is ``local``, never the authority's.
+
+        ``failure-record`` receives a number and nothing that says where it came from, so
+        stamping it ``orca`` asserted provenance the caller never proved — and the CLI
+        path supplies no source at all, which made every recovery attempt look
+        authoritative. A caller that did read the value from a receipt declares ``orca``
+        explicitly.
+        """
+        bare = {"dispatch_id": "d-1", "task_id": "t-1", "attempt": 1,
+                "worktree": "worktrees/t-1"}
+        self.assertEqual(self.module._failure_mapping(bare)["attempt_source"], "local")
+        self.assertEqual(
+            self.module._failure_mapping({**bare, "attempt_source": "orca"})
+            ["attempt_source"], "orca")
+
+    def test_an_attempt_without_a_declared_source_is_never_authoritative(self):
+        """A mapping entry must say where its attempt came from, or it is refused.
+
+        The live projection returns no ``attempt`` at all, so on the live host the number
+        is this process's local count. The design record forbids using a locally invented
+        attempt for authoritative reconciliation, so an entry that does not declare its
+        source cannot reach a release decision.
+        """
+        for source in (None, "", "guess", 1, ["orca"]):
+            with self.subTest(source=source):
+                entry = {"dispatch_id": "d-1", "task_id": "task-1", "attempt": 1,
+                         "worktree": "worktrees/task-1"}
+                if source is not None:
+                    entry["attempt_source"] = source
+                self.assertFalse(self.module._valid_mapping([entry]))
+        for source in ("orca", "local"):
+            with self.subTest(source=source):
+                self.assertTrue(self.module._valid_mapping(
+                    [{"dispatch_id": "d-1", "task_id": "task-1", "attempt": 1,
+                      "attempt_source": source, "worktree": "worktrees/task-1"}]))
 
     def test_a_row_without_a_worktree_or_a_usable_attempt_is_never_a_mapping(self):
         """One unmappable worker empties the mapping instead of shrinking it.
@@ -1864,13 +2180,20 @@ class WorkerMappingTests(unittest.TestCase):
         that names nothing.
         """
         good = {"dispatch_id": "d-4", "task_id": "task-4", "attempt": 1,
-                "worktree": "worktrees/task-4"}
+                "attempt_source": "orca", "worktree": "worktrees/task-4"}
         poison = [
-            {"dispatch_id": "d-1", "task_id": "task-1", "attempt": 1, "worktree": ""},
+            {"dispatch_id": "d-1", "task_id": "task-1", "attempt": 1,
+             "attempt_source": "orca", "worktree": ""},
             {"dispatch_id": "d-2", "task_id": "task-2", "attempt": None,
-             "worktree": "worktrees/task-2"},
+             "attempt_source": "orca", "worktree": "worktrees/task-2"},
             {"dispatch_id": "d-3", "task_id": "task-3", "attempt": 0,
-             "worktree": "worktrees/task-3"},
+             "attempt_source": "orca", "worktree": "worktrees/task-3"},
+            # An undeclared attempt is refused: a bare number must never pass as the
+            # authority's (§5.1.6).
+            {"dispatch_id": "d-5", "task_id": "task-5", "attempt": 1,
+             "worktree": "worktrees/task-5"},
+            {"dispatch_id": "d-6", "task_id": "task-6", "attempt": 1,
+             "attempt_source": "guess", "worktree": "worktrees/task-6"},
         ]
         for unmappable in poison:
             with self.subTest(row=unmappable):
@@ -2022,7 +2345,8 @@ class FailedDispatchRecoveryTests(unittest.TestCase):
                          "transient_infrastructure")
         self.assertEqual(recorded["closeout"]["evidence_refs"],
                          sorted(self.EVIDENCE))
-        self.assertEqual(recorded["closeout"]["mapping"], [self.DISPATCH])
+        self.assertEqual(recorded["closeout"]["mapping"],
+                         [{**self.DISPATCH, "attempt_source": "local"}])
 
         stored = self.closeouts()
         self.assertEqual(len(stored), 1)
@@ -2033,7 +2357,8 @@ class FailedDispatchRecoveryTests(unittest.TestCase):
         self.assertEqual(detail["outcome"], "failure")
         self.assertEqual(detail["classification"], "transient_infrastructure")
         self.assertEqual(detail["evidence_refs"], sorted(self.EVIDENCE))
-        self.assertEqual(detail["mapping"], [self.DISPATCH])
+        self.assertEqual(detail["mapping"],
+                         [{**self.DISPATCH, "attempt_source": "local"}])
         self.assertEqual(detail["failure_recovery"]["settled"], True)
 
         # The same failure is idempotent: one durable record, not one per retry.
@@ -2328,6 +2653,25 @@ class SchemaDiscoveryTests(unittest.TestCase):
                          self.module.AUTHORITY_SECTIONS)
         self.assertEqual(tuple(self.schema["mapping"]["fields"]),
                          self.module.MAPPING_KEYS)
+
+    def test_a_worker_row_written_to_the_printed_schema_can_be_mapped(self):
+        """The printed worker-row shape must be one ``_mapping`` actually accepts.
+
+        Regression: ``SECTION_ROWS["workers"]`` kept the pre-#101 five fields while
+        ``_mapping`` began requiring ``attempt_source``, so an authority document written
+        from ``--print-schema`` produced an empty mapping and a success closeout could
+        never authorize a release.
+        """
+        row_fields = self.schema["facts"]["sections"]["workers"]["row_fields"]
+        self.assertIn("attempt_source", row_fields)
+        row = {"dispatch_id": "d-1", "task_id": "t-1", "attempt": 1,
+               "attempt_source": "local", "worktree": "repo::/work/x",
+               "worker_state": "succeeded"}
+        self.assertEqual(sorted(row), sorted(row_fields))
+        self.assertEqual(self.module._mapping(
+            {"state": "ok", "reason": "", "rows": [row]}),
+            [{"dispatch_id": "d-1", "task_id": "t-1", "attempt": 1,
+              "attempt_source": "local", "worktree": "repo::/work/x"}])
 
     def test_the_acceptance_section_mirrors_the_acceptance_module(self):
         section = self.schema["facts"]["sections"]["acceptance"]
