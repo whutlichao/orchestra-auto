@@ -389,3 +389,71 @@ class MessagingVersionAdaptationTests(unittest.TestCase):
                 self.assertEqual(module._check_messaging({'messaging': messaging}, Runner(changed))['result'], 'fail')
                 unsupported = dict(outputs); unsupported.pop(('orchestration', 'inbox', '--help'))
                 self.assertEqual(module._check_messaging({'messaging': messaging}, Runner(unsupported))['result'], 'fail')
+
+    def test_live_1_4_265_guide_and_help_wording_pass_without_human_override(self):
+        """Captured Orca 1.4.265 guide/help phrasing must satisfy _check_messaging directly."""
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        guide_1_4_265 = (
+            "## When Orca wakes you\n"
+            "- In a chat, each message arrives whole as its own message: act on it. A wake\n"
+            "  that names a `check` command (a terminal, or one message too large for a chat\n"
+            "  message) means run that command.\n"
+        )
+        check_help_1_4_265 = (
+            "Usage: orca orchestration check [--terminal <handle>] [--run <run_id>] "
+            "[--ack <delivery_id>] [--unread | --peek | --all] [--types <type,...>] "
+            "[--format] [--wait] [--timeout-ms <n>] [--retry-request <id>] [--json]\n"
+            "  default: return the bound Run's oldest unread FIFO batch and mark it handled.\n"
+            "  --peek: return only unread messages without marking them read.\n"
+            "  --retry-request <id>  Reissue an earlier request by its ID; replays its result instead of repeating it\n"
+            "Notes:\n"
+            "  A consuming check marks the batch it returns as handled, so the next check returns newer mail; no --ack is needed.\n"
+            "  If a check response was lost, rerun it with the --retry-request it printed to get the same batch. "
+            "To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full\n"
+        )
+        inbox_help_1_4_265 = (
+            "Usage: orca orchestration inbox [--limit <n>] [--terminal <handle>] [--run <run_id>] [--full] [--json]\n"
+            "  --terminal <handle>  Runtime-issued terminal handle\n"
+            "  --full                 Print the full record Orca returned instead of the concise view\n"
+        )
+        handle, pane = "term_1", "tab-1:leaf-2"
+
+        class Runner:
+            def run(self, argv, timeout=None):
+                outputs = {
+                    ("--version",): "1.4.265\n",
+                    ("skills", "get", "orchestration"): guide_1_4_265,
+                    ("orchestration", "check", "--help"): check_help_1_4_265,
+                    ("orchestration", "inbox", "--help"): inbox_help_1_4_265,
+                    ("terminal", "list", "--json"): json.dumps({
+                        "ok": True,
+                        "result": {"terminals": [{
+                            "handle": handle, "tabId": "tab-1", "leafId": "leaf-2",
+                            "connected": True, "orphaned": False,
+                        }]},
+                    }),
+                    ("orchestration", "inbox", "--terminal", handle, "--limit", "1", "--json"):
+                        json.dumps({"ok": True, "result": {"messages": []}}),
+                }
+                value = outputs.get(tuple(argv[1:]))
+                return {"returncode": 0 if value is not None else 1,
+                        "stdout": value or "", "stderr": ""}
+
+        migration = {"legacy_migration_complete": True, "migration_evidence_ref": "native"}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location(
+                "contract_1_4_265", ROOT / "skills" / package / "scripts" / "preflight.py"
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(package=package), patch.dict(
+                os.environ, {"ORCA_TERMINAL_HANDLE": handle, "ORCA_AGENT_PANE": pane}, clear=True
+            ):
+                item = module._check_messaging({"messaging": migration}, Runner())
+                self.assertEqual(item["result"], "pass", item["note"])
+                self.assertEqual(item["observed"]["semantic_basis"], "documented_contract")
+                self.assertEqual(item["observed"]["session_source"], "live_terminal_binding")

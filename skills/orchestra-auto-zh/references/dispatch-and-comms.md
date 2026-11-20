@@ -12,7 +12,9 @@ Orca 默认会把 worker 放进当前工作区（即 `main`），**这里必须�
   --retry-request <request_id>
 ```
 
-- 必传 `--worktree new-top-level` 与显式 `--agent`（缺省报 `agent_unconfigured`；绝不用 `current` 或 `new-child`）。工作目录与目标仓库不同时显式加 `--repo <selector>`。
+- 必传 `--worktree new-top-level` 与显式 `--agent`（缺省报 `agent_unconfigured`；绝不用 `current` 或 `new-child`）。多行 spec 优先用 `--spec-file <path|->` 避免 shell 转义问题。工作目录与目标仓库不同时显式加 `--repo <selector>`。
+- **启动形态与常驻生命周期（`1.4.265`）**：`worker-start` 会按用户在 Orca 中的默认设置打开结构化 chat 或终端（调用方无需也无法指定形态参数；一律通过 `worker-show` / `worker-read --source auto` 与编排消息驱动）。`new-top-level`（及 `new-child`）启动的 worker 在结束后默认保持打开（等价于隐含 `--keep-open`），因此验收并落盘 closeout 后，若无人继续使用该会话仍须显式执行 `worker-release`。
+- **Bot 不可替代受监督 worker（`orca bot`）**：`send --to bot:<name>`（或 `--item <n>`）投递给代表主人运行的常驻 bot（`handoff` / `question` / `status`），不会创建隔离的 `new-top-level` worktree 或受监督 `Task`/`Dispatch`。严禁用给 bot 发消息替代 `worker-start --worktree new-top-level`。
 - **Fork 与自有仓库判别（`orca repo show --repo <selector> --json`）**：若 `result.repo.upstream` 非空，先 `git fetch upstream` 再显式 `--base-branch upstream/<默认分支>`（fork 的默认分支只镜像 upstream）。若 coordinator 工作区落后 base 过多导致 Task 停在 `ready` 无回执，同步重建或说明 `allow-stale-base: true`，绝不盲重派。
 - 固定派发顺序：preflight 回执 → 台账 `intent`（带 `request_id`）→ `worker-start --retry-request` → 台账 `result`（保留 `detail.raw_receipt`，无 attempt 时记 `attempt_source: local`）→ 尽力写 `progress.py` → 派活后观测。
 
@@ -43,7 +45,7 @@ print(handle)
 - `turnStart: observed`（或该 attempt 产物/状态投影）即为启动证据；`state: ready` **不是**启动证据。
 - 当 `turnStart` 为 `unsupported`、`unobserved` 或缺失时：先 `worker-show --dispatch <id> --json`。有终端看 `terminal show --terminal <handle> --json`；无终端改查 `worker-read --source auto` 与状态投影（不对无终端 worker 强呼 `terminal show`）。
 - 未变的空闲标题（`Pi ready`、`OMP ready`、`Terminal 1`、`OC | ...`）既不证起也不证未起。**仅当**看清完整 preamble 停在输入框且当前未运行 turn 时，允许向原终端补发**一次**裸 Enter；否则取证而不连按 Enter 或重派第二个 Dispatch。
-- **权限提示 / `agentWait`**：核实具体操作、目标路径与风险。仅授权当前轮次范围内操作；涉及越权、账号、付费或不可逆改动须升级，绝不套用 bypass。
+- **权限提示 / `agentWait`**：核实具体操作、目标路径与风险（`worker-show` 的 `waitingOnHuman` / `observation.agentWait`）。超出边界的请求可用 `orca orchestration deny --dispatch <id> --prompt <approval_id> --reason "<text>"` 单次拒绝并让 worker 继续；**仅当**人类明确授权且宿主开启协调者审批开关时，才可用 `orca orchestration approve --dispatch <id> --prompt <approval_id> --reason "<text>"` 单次放行。涉及越权、账号、付费或不可逆改动须升级，绝不启用常驻放行规则、bypass 或盲按 Enter。
 
 ## 4. Worker 提问分类与 `reply` 规范
 

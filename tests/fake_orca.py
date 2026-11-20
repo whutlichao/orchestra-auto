@@ -250,7 +250,8 @@ if kind == "task-list":
 
 MUTATION_KINDS = (
     "worker-start", "send", "reply", "worker-stop", "worker-abandon",
-    "worker-retain", "worker-release", "merge", "pr-create", "tracker-close",
+    "worker-retain", "worker-keep-open", "worker-release", "deny", "approve",
+    "merge", "pr-create", "tracker-close",
 )
 if kind in MUTATION_KINDS:
     request_id = flag("--retry-request", "")

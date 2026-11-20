@@ -44,6 +44,9 @@ python3 "$CLOSEOUT" failure-plan --run-id <run_id> \
 
 Stop and ask the user if setup fails twice, fault is `authority_fault`, or the per-ticket breaker (2 consecutive failures) trips.
 
+- **Retrying a failed attempt (`1.4.265`)**: after settlement closeout and root-cause change, retry on the same Task with `worker-start --task <task_id> --retry-of <dispatch_id> --worktree <placement> --agent <agent>` (`--retry-of` requires `--task`, never `--spec`, and does not inherit placement). Orca circuit-breaks a Dispatch after 3 failed starts in one `--retry-of` chain; our 2-failure per-ticket breaker stops earlier to ask the user, and reopening after a breaker requires explicit user authorization (`task-update --status ready --run <owning_run_id>`).
+- **Auto-release & kept-open lifecycle (`orchestration.worker-auto-release.v1`)**: non-kept-open workers schedule automatic release ~2 minutes after `worker_done` (`autoReleaseAt` in `worker-show`/`worker-list`), whereas `new-top-level` workers remain kept open until `worker-release` (which clears `worker-keep-open`). `worker-read --source auto` stays readable after release while transcript/chat history exists.
+
 ## 2. Run Health State Machine (`health.py`)
 
 Collect live native-wake signals and evaluate in one step (`mode="native"` omits retired `inbox` / `unacked` / `waiter_slot` unless supplied, and requires `nested_roster` only for long-horizon runs; `--observation` stays supported for historical audits):

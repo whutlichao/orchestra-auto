@@ -4,7 +4,7 @@ Developer specification extracted from runtime references explaining how `script
 
 ## Why Schema Probing Replaced Filename Rules
 
-In Orca 1.4.258 (re-verified 2026-11-13; originally observed on 1.4.244 on 2026-10-29), the profile directory resolved from `orca agent hooks status --json` (`result.settingsPath`) holds multiple SQLite files alongside backups (`*.backup.*.db`) — e.g. `orca-github-cache.db` and an empty `state.db`. Neither filename nor file count identifies the live settings database, and `orca-data.json` / backups must never be read as fallback.
+In Orca 1.4.265 (re-verified 2026-11-20; previously verified on 1.4.258 on 2026-11-13; originally observed on 1.4.244 on 2026-10-29), the profile directory resolved from `orca agent hooks status --json` (`result.settingsPath`) holds multiple SQLite files alongside backups (`*.backup.*.db`) — e.g. `orca-github-cache.db` and an empty `state.db`. Neither filename nor file count identifies the live settings database, and `orca-data.json` / backups must never be read as fallback.
 
 ## Read-Only SQLite Probe Contract
 
