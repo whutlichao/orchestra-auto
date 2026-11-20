@@ -132,8 +132,8 @@ OBSERVATIONS = ("review-exemption-recheck", "dashboard-backfill", "inbox-health"
 #: and guide recorded here; a different Orca version may differ, so a read that does not
 #: match fails and reports instead of guessing or falling back.
 LIVE_SETTINGS_VERIFICATION = {
-    "source": "Orca CLI 1.4.258 on macOS",
-    "verified_at": "2026-11-13",
+    "source": "Orca CLI 1.4.265 on macOS",
+    "verified_at": "2026-11-20",
     "scope": "version-scoped; verify against the current CLI and guide before reuse",
 }
 #: The documented settings table. The read below spells it literally so no identifier is
