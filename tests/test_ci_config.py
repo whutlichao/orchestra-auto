@@ -66,6 +66,21 @@ class ContributingTests(unittest.TestCase):
         self.assertIn("tests", text)
         self.assertIn("GitHub Actions", text)
 
+    def test_the_quick_loop_lists_every_test_module(self):
+        """The short loop is what a contributor actually runs, so a module missing from it is untested."""
+        modules = {path.stem for path in (REPO_ROOT / "tests").glob("test_*.py")}
+        text = CONTRIBUTING.read_text(encoding="utf-8")
+        blocks = text.split("If you only want a quick loop", 1)
+        self.assertEqual(len(blocks), 2, "CONTRIBUTING lost its quick-loop paragraph")
+        # The first command block after that paragraph is the quick loop itself.
+        block = re.search(r"```bash\n(.*?)```", blocks[1], re.DOTALL)
+        self.assertIsNotNone(block, "CONTRIBUTING lost the quick-loop command block")
+        # Match module names only in command position, so a prose mention cannot satisfy the check.
+        listed = set(re.findall(r"^python3 -m unittest tests\.([a-z0-9_]+)",
+                                block.group(1), re.MULTILINE))
+        self.assertEqual(listed, modules,
+                         "the quick-loop list drifted from tests/test_*.py")
+
 
 if __name__ == "__main__":
     unittest.main()
