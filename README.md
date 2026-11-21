@@ -22,6 +22,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 
 - Uses the community [`skills` CLI](https://github.com/vercel-labs/skills) (not `orca skills install`). Add `--global` or `--agent <name>` as needed.
 - Both language variants are independent bundles with identical scripts and workflow rules.
+- **Orca Bot (optional, 1-click copy)**: [Install the bilingual Orchestra Auto Bot](https://share.onorca.dev/bots/share/e0ec4dbaa384456bb7e63478493a4787) directly in Orca (triggers interactive first-run onboarding; setup & self-hosting details in [docs/bots/orca-bot-guide.md](docs/bots/orca-bot-guide.md)).
 
 ## How it works
 
@@ -36,6 +37,7 @@ Core safety rules:
 
 - `state: ready` is not a started turn (`turnStart: observed` or attempt evidence is required), and `worker_done` is not acceptance.
 - Flow state, ledgers, and progress logs live outside the repository (`scripts/flow.py`, `scripts/chain.py`, `scripts/preflight.py`, `scripts/closeout.py`).
+- Can run either in a foreground Orca session or as a persistent, shareable **Orca Bot** coordinator ([docs/bots/SOUL.md](docs/bots/SOUL.md), [docs/bots/orca-bot-guide.md](docs/bots/orca-bot-guide.md)) with first-run onboarding, runtime anti-collision deduplication, and dynamic `docs/agents/triage-labels.md` lookup.
 - Full rules live in [skills/orchestra-auto/SKILL.md](skills/orchestra-auto/SKILL.md).
 
 ## Prerequisites and capability boundary
@@ -64,8 +66,8 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/demo-exam
 
 ```text
 skills/
-├── orchestra-auto/      English bundle (SKILL.md: 8,819 bytes / ~2,204 tokens; references/: eight files)
-└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 8,026 bytes / ~2,006 tokens; same structure)
+├── orchestra-auto/      English bundle (SKILL.md: 9,819 bytes / ~2,454 tokens; references/: eight files)
+└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 9,001 bytes / ~2,250 tokens; same structure)
 tests/                   Offline unittest suite (scripts, dashboard, package parity, leak scan)
 docs/                    Design docs, architecture specs, and demo assets (see docs/INDEX.md)
 ```
@@ -76,7 +78,7 @@ Run the full offline test suite (no network or credentials needed):
 python3 -m unittest discover -s tests -v
 ```
 
-Each bundle also ships **52 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+Each bundle also ships **54 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Credits & License
 

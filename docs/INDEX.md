@@ -6,4 +6,5 @@
 - [上游 skill 全景](research/upstream-skill-map.md)、[Orca 机制](research/orca-mechanisms.md)、[差异评估](research/workflow-assessment.md)：研究证据，不替代 spec。
 - [既有稳定性设计](design/orchestration-stability.md)：台账、验收、恢复等已有契约；本次按 spec 增量修改。
 - [看板架构](design/dashboard-architecture.md)、[台账实现细节](design/ledger-internals.md)、[预检 live-settings 探测](design/preflight-internals.md)：从运行时 skill 包抽离的开发者与内部实现设计。
+- [Orca Bot 双语协调者母本](bots/SOUL.md)、[Orca Bot 配置与分享指南（中文）](bots/orca-bot-guide.zh-CN.md)、[Orca Bot Guide (English)](bots/orca-bot-guide.md)：将 `orchestra-auto` 配置为可分享的常驻 Orca Bot（含首次启动引导、Issue/PR 监听强去重与动态标签解析）。
 - [仓库代理约定](agents/issue-tracker.md)、[领域文档约定](agents/domain.md)、[triage 标签](agents/triage-labels.md)。

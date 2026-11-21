@@ -20,7 +20,7 @@ scope 或状态不明时先只读探索，再按事实选用唯一路由（用�
 | 架构接缝疼痛 / 难复现回归 | `improve-codebase-architecture` / `diagnosing-bugs` | 用户选定候选 / 稳定红→绿回归环 | `grill-with-docs` / `retro` |
 | 流程缺陷或重复踩坑 | `retro`（仅只读分析） | 仓库外写 `retro-candidates.md`，人类挑选后再派工落地 | 下一轮 |
 
-**仓库初始化门禁（`G-docs` / `G-tickets` 入口）：** 执行 `python3 scripts/init-check.py check --repo <target>`：
+**仓库初始化门禁（`G-docs` / `G-tickets` 入口）：** 执行 `python3 scripts/init-check.py check --repo <target>`（在 `orca bot` 等非 git 目录协调时必须显式传入目标仓库路径，并动态读取 `<target>/docs/agents/triage-labels.md` 与 `<target>/docs/agents/issue-tracker.md`，绝不硬编码标签名）：
 - 退出 `0`：已初始化（`AGENTS.md`/`CLAUDE.md` 含 `## Agent skills`，`docs/agents/issue-tracker.md` 与 `domain.md` 非空，托管仓库 `gh repo view`/`glab repo view` 可用）。
 - 退出 `1`：未初始化 → 与人类确认后，再按显式路径派 worker 运行 `setup-matt-pocock-skills`（`disable-model-invocation: true`，绝不直接落 main）。
 - 退出 `2`：`unknown` → 报告探测报错并核实，绝不当作未初始化。

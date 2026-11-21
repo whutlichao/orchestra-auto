@@ -126,6 +126,8 @@ ROUTING_EVAL_SCENARIOS = (
     "issue-body-not-several-tickets",
     "spec-native-vs-dispatch",
     "triage-and-retro-governance",
+    "bot-coordinator-item-and-repo-boundary",
+    "bot-watch-dedup-and-dynamic-labels",
 )
 
 # Phrases a scenario must never carry: a scenario is a prompt, so it cannot have run a test. The
@@ -1135,6 +1137,29 @@ class ContractRegressionTests(unittest.TestCase):
                               f"{name}: {scenario_name} demands a path without supplying a fixture")
                 self.assertIn("<skills-root>/implement/SKILL.md", prompt,
                               f"{name}: {scenario_name} has no self-contained pre-skill fixture")
+
+    def test_bot_coordinator_contract_and_shareable_soul_template(self):
+        """Both language bundles and the shareable bot template must pin the bot coordinator rules."""
+        for name in SKILL_NAMES:
+            entrypoint, references = self.corpus(name)
+            self.assertIn("--spec-file", entrypoint, f"{name}: SKILL.md must show --spec-file")
+            self.assertIn("--item", entrypoint, f"{name}: SKILL.md must show --item for bot items")
+            self.assertIn("triage-labels.md", entrypoint,
+                          f"{name}: SKILL.md must require dynamic triage-labels.md resolution")
+            dispatch_doc = references["dispatch-and-comms.md"]
+            for marker in ("--spec-file", "--item", "orca reference find",
+                           "triage-labels.md", "send --to bot:"):
+                self.assertIn(marker, dispatch_doc,
+                              f"{name}: dispatch-and-comms.md is missing {marker!r}")
+        soul = REPO_ROOT / "docs" / "bots" / "SOUL.md"
+        guide_en = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.md"
+        guide_zh = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.zh-CN.md"
+        for path in (soul, guide_en, guide_zh):
+            self.assertTrue(path.is_file(), f"missing bot doc {path.relative_to(REPO_ROOT)}")
+        soul_text = soul.read_text()
+        for marker in ("[orchestra-auto-config]", "init-check.py", "--worktree new-top-level",
+                       "orca reference find", "docs/agents/triage-labels.md", "PR-only"):
+            self.assertIn(marker, soul_text, f"docs/bots/SOUL.md is missing {marker!r}")
 
 
 class ProseAnchorTests(unittest.TestCase):

@@ -492,6 +492,22 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["repo"], str(root.resolve()))
 
+    def test_check_succeeds_from_a_non_git_bot_workspace_when_target_repo_is_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = build_repository(Path(temporary) / "repo")
+            bot_workspace = Path(temporary) / "bot-workspace"
+            bot_workspace.mkdir()
+            result = run_script(
+                "check", "--repo", str(root), "--json",
+                cwd=bot_workspace,
+                path=isolated_path(temporary, "git"),
+                home=Path(temporary) / "home",
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "initialized")
+        self.assertEqual(payload["repo"], str(root.resolve()))
+
     def test_a_missing_agent_skills_heading_exits_one(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = build_repository(Path(temporary) / "repo", agents_text=AGENTS_WITHOUT_HEADING)

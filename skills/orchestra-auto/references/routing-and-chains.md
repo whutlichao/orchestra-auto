@@ -20,7 +20,7 @@ Explore read-only if scope or current state is unclear, then pick one route by c
 | Architecture seam pain / hard regression | `improve-codebase-architecture` / `diagnosing-bugs` | Candidate chosen / red→green regression loop | `grill-with-docs` / `retro` |
 | Process error or repeated mistake | `retro` (read-only analysis first) | `retro-candidates.md` saved outside repo; user picks before worker lands | Later round |
 
-**Repo initialization gate (`G-docs` / `G-tickets` entry):** run `python3 scripts/init-check.py check --repo <target>`:
+**Repo initialization gate (`G-docs` / `G-tickets` entry):** run `python3 scripts/init-check.py check --repo <target>` (pass the explicit target repository path when coordinating from a non-git workspace such as an `orca bot` folder, and read `<target>/docs/agents/triage-labels.md` & `<target>/docs/agents/issue-tracker.md` dynamically rather than hardcoding label names):
 - Exit `0`: initialized (`AGENTS.md`/`CLAUDE.md` `## Agent skills` block + `docs/agents/issue-tracker.md` & `domain.md` + `gh repo view`/`glab repo view` if hosted).
 - Exit `1`: uninitialized → confirm with user before dispatching `setup-matt-pocock-skills` (`disable-model-invocation: true`, pass path explicitly; never lands on `main`).
 - Exit `2`: `unknown` → report probe error and verify before assuming uninitialized.
