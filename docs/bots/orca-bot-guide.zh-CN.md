@@ -91,9 +91,9 @@ Orca 只在 Bot **首次创建成功的那一刻**自动发送一次 `Orca: you 
     watch: true | false
 ```
 
-`owner_merge_policy: inherit` 表示沿用 `default_owner_merge_policy`，项目也可以单独覆盖，但只作用于**主人发起的聊天任务**。监听到的 GitHub 事件始终按 `external_event_policy: pr-only` 处理。`watch: false` 保留聊天协调能力，但从统一 automation 的 `in=` 列表移除；`watch_mode: chat-only` 则完全关闭监听。
+`owner_merge_policy: inherit` 表示沿用 `default_owner_merge_policy`，项目也可以单独覆盖，但只作用于**主人发起的聊天任务**。监听到的 GitHub 事件始终按 `external_event_policy: pr-only` 处理。`watch: false` 保留聊天协调能力，但从统一 automation 的 `in=` 列表移除；`watch_mode: chat-only` 则完全关闭监听：若已设置 `watch_automation_id`，执行 `orca automations edit "<watch_automation_id>" --disabled`（或移除该 automation），再把 `watch_automation_id: none` 写入配置。
 
-若旧 Bot 仍保留已退役的单仓 `default_repo` 键，需要一次性迁移：确认仓库的规范 `owner/name`、读取标签文件、追加一条 `projects` 项并明确设置 `watch`，然后删除旧键。迁移未完成前不得派发。
+若旧 Bot 仍保留已退役的单仓 `default_repo` 键，需要一次性迁移：确认仓库的规范 `owner/name`、读取标签文件、追加一条 `projects` 项并明确设置 `watch`，然后删除旧键。旧版全局 `owner_merge_policy` 需改名为 `default_owner_merge_policy`（项目级覆盖仍使用各自的 `owner_merge_policy`）；旧的 `orchestra-auto-issues` / `orchestra-auto-prs` automation 要在创建统一监听前停用或移除。迁移未完成前不得派发。
 
 添加项目前先校验：
 
@@ -131,6 +131,7 @@ orca automations create --name "orchestra-auto-github-watch" \
 - `github.pr_conflicted` / `github.ci_passed` 仍需指定单个 PR 的 `subject=<owner/repo#n>`，不能只靠全仓监听。
 - Prompt 中**不写死任何本机路径**。路由只依赖事件的 `owner/name` 与注册表，因此新增项目不需要改 Prompt。
 - 创建后把 automation id 保存为 `watch_automation_id`。
+- 切换为 `watch_mode: chat-only` 时：若已设置 automation id，停用或移除统一 automation（`orca automations edit "<watch_automation_id>" --disabled`，或直接移除），再把 `watch_automation_id: none` 写入配置。
 
 增删监听仓库时，用完整替换集更新统一 automation：
 
@@ -162,7 +163,7 @@ orca automations edit "<watch_automation_id>" \
 ### 3.6 运行态防冲突与动态标签
 
 1. **先解析项目**：用事件的 `owner/name` 匹配唯一 `projects` 项；未注册仓库只通知、不派发。
-2. **四源运行态强去重**：对任何 `issue:<n>` 或 `pr:<n>` 派活前，查询 `orca reference find`、worktree 运行态、`orca orchestration worker-list`、`orca orchestration run-list` 与 `$ORCA_LEDGER_HOME`。跨项目视图使用 `orca worktree ps --json`，需要按仓过滤时使用 `orca worktree list --repo "<target_repo>" --json`；实测 Orca `1.4.265` 的 `orca worktree ps` 不支持 `--repo`，其他版本先用 `orca worktree ps --help` 确认。
+2. **四源运行态强去重**：对任何 `issue:<n>` 或 `pr:<n>` 派活前，查询 `orca reference find`、worktree 运行态、`orca orchestration worker-list`、`orca orchestration run-list` 与 `$ORCA_LEDGER_HOME`。实测 Orca `1.4.265` 的 `orca worktree ps` 不支持 `--repo`；先对当前安装的 CLI 运行 `orca worktree ps --help`，若 `--repo` 不可用，跨项目视图用 `orca worktree ps --json`，单仓列表用 `orca worktree list --repo "<target_repo>" --json`。
 3. **动态读取 `triage-labels.md`**：读取已解析项目的 `triage_labels_file` 与 `docs/agents/issue-tracker.md`，不得套用另一个仓库的标签名。
 
 若已有活跃 worktree、受监督 worker 或 `implement-spec` 父级 Run 正在处理该票，只用 `orca bot item set --id <id> --status waiting --note "..."` 关联并观测，**绝不拉起第二个重复 worker**。

@@ -1145,12 +1145,14 @@ class ContractRegressionTests(unittest.TestCase):
             "orchestra-auto": (
                 "owner/name",
                 "orca worktree ps --json",
+                "orca worktree ps --help",
                 "orca worktree list --repo",
                 "≥2 projects",
             ),
             "orchestra-auto-zh": (
                 "owner/name",
                 "orca worktree ps --json",
+                "orca worktree ps --help",
                 "orca worktree list --repo",
                 "≥2 个项目",
             ),
@@ -1176,6 +1178,14 @@ class ContractRegressionTests(unittest.TestCase):
                     marker, dispatch_doc,
                     f"{name}: dispatch-and-comms.md must route multi-project bot work via {marker!r}",
                 )
+            self.assertNotIn(
+                "Orca `1.4.265`", entrypoint,
+                f"{name}: SKILL.md must verify the installed worktree CLI, not pin a version",
+            )
+            self.assertNotIn(
+                "Orca `1.4.265`", dispatch_doc,
+                f"{name}: dispatch-and-comms.md must verify the installed worktree CLI, not pin a version",
+            )
             for retired_command in (
                 "orca worktree ps --repo <target_repo> --json",
                 'orca worktree ps --repo "<target_repo>" --json',
@@ -1219,6 +1229,15 @@ class ContractRegressionTests(unittest.TestCase):
                       "docs/bots/SOUL.md must define the legacy-config migration")
         self.assertIn("Zero registered projects", soul_text,
                       "docs/bots/SOUL.md must define the empty-registry case")
+        self.assertIn("not registered or is multiply matched", soul_text,
+                      "docs/bots/SOUL.md must keep multiply matched events notify-only")
+        self.assertIn("rename it to `default_owner_merge_policy`", soul_text,
+                      "docs/bots/SOUL.md must migrate the legacy global merge policy key")
+        for marker in ("orchestra-auto-issues", "orchestra-auto-prs",
+                       "orca worktree ps --help", "--disabled",
+                       "watch_automation_id: none", "Orca `1.4.265`"):
+            self.assertIn(marker, soul_text,
+                          f"docs/bots/SOUL.md is missing migration/watch rule {marker!r}")
         self.assertNotIn("- default_repo:", soul_text,
                          "docs/bots/SOUL.md still exposes the retired single-repo config key")
         for retired_command in (
@@ -1260,6 +1279,13 @@ class ContractRegressionTests(unittest.TestCase):
                 "eventsSuggested",
                 "orca automations edit",
                 "owner/name",
+                "orca worktree ps --help",
+                "orchestra-auto-issues",
+                "orchestra-auto-prs",
+                "--disabled",
+                "watch_automation_id: none",
+                "default_owner_merge_policy",
+                "Orca `1.4.265`",
             ):
                 self.assertIn(marker, text, f"{path.name}: missing multi-project contract {marker!r}")
             self.assertIn("external_event_policy: pr-only", text,

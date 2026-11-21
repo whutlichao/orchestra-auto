@@ -91,9 +91,9 @@ Store one entry per repository under `[orchestra-auto-config]`. Keep global poli
     watch: true | false
 ```
 
-`owner_merge_policy: inherit` uses `default_owner_merge_policy`; a project may override it for **owner-initiated chat tasks only**. Watched GitHub events always use `external_event_policy: pr-only`. `watch: false` keeps the project available for chat work but excludes it from the unified automation, while `watch_mode: chat-only` disables watch entirely.
+`owner_merge_policy: inherit` uses `default_owner_merge_policy`; a project may override it for **owner-initiated chat tasks only**. Watched GitHub events always use `external_event_policy: pr-only`. `watch: false` keeps the project available for chat work but excludes it from the unified automation, while `watch_mode: chat-only` disables watch entirely: if `watch_automation_id` is set, run `orca automations edit "<watch_automation_id>" --disabled` (or remove the automation), then set `watch_automation_id: none`.
 
-If an older bot still has the retired single-repository `default_repo` key, migrate it once: resolve the repository's canonical `owner/name`, read its label file, add one `projects` entry with a deliberate `watch` value, then remove the legacy key. Do not dispatch from a partially migrated registry.
+If an older bot still has the retired single-repository `default_repo` key, migrate it once: resolve the repository's canonical `owner/name`, read its label file, add one `projects` entry with a deliberate `watch` value, then remove the legacy key. Rename a legacy global `owner_merge_policy` to `default_owner_merge_policy` (per-project overrides keep their own key), and disable or remove legacy `orchestra-auto-issues` / `orchestra-auto-prs` automations before creating the unified watch. Do not dispatch from a partially migrated registry.
 
 When adding a project, validate it before registration:
 
@@ -131,6 +131,7 @@ orca automations create --name "orchestra-auto-github-watch" \
 - `github.pr_conflicted` / `github.ci_passed` require per-PR `subject=<owner/repo#n>`, never repo-wide alone.
 - The prompt contains **no local repository path**. Routing comes from the event's `owner/name` and the registry, so adding a project does not require editing the prompt.
 - Save the automation id as `watch_automation_id`.
+- Switching to `watch_mode: chat-only`: if an automation id is set, disable or remove the unified automation (`orca automations edit "<watch_automation_id>" --disabled`, or remove it), then set `watch_automation_id: none`.
 
 To add or remove a watched repository, edit the unified automation with the complete replacement set:
 
@@ -162,7 +163,7 @@ In the shared mother copy, keep exactly **one** repo-agnostic template automatio
 ### 3.6 Runtime anti-collision and dynamic labels
 
 1. **Resolve the project first**: match the event's `owner/name` to one `projects` entry. Unknown repositories are notify-only.
-2. **Four-source runtime deduplication**: before spawning a worker for `issue:<n>` or `pr:<n>`, query `orca reference find`, the worktree runtime, `orca orchestration worker-list`, `orca orchestration run-list`, and `$ORCA_LEDGER_HOME`. Use `orca worktree ps --json` for the cross-project snapshot, or `orca worktree list --repo "<target_repo>" --json` per repository. In the observed Orca `1.4.265`, `orca worktree ps` does not support `--repo`; confirm another installed version with `orca worktree ps --help`.
+2. **Four-source runtime deduplication**: before spawning a worker for `issue:<n>` or `pr:<n>`, query `orca reference find`, the worktree runtime, `orca orchestration worker-list`, `orca orchestration run-list`, and `$ORCA_LEDGER_HOME`. In Orca `1.4.265`, `orca worktree ps` does not support `--repo`; run `orca worktree ps --help` on the installed CLI and, when `--repo` is unavailable, use `orca worktree ps --json` for the cross-project snapshot and `orca worktree list --repo "<target_repo>" --json` for one repository.
 3. **Dynamic `triage-labels.md`**: read the resolved project's `triage_labels_file` and `docs/agents/issue-tracker.md`; do not assume another repository's label strings.
 
 If an active worktree, worker, or `implement-spec` Run already owns the ticket, link the bot item (`orca bot item set --id <id> --status waiting --note "..."`) and observe it instead of spawning a duplicate.
