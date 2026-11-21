@@ -22,6 +22,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 
 - 使用社区 [`skills` CLI](https://github.com/vercel-labs/skills) 安装（不要用 `orca skills install`），可按需加 `--global` 或 `--agent <name>`。
 - 中英文为两个独立安装包，共享同一套脚本与流程规则。
+- **Orca Bot（可选，一键克隆安装）**：在 Orca 中打开 [Orchestra Auto 双语 Bot 分享链接](https://share.onorca.dev/bots/share/e0ec4dbaa384456bb7e63478493a4787) 即可创建副本并进入首次启动引导（详见 [docs/bots/orca-bot-guide.zh-CN.md](docs/bots/orca-bot-guide.zh-CN.md)）。
 
 ## 工作方式
 
@@ -36,6 +37,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 
 - `state: ready` 不代表 turn 已启动（需 `turnStart: observed` 或实际尝试证据），`worker_done` 不等于验收通过。
 - 流程记录、台账与进度日志均存放在仓库之外（`scripts/flow.py`、`scripts/chain.py`、`scripts/preflight.py`、`scripts/closeout.py`）。
+- 既可在前台 Orca 会话中运行，也可配置为可分享的常驻 **Orca Bot** 协调者（[docs/bots/SOUL.md](docs/bots/SOUL.md)、[docs/bots/orca-bot-guide.zh-CN.md](docs/bots/orca-bot-guide.zh-CN.md)），自带首次启动引导、运行态防冲突强去重与动态 `docs/agents/triage-labels.md` 解析。
 - 完整规则见 [skills/orchestra-auto-zh/SKILL.md](skills/orchestra-auto-zh/SKILL.md)。
 
 ## 前提与能力边界
@@ -64,8 +66,8 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/demo-e
 
 ```text
 skills/
-├── orchestra-auto/      英文包（SKILL.md：8,819 字节 / ~2,204 tokens；结构相同）
-└── orchestra-auto-zh/   中文包（SKILL.md：8,026 字节 / ~2,006 tokens；references/ 共 8 个文件）
+├── orchestra-auto/      英文包（SKILL.md：9,819 字节 / ~2,454 tokens；结构相同）
+└── orchestra-auto-zh/   中文包（SKILL.md：9,001 字节 / ~2,250 tokens；references/ 共 8 个文件）
 tests/                   离线 unittest 套件（脚本、看板、包一致性与脱敏扫描）
 docs/                    设计、架构文档与演示素材（见 docs/INDEX.md）
 ```
@@ -76,7 +78,7 @@ docs/                    设计、架构文档与演示素材（见 docs/INDEX.m
 python3 -m unittest discover -s tests -v
 ```
 
-两个语言包各附带 **52 个提示词层面的场景**（`evals/evals.json`）；跨语言一致性测试只查锚点，不等于完整语义等价。更多设计文档与贡献规范见 [docs/INDEX.md](docs/INDEX.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+两个语言包各附带 **54 个提示词层面的场景**（`evals/evals.json`）；跨语言一致性测试只查锚点，不等于完整语义等价。更多设计文档与贡献规范见 [docs/INDEX.md](docs/INDEX.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 致谢与许可
 

@@ -159,6 +159,57 @@ class MessagingCapabilityTests(unittest.TestCase):
                 with patch.dict(os.environ, {'ORCA_STRUCTURED_SESSION': '0'}):
                     self.assertEqual(module._check_messaging(context, Runner())['result'], 'fail')
 
+    def test_bot_structured_session_in_folder_workspace_passes_messaging_probe(self):
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, argv, timeout=None):
+                self.calls.append(list(argv))
+                outputs = {
+                    ('--version',): '1.4.265',
+                    ('status', '--json'): json.dumps({'ok': True, 'result': {'caller': {
+                        'orcaSessionId': 'bot-session-1', 'live': True}}}),
+                    ('skills', 'get', 'orchestration'): (
+                        'Orca wakes you. In a chat, each message arrives whole as its own message'
+                    ),
+                    ('orchestration', 'check', '--help'): (
+                        "default: return the bound Run's oldest unread FIFO batch and mark it handled. "
+                        "--retry-request If a check response was lost, rerun it with the --retry-request "
+                        "it printed to get the same batch. To find mail after losing context, run orca "
+                        "orchestration inbox --terminal <mailbox> --limit <n> --full"
+                    ),
+                    ('orchestration', 'inbox', '--help'): '--terminal --full',
+                }
+                return {'returncode': 0, 'stdout': outputs.get(tuple(argv[1:]), ''), 'stderr': ''}
+
+        context = {'messaging': {'legacy_migration_complete': True, 'migration_evidence_ref': 'bot-native'}}
+        bot_env = {
+            'ORCA_STRUCTURED_SESSION': '1',
+            'ORCA_AGENT_SESSION_ID': 'bot-session-1',
+            'ORCA_WORKSPACE_ID': 'folder:orchestra-auto-bot',
+            'ORCA_WORKSPACE_ROOT': '/tmp/orca-bots/orchestra-auto',
+            'ORCA_TERMINAL_HANDLE': '',
+            'ORCA_AGENT_PANE': '',
+        }
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location(
+                'bot_chat_preflight', ROOT / 'skills' / package / 'scripts' / 'preflight.py')
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            runner = Runner()
+            with self.subTest(package=package), patch.dict(os.environ, bot_env, clear=True):
+                item = module._check_messaging(context, runner)
+                self.assertEqual(item['result'], 'pass')
+                self.assertEqual(item['observed']['session_source'], 'live_structured_chat')
+                self.assertEqual(item['observed']['terminal_probe'], {})
+                self.assertNotIn(['orca', 'terminal', 'list', '--json'], runner.calls)
+
     def test_future_version_with_matching_contract_passes_with_session_evidence(self):
         import importlib.util
         class Runner:
