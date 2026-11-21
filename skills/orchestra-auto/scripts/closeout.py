@@ -2354,9 +2354,14 @@ def _collect_git(by_pr, pr_section, repo_dir, run_fn):
             merge_sha = host.get("merge_sha") or ""
             if not (ACCEPTANCE.is_sha(accepted_sha) and ACCEPTANCE.is_sha(merge_sha)):
                 continue
-            levels = detail.get("levels") if isinstance(detail.get("levels"), dict) else {}
-            merged_lvl = levels.get("merged") if isinstance(levels.get("merged"), dict) else {}
-            if merged_lvl.get("shape") == "equivalence":
+            # The record writes its merge proof as an *object* (``equivalence`` or
+            # ``ancestry``), never a ``shape`` string, so the shape is taken from
+            # ``_recorded_merge_claim`` instead of being re-derived here. Reading a
+            # ``shape`` key was always ``None``: every record fell into the ancestry probe,
+            # which collects no ``merges`` row, so a correctly recorded squash merge had no
+            # equivalence proof and row 3 blocked on a complete Run (issue #108).
+            shape = (_recorded_merge_claim(detail) or {}).get("shape")
+            if shape == "equivalence":
                 diff_res = run_fn(
                     ["git", "-C", str(repo_dir), "diff", "--quiet", accepted_sha, merge_sha]
                 )
