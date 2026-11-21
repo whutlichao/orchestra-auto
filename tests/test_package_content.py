@@ -1176,10 +1176,14 @@ class ContractRegressionTests(unittest.TestCase):
                     marker, dispatch_doc,
                     f"{name}: dispatch-and-comms.md must route multi-project bot work via {marker!r}",
                 )
-            self.assertNotIn(
-                "orca worktree ps --repo <target_repo> --json", dispatch_doc,
-                f"{name}: dispatch-and-comms.md still teaches the unsupported worktree command",
-            )
+            for retired_command in (
+                "orca worktree ps --repo <target_repo> --json",
+                'orca worktree ps --repo "<target_repo>" --json',
+            ):
+                self.assertNotIn(
+                    retired_command, dispatch_doc,
+                    f"{name}: dispatch-and-comms.md still teaches the unsupported worktree command",
+                )
         soul = REPO_ROOT / "docs" / "bots" / "SOUL.md"
         guide_en = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.md"
         guide_zh = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.zh-CN.md"
@@ -1207,10 +1211,22 @@ class ContractRegressionTests(unittest.TestCase):
             "orca worktree list --repo",
         ):
             self.assertIn(marker, soul_text, f"docs/bots/SOUL.md is missing multi-project rule {marker!r}")
-        self.assertNotIn("default_repo", soul_text,
-                         "docs/bots/SOUL.md still exposes the retired single-repo key")
-        self.assertNotIn("orca worktree ps --repo <target_repo> --json", soul_text,
-                         "docs/bots/SOUL.md still teaches the unsupported worktree command")
+        self.assertIn("owner-initiated chat tasks only", soul_text,
+                      "docs/bots/SOUL.md must scope project merge policy to owner-initiated work")
+        self.assertIn("overrides project and global owner policies", soul_text,
+                      "docs/bots/SOUL.md must keep external events PR-only")
+        self.assertIn("Migrate an existing bot once", soul_text,
+                      "docs/bots/SOUL.md must define the legacy-config migration")
+        self.assertIn("Zero registered projects", soul_text,
+                      "docs/bots/SOUL.md must define the empty-registry case")
+        self.assertNotIn("- default_repo:", soul_text,
+                         "docs/bots/SOUL.md still exposes the retired single-repo config key")
+        for retired_command in (
+            "orca worktree ps --repo <target_repo> --json",
+            'orca worktree ps --repo "<target_repo>" --json',
+        ):
+            self.assertNotIn(retired_command, soul_text,
+                             "docs/bots/SOUL.md still teaches the unsupported worktree command")
 
         guide_expectations = {
             guide_en: {
@@ -1246,10 +1262,28 @@ class ContractRegressionTests(unittest.TestCase):
                 "owner/name",
             ):
                 self.assertIn(marker, text, f"{path.name}: missing multi-project contract {marker!r}")
-            self.assertNotIn("default_repo", text,
-                             f"{path.name}: still teaches the retired single-repo key")
-            self.assertNotIn("orca worktree ps --repo <target_repo> --json", text,
-                             f"{path.name}: still teaches the unsupported worktree command")
+            self.assertIn("external_event_policy: pr-only", text,
+                          f"{path.name}: external events must stay PR-only")
+            self.assertIn("default_repo", text,
+                          f"{path.name}: the legacy config migration note is missing")
+            self.assertNotIn("effective owner_merge_policy", text,
+                             f"{path.name}: an external event must not inherit a project merge policy")
+            self.assertNotIn("- default_repo:", text,
+                             f"{path.name}: still teaches the retired single-repo config key")
+            for retired_command in (
+                "orca worktree ps --repo <target_repo> --json",
+                'orca worktree ps --repo "<target_repo>" --json',
+            ):
+                self.assertNotIn(retired_command, text,
+                                 f"{path.name}: still teaches the unsupported worktree command")
+        self.assertIn("owner-initiated chat tasks only", guide_en.read_text(),
+                      "orca-bot-guide.md must scope project merge policy to owner-initiated work")
+        self.assertIn("always PR-only", guide_en.read_text(),
+                      "orca-bot-guide.md must keep external events PR-only")
+        self.assertIn("主人发起的聊天任务", guide_zh.read_text(),
+                      "orca-bot-guide.zh-CN.md must scope project merge policy to owner-initiated work")
+        self.assertIn("始终 PR-only", guide_zh.read_text(),
+                      "orca-bot-guide.zh-CN.md must keep external events PR-only")
 
         scenario = "bot-multi-project-routing-and-disambiguation"
         expected_assertions = [
