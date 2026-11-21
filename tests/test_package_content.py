@@ -128,6 +128,7 @@ ROUTING_EVAL_SCENARIOS = (
     "triage-and-retro-governance",
     "bot-coordinator-item-and-repo-boundary",
     "bot-watch-dedup-and-dynamic-labels",
+    "bot-multi-project-routing-and-disambiguation",
 )
 
 # Phrases a scenario must never carry: a scenario is a prompt, so it cannot have run a test. The
@@ -1140,17 +1141,59 @@ class ContractRegressionTests(unittest.TestCase):
 
     def test_bot_coordinator_contract_and_shareable_soul_template(self):
         """Both language bundles and the shareable bot template must pin the bot coordinator rules."""
+        routing_expectations = {
+            "orchestra-auto": (
+                "owner/name",
+                "orca worktree ps --json",
+                "orca worktree ps --help",
+                "orca worktree list --repo",
+                "≥2 projects",
+            ),
+            "orchestra-auto-zh": (
+                "owner/name",
+                "orca worktree ps --json",
+                "orca worktree ps --help",
+                "orca worktree list --repo",
+                "≥2 个项目",
+            ),
+        }
         for name in SKILL_NAMES:
             entrypoint, references = self.corpus(name)
             self.assertIn("--spec-file", entrypoint, f"{name}: SKILL.md must show --spec-file")
             self.assertIn("--item", entrypoint, f"{name}: SKILL.md must show --item for bot items")
             self.assertIn("triage-labels.md", entrypoint,
                           f"{name}: SKILL.md must require dynamic triage-labels.md resolution")
+            for marker in routing_expectations[name]:
+                self.assertIn(
+                    marker, entrypoint,
+                    f"{name}: SKILL.md must route multi-project bot work via {marker!r}",
+                )
             dispatch_doc = references["dispatch-and-comms.md"]
             for marker in ("--spec-file", "--item", "orca reference find",
                            "triage-labels.md", "send --to bot:"):
                 self.assertIn(marker, dispatch_doc,
                               f"{name}: dispatch-and-comms.md is missing {marker!r}")
+            for marker in routing_expectations[name]:
+                self.assertIn(
+                    marker, dispatch_doc,
+                    f"{name}: dispatch-and-comms.md must route multi-project bot work via {marker!r}",
+                )
+            self.assertNotIn(
+                "Orca `1.4.265`", entrypoint,
+                f"{name}: SKILL.md must verify the installed worktree CLI, not pin a version",
+            )
+            self.assertNotIn(
+                "Orca `1.4.265`", dispatch_doc,
+                f"{name}: dispatch-and-comms.md must verify the installed worktree CLI, not pin a version",
+            )
+            for retired_command in (
+                "orca worktree ps --repo <target_repo> --json",
+                'orca worktree ps --repo "<target_repo>" --json',
+            ):
+                self.assertNotIn(
+                    retired_command, dispatch_doc,
+                    f"{name}: dispatch-and-comms.md still teaches the unsupported worktree command",
+                )
         soul = REPO_ROOT / "docs" / "bots" / "SOUL.md"
         guide_en = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.md"
         guide_zh = REPO_ROOT / "docs" / "bots" / "orca-bot-guide.zh-CN.md"
@@ -1160,6 +1203,144 @@ class ContractRegressionTests(unittest.TestCase):
         for marker in ("[orchestra-auto-config]", "init-check.py", "--worktree new-top-level",
                        "orca reference find", "docs/agents/triage-labels.md", "PR-only"):
             self.assertIn(marker, soul_text, f"docs/bots/SOUL.md is missing {marker!r}")
+        for marker in (
+            "projects:",
+            "repo: <owner/name>",
+            "local_path:",
+            "triage_labels_file:",
+            "owner_merge_policy:",
+            "watch: true | false",
+            "default_owner_merge_policy:",
+            "external_event_policy: pr-only",
+            "watch_mode:",
+            "watch_automation_id:",
+            "state_homes:",
+            "in=<owner/repo1>,<owner/repo2>",
+            "orca automations edit",
+            "orca worktree ps --json",
+            "orca worktree list --repo",
+        ):
+            self.assertIn(marker, soul_text, f"docs/bots/SOUL.md is missing multi-project rule {marker!r}")
+        self.assertIn("owner-initiated chat tasks only", soul_text,
+                      "docs/bots/SOUL.md must scope project merge policy to owner-initiated work")
+        self.assertIn("overrides project and global owner policies", soul_text,
+                      "docs/bots/SOUL.md must keep external events PR-only")
+        self.assertIn("Migrate an existing bot once", soul_text,
+                      "docs/bots/SOUL.md must define the legacy-config migration")
+        self.assertIn("Zero registered projects", soul_text,
+                      "docs/bots/SOUL.md must define the empty-registry case")
+        self.assertIn("not registered or is multiply matched", soul_text,
+                      "docs/bots/SOUL.md must keep multiply matched events notify-only")
+        self.assertIn("rename it to `default_owner_merge_policy`", soul_text,
+                      "docs/bots/SOUL.md must migrate the legacy global merge policy key")
+        for marker in ("orchestra-auto-issues", "orchestra-auto-prs",
+                       "orca worktree ps --help", "--disabled",
+                       "watch_automation_id: none", "Orca `1.4.265`"):
+            self.assertIn(marker, soul_text,
+                          f"docs/bots/SOUL.md is missing migration/watch rule {marker!r}")
+        self.assertNotIn("- default_repo:", soul_text,
+                         "docs/bots/SOUL.md still exposes the retired single-repo config key")
+        for retired_command in (
+            "orca worktree ps --repo <target_repo> --json",
+            'orca worktree ps --repo "<target_repo>" --json',
+        ):
+            self.assertNotIn(retired_command, soul_text,
+                             "docs/bots/SOUL.md still teaches the unsupported worktree command")
+
+        guide_expectations = {
+            guide_en: {
+                "rationale": "one bot manages multiple projects",
+                "share": "public share link opens a copy of the existing bot",
+                "ambiguity": "two or more projects",
+            },
+            guide_zh: {
+                "rationale": "一个 Bot 管理多个项目",
+                "share": "公开分享链接只会再次打开已有 Bot 副本",
+                "ambiguity": "至少 2 个项目",
+            },
+        }
+        for path, expected in guide_expectations.items():
+            text = path.read_text()
+            for marker in expected.values():
+                self.assertIn(marker, text, f"{path.name}: missing multi-project explanation {marker!r}")
+            for marker in (
+                "projects",
+                "repo: <owner/name>",
+                "local_path",
+                "triage_labels_file",
+                "owner_merge_policy",
+                "watch",
+                "default_owner_merge_policy",
+                "external_event_policy: pr-only",
+                "watch_mode",
+                "watch_automation_id",
+                "state_homes",
+                "in=<owner/repo1>,<owner/repo2>",
+                "eventsSuggested",
+                "orca automations edit",
+                "owner/name",
+                "orca worktree ps --help",
+                "orchestra-auto-issues",
+                "orchestra-auto-prs",
+                "--disabled",
+                "watch_automation_id: none",
+                "default_owner_merge_policy",
+                "Orca `1.4.265`",
+            ):
+                self.assertIn(marker, text, f"{path.name}: missing multi-project contract {marker!r}")
+            self.assertIn("external_event_policy: pr-only", text,
+                          f"{path.name}: external events must stay PR-only")
+            self.assertIn("default_repo", text,
+                          f"{path.name}: the legacy config migration note is missing")
+            self.assertNotIn("effective owner_merge_policy", text,
+                             f"{path.name}: an external event must not inherit a project merge policy")
+            self.assertNotIn("- default_repo:", text,
+                             f"{path.name}: still teaches the retired single-repo config key")
+            for retired_command in (
+                "orca worktree ps --repo <target_repo> --json",
+                'orca worktree ps --repo "<target_repo>" --json',
+            ):
+                self.assertNotIn(retired_command, text,
+                                 f"{path.name}: still teaches the unsupported worktree command")
+        self.assertIn("owner-initiated chat tasks only", guide_en.read_text(),
+                      "orca-bot-guide.md must scope project merge policy to owner-initiated work")
+        self.assertIn("always PR-only", guide_en.read_text(),
+                      "orca-bot-guide.md must keep external events PR-only")
+        self.assertIn("主人发起的聊天任务", guide_zh.read_text(),
+                      "orca-bot-guide.zh-CN.md must scope project merge policy to owner-initiated work")
+        self.assertIn("始终 PR-only", guide_zh.read_text(),
+                      "orca-bot-guide.zh-CN.md must keep external events PR-only")
+
+        scenario = "bot-multi-project-routing-and-disambiguation"
+        expected_assertions = [
+            "asks_before_ambiguous_chat_dispatch",
+            "routes_event_by_owner_name",
+            "keeps_one_unified_watch",
+        ]
+        for name in SKILL_NAMES:
+            payload = json.loads((REPO_ROOT / "skills" / name / "evals" / "evals.json").read_text())
+            scenarios = {entry["name"]: entry for entry in payload["evals"]}
+            self.assertIn(scenario, scenarios, f"{name}: multi-project routing scenario is missing")
+            teaching = scenarios[scenario]
+            self.assertEqual(
+                [assertion["name"] for assertion in teaching["assertions"]],
+                expected_assertions,
+                f"{name}: {scenario} lost a routing assertion",
+            )
+            blob = "\n".join(
+                [teaching["prompt"], teaching["expected_output"]]
+                + [assertion["text"] for assertion in teaching["assertions"]]
+            )
+            for marker in (
+                "owner/name",
+                "in=",
+                "init-check.py",
+                "worker-start",
+                "triage-labels.md",
+                "orca worktree ps --json",
+                "orca worktree list --repo",
+            ):
+                self.assertIn(marker, blob, f"{name}: {scenario} never exercises {marker!r}")
 
 
 class ProseAnchorTests(unittest.TestCase):

@@ -1391,6 +1391,27 @@
           "text": "动态核实 status:agent-ready 对应 ready-for-agent 且零阻塞、无在途接管者后，为 #83 派发单个 new-top-level 受监督 worker"
         }
       ]
+    },
+    {
+      "id": 54,
+      "name": "bot-multi-project-routing-and-disambiguation",
+      "prompt": "你是运行 orchestra-auto 的 Orca Bot，已登记两个项目，且二者都是 `watch: true`：\n- PROJECT_ALPHA_REPO=example-org/alpha，已有 local_path 与 triage_labels_file\n- PROJECT_BETA_REPO=example-org/beta，已有 local_path 与 triage_labels_file\n二者的统一监听 automation 使用 `github.ci_failed in=example-org/alpha,example-org/beta`，其他被监听事件也使用同一逗号分隔列表。现在同时收到：\n1. 聊天：「修一下那个不稳定的登录测试」（没有项目名、路径或 URL）。\n2. 事件：`example-org/beta` 的 PR #42 触发 `github.ci_failed`。\n\n只输出：\n1. CHAT：现在是否派发，先做什么\n2. EVENT：去重前如何解析目标仓库\n3. WATCH：未来拆分时统一 `in=` 规则怎么处理\n不要运行命令。",
+      "expected_output": "聊天任务不能立刻运行 `init-check.py` 或 `worker-start`：已有两个项目且消息未指出项目、路径或 URL，必须先反问主人目标是 `example-org/alpha` 还是 `example-org/beta`。事件方面，按 `owner/name` 在 `projects` 注册表中反查 `example-org/beta`，把该项的 `local_path` 作为 `<target_repo>`，通过其 `triage_labels_file` 解析 `<target_repo>/docs/agents/triage-labels.md`，再做四源运行态去重（`orca reference find`、`orca worktree ps --json` 或 `orca worktree list --repo \"<target_repo>\" --json`、worker-list、run-list）后决定是否派发；未注册的 `owner/name` 只通知、不派发。默认保留唯一一条 `in=example-org/alpha,example-org/beta` 的 automation；若 beta 以后需要独立开关或专用 agent/model/effort，就为它建单仓 automation，并从统一列表移除 beta，避免同一事件重复触发。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "asks_before_ambiguous_chat_dispatch",
+          "text": "已有两个项目且聊天未指明目标时，先反问是哪一个项目，再运行 init-check.py 或 worker-start"
+        },
+        {
+          "name": "routes_event_by_owner_name",
+          "text": "按事件 owner/name 反查 beta 注册项，使用其本地路径与标签文件，未注册仓库只通知不派发"
+        },
+        {
+          "name": "keeps_one_unified_watch",
+          "text": "保留唯一 in=example-org/alpha,example-org/beta 的 automation，拆分仓库时从统一列表移除以避免重复触发"
+        }
+      ]
     }
   ]
 }
