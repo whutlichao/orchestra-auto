@@ -8,7 +8,8 @@ pull request nobody can explain.
 
 These assertions are deliberately loose about formatting — YAML layout and action versions will
 change — and strict about the three things that would make CI a lie: the command, the platforms,
-and the check name.
+and the check name. The same reasoning covers the quick loop CONTRIBUTING hands a contributor
+directly, so that list is held to the modules on disk too.
 """
 
 from pathlib import Path
@@ -65,6 +66,21 @@ class ContributingTests(unittest.TestCase):
         text = CONTRIBUTING.read_text(encoding="utf-8")
         self.assertIn("tests", text)
         self.assertIn("GitHub Actions", text)
+
+    def test_the_quick_loop_lists_every_test_module(self):
+        """A contributor works from the short loop, so a module missing there is skipped until CI."""
+        modules = {path.stem for path in (REPO_ROOT / "tests").glob("test_*.py")}
+        text = CONTRIBUTING.read_text(encoding="utf-8")
+        blocks = text.split("If you only want a quick loop", 1)
+        self.assertEqual(len(blocks), 2, "CONTRIBUTING lost its quick-loop paragraph")
+        # The first command block after that paragraph is the quick loop itself.
+        block = re.search(r"```bash\n(.*?)```", blocks[1], re.DOTALL)
+        self.assertIsNotNone(block, "CONTRIBUTING lost the quick-loop command block")
+        # Match module names only in command position, so a prose mention cannot satisfy the check.
+        listed = set(re.findall(r"^python3 -m unittest tests\.([a-z0-9_]+)",
+                                block.group(1), re.MULTILINE))
+        self.assertEqual(listed, modules,
+                         "the quick-loop list drifted from tests/test_*.py")
 
 
 if __name__ == "__main__":

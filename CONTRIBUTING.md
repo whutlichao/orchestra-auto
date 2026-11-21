@@ -48,11 +48,16 @@ while you work, the individual commands are:
 python3 -m py_compile skills/*/scripts/*.py     # Python compiles
 bash -n skills/*/scripts/inbox-loop.sh                    # shell wrapper parses
 python3 -m unittest tests.test_package_content -v         # package + disclosure scan
+python3 -m unittest tests.test_ci_config -v            # CI contract
+python3 -m unittest tests.test_doc_contract -v         # document command order
+python3 -m unittest tests.test_runtime_contract -v     # Orca wake contract
 python3 -m unittest tests.test_ledger -v               # ledger storage + reconcile
 python3 -m unittest tests.test_preflight -v            # preflight receipt
 python3 -m unittest tests.test_health -v               # pure health state machine
 python3 -m unittest tests.test_acceptance -v           # acceptance records + four levels
 python3 -m unittest tests.test_closeout -v             # closeout checklist + release gate
+python3 -m unittest tests.test_init_check -v           # init-check bootstrap probe
+python3 -m unittest tests.test_visual_evidence -v      # quiet screenshot batch
 python3 -m unittest tests.test_progress_dashboard -v   # progress CLI + HTTP
 python3 -m unittest tests.test_inbox_loop -v              # script behaviour
 python3 -m unittest tests.test_chain -v                   # chain resume + exit checks
