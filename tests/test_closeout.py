@@ -2861,6 +2861,89 @@ class LiveAuthorityAndCompactTests(unittest.TestCase):
         self.assertEqual(degraded["tracker"]["state"], "unknown")
         self.assertEqual(degraded["workers"]["state"], "unknown")
 
+    def test_collect_live_authority_proves_a_squash_merge_by_equivalence(self):
+        """A squash merge is proven by content equivalence, never by ancestry (issue #108).
+
+        The acceptance record writes ``levels.merged.equivalence`` as an *object*; there is
+        no ``shape`` string in the record. The collector must derive the shape the same way
+        ``_recorded_merge_claim`` does, or every squash merge falls through to the ancestry
+        probe: ``git merge-base --is-ancestor`` exits non-zero by squash semantics, so no
+        ``merges`` row is collected and row 3 blocks a Run that is in fact complete.
+        """
+        # One record feeds both the collection and the plan: ``utc_now()`` makes two calls
+        # differ, and the checklist must judge the very record that was collected.
+        payload = equivalence_acceptance_record()
+        record = {
+            "schema_version": 1,
+            "record_id": ACCEPTANCE_RECORD_ID,
+            "kind": "acceptance",
+            "run_id": RUN_ID,
+            "subject": {"ticket": "39", "pr": 12},
+            "action": "accept",
+            "request_id": "",
+            "idempotency": "none",
+            "state": "observed",
+            "evidence_ref": "answer.md",
+            "observed_at": utc_now(),
+            "actor": "coordinator",
+            "detail": payload,
+        }
+
+        def fake_runner(argv, cwd=None):
+            if argv[:3] == ["gh", "pr", "view"]:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "number": 12, "state": "MERGED",
+                    "mergeCommit": {"oid": MERGE}, "baseRefName": "main",
+                })}
+            if argv[:3] == ["gh", "issue", "view"]:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "state": "CLOSED", "closedAt": utc_now(),
+                })}
+            if argv[:2] == ["git", "-C"]:
+                sub = argv[3:]
+                if sub[:2] == ["status", "--porcelain"]:
+                    return {"returncode": 0, "stdout": "", "stderr": ""}
+                if sub[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return {"returncode": 0, "stdout": "main\n", "stderr": ""}
+                if sub[:2] == ["rev-parse", "HEAD"] or sub[:2] == ["rev-parse", "main@{u}"]:
+                    return {"returncode": 0, "stdout": MAIN_HEAD + "\n", "stderr": ""}
+                if sub[:3] == ["rev-parse", "--abbrev-ref", "main@{u}"]:
+                    return {"returncode": 0, "stdout": "origin/main\n", "stderr": ""}
+                if sub[:2] == ["merge-base", "--is-ancestor"]:
+                    # A squash merge rewrites the accepted head: no ancestry, ever.
+                    if sub[2] == ACCEPTED and sub[3] == MERGE:
+                        return {"returncode": 1, "stdout": "", "stderr": ""}
+                    return {"returncode": 0, "stdout": "", "stderr": ""}
+                if sub[:2] == ["diff", "--quiet"]:
+                    # …but the two trees are content-identical.
+                    return {"returncode": 0, "stdout": "", "stderr": ""}
+            if "worker-list" in argv:
+                return {"returncode": 0, "stderr": "", "stdout": json.dumps({
+                    "ok": True, "result": {"workers": []},
+                })}
+            return {"returncode": 1, "stdout": "", "stderr": "unexpected command"}
+
+        collected = self.closeout.collect_live_authority(
+            str(self.root), run_id=RUN_ID, records=[record], runner=fake_runner,
+        )
+        self.assertEqual(collected["git"]["state"], "ok")
+        self.assertEqual(collected["git"]["merges"], [{
+            "accepted_sha": ACCEPTED, "merge_sha": MERGE, "diff_empty": True}])
+        self.assertEqual(collected["git"]["ancestry"], [
+            {"ancestor": MERGE, "descendant": MAIN_HEAD, "result": True}])
+
+        checklist = self.closeout.plan(facts(
+            acceptance={"state": "ok", "reason": "", "records": [
+                {"record_id": ACCEPTANCE_RECORD_ID, **payload}]},
+            git=collected["git"],
+        ))
+        self.assertEqual(row(checklist, 3)["status"], "ok")
+        self.assertEqual(row(checklist, 3)["evidence"], [{
+            "source": "git",
+            "ref": "git:merges:" + ACCEPTED + ".." + MERGE,
+            "state": "equivalent",
+        }])
+
     def test_reconcile_live_compact_cli_outputs_compact_summary(self):
         auth_file = self.root / "auth.json"
         auth_file.write_text(json.dumps({
