@@ -1391,6 +1391,27 @@
           "text": "Dispatches a single supervised new-top-level worker for #83 after verifying status:agent-ready maps to ready-for-agent with zero blockers and no active owner"
         }
       ]
+    },
+    {
+      "id": 54,
+      "name": "bot-multi-project-routing-and-disambiguation",
+      "prompt": "You are an Orca Bot running orchestra-auto with two registered projects, both `watch: true`:\n- PROJECT_ALPHA_REPO=example-org/alpha, with a recorded local_path and triage_labels_file\n- PROJECT_BETA_REPO=example-org/beta, with a recorded local_path and triage_labels_file\nTheir single unified watch automation has `github.ci_failed in=example-org/alpha,example-org/beta` and the same comma-separated list on the other watched events. Two inputs arrive:\n1. Chat: \"fix the flaky login test\" (no project name, path, or URL).\n2. Event: `github.ci_failed` for PR #42 in `example-org/beta`.\n\nOutput only:\n1. CHAT: whether you dispatch now, and what you do first\n2. EVENT: how you resolve the target repository before deduplication\n3. WATCH: how the unified `in=` rule handles a future split\nDo not run commands.",
+      "expected_output": "For the chat task, do not run `init-check.py` or `worker-start` yet: with two projects and no explicit project, path, or URL, ask the owner whether the target is `example-org/alpha` or `example-org/beta`. For the event, look up `example-org/beta` by its `owner/name` in the `projects` registry, use that entry's `local_path` as `<target_repo>` and resolve `<target_repo>/docs/agents/triage-labels.md` through its `triage_labels_file`, then run four-source runtime deduplication (`orca reference find`, `orca worktree ps --json` or `orca worktree list --repo \"<target_repo>\" --json`, worker-list, run-list) before deciding whether to dispatch. An unregistered `owner/name` is notify-only. Keep the one unified `in=example-org/alpha,example-org/beta` automation; if beta later needs an independent switch or dedicated agent/model/effort, create its single-repo automation and remove beta from the unified list so the same event never triggers twice.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "asks_before_ambiguous_chat_dispatch",
+          "text": "Asks which of the two registered projects to use before init-check.py or worker-start when the chat message names none"
+        },
+        {
+          "name": "routes_event_by_owner_name",
+          "text": "Resolves the event's owner/name to the beta registry entry, uses its local path and triage label file, and keeps unregistered repositories notify-only"
+        },
+        {
+          "name": "keeps_one_unified_watch",
+          "text": "Keeps one unified in=example-org/alpha,example-org/beta automation and removes a split repository from that list to avoid duplicate triggers"
+        }
+      ]
     }
   ]
 }

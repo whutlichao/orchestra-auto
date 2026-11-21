@@ -66,8 +66,8 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/demo-exam
 
 ```text
 skills/
-├── orchestra-auto/      English bundle (SKILL.md: 9,819 bytes / ~2,454 tokens; references/: eight files)
-└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 9,001 bytes / ~2,250 tokens; same structure)
+├── orchestra-auto/      English bundle (SKILL.md: 10,564 bytes / ~2,641 tokens; references/: eight files)
+└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 9,641 bytes / ~2,410 tokens; same structure)
 tests/                   Offline unittest suite (scripts, dashboard, package parity, leak scan)
 docs/                    Design docs, architecture specs, and demo assets (see docs/INDEX.md)
 ```
@@ -78,7 +78,7 @@ Run the full offline test suite (no network or credentials needed):
 python3 -m unittest discover -s tests -v
 ```
 
-Each bundle also ships **54 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+Each bundle also ships **55 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Credits & License
 
