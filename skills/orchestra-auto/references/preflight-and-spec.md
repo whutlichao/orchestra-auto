@@ -8,6 +8,17 @@ Every dispatch must write a durable `kind: preflight` receipt **before** calling
 
 ```bash
 PREFLIGHT="$SKILLS_ROOT/orchestra-auto/scripts/preflight.py"
+# Planning branch example (R1–R10 / R14–R16, e.g. R2 grill-with-docs -> design / G-docs):
+python3 "$PREFLIGHT" inspect-spec --spec /tmp/worker-spec.md --type design --compact
+python3 "$PREFLIGHT" check --run-id "$RUN" \
+  --ticket-id 42 --type design --gate G-docs --origin "GH#42" \
+  --spec /tmp/worker-spec.md \
+  --guide /tmp/orchestration-guide.md --guide-fetched-at "$FETCH_TS" --round-started-at "$ROUND_TS" \
+  --channel-note "channel B (R2 grill-with-docs)" --worktree-note "new-top-level" \
+  --long-horizon-note "single stage" --main-rule-note "clean" --canonical-note "worktree" \
+  --legacy-migrated --migration-ref "native-only" --compact
+
+# Implementation branch example (R11–R13, e.g. R12 implement -> impl / G-impl):
 python3 "$PREFLIGHT" inspect-spec --spec /tmp/worker-spec.md --type impl --compact
 python3 "$PREFLIGHT" check --run-id "$RUN" \
   --ticket-id 42 --type impl --gate G-impl --origin "GH#42" \
@@ -90,7 +101,9 @@ Run `git status --porcelain` and `git diff --numstat` in the task worktree: empt
 
 ## Planning Gates (`G-docs`, `G-wayfinder`, `G-spec`, `G-tickets`)
 
-- **`G-docs` / `grill`**: verify questions, answers, rationale, settled terminology (`GLOSSARY.md` / ADRs in `docs/adr/` if applicable), and repo conventions.
+All controlled planning artifacts (`docs/adr/*.md`, `GLOSSARY.md`, `GLOSSARY-MAP.md`, specs, ticket files, and `gh issue create` / tracker writes) are produced by dispatched workers in isolated worktrees — never written directly by the coordinator. Ad-hoc coordinator Q&A (such as 3 macro multiple-choice questions) never satisfies `G-docs`.
+
+- **`G-docs` / `grill`**: verify real worker-driven `grill-me` / `grill-with-docs` execution evidence (questions, answers, rationale, settled terminology in `GLOSSARY.md` / ADRs in `docs/adr/` if applicable, and repo conventions). Required before ADR writes, `to-spec`, or `to-tickets` unless explicitly skipped by the user.
 - **`G-wayfinder`**: ticket states are `takeable`, `in progress`, `blocked`, `done`. Remember: **"an empty frontier is not completion"** (`the frontier is empty but tickets are in progress or blocked` must NOT close the stage; empty frontier has three causes — every ticket assigned, every remaining ticket blocked, or the work genuinely finished). Map is an index (`decisions so far` point to owning ticket). State whether handoff moves to §7/impl or stops at decisions. Decision branches (`research` AFK, `prototype` HITL, `to-questionnaire` async HITL, `wizard` human, `task` HITL/AFK) keep blocked work blocked until real answers/facts land.
 - **`G-spec`**: fewest/highest seams (seam placement = approach fork → escalate per decision rules), clear user stories, non-empty Out of Scope.
 - **`G-tickets`**: vertical tracer bullets, explicit DAG dependencies, tracker populated first, acyclic graph + reachable tracker + single-context size. Splitting granularity (count & what each ticket delivers) goes to the human.

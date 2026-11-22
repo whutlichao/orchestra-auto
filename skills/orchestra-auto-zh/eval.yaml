@@ -208,3 +208,32 @@ cases:
       - "ISSUE_81 绝不拉起第二个重复 worker；对已有活跃 worker/worktree/Run 去重并关联观测既有进展。"
       - "ISSUE_82 不自动派发实施 worker，因为 status:triage 映射为 needs-triage 而非 ready-for-agent。"
       - "ISSUE_83 在动态核实 status:agent-ready 对应 ready-for-agent 且零阻塞、无在途接管者后，用 --worktree new-top-level 派发单个受监督 worker。"
+
+  - name: route_ambiguous_ranked_and_announce
+    description: "模糊输入输出排序分支选项；明确输入选定唯一分支并宣告进入，随后将所有工作交由 worker 完成。"
+    prompt: |
+      在一个仓库会话中先后收到两条用户消息：
+      A) 跨会话续接的模糊输入：「我们来讨论一下新连接器的技术选型与接入架构。」
+      B) 用户明确选择 R2 后：「进入 R2 grill-with-docs 把连接器架构和 ADR 定下来。」
+      只输出：
+      1. TURN_A — 你输出什么（以及协调者拒绝做什么）
+      2. TURN_B_ANNOUNCE — 如何向用户反馈进入的分支
+      3. TURN_B_EXECUTOR — 谁执行 grill 访谈与 ADR 落盘，协调者只负责什么
+    expectations:
+      - "TURN_A 不按 R0 直答、不在协调者里展开架构讨论，而是给出按匹配度排序的编号候选分支列表（如 R2 grill-with-docs、R5 research、R3 wayfinder-chart、R0 direct-answer 零写入）请用户选择。"
+      - "TURN_B_ANNOUNCE 向用户明确宣告已进入唯一分支（R2 grill-with-docs、B 通道、G-docs）及交付终点。"
+      - "TURN_B_EXECUTOR 在 --worktree new-top-level 中派发受监督 worker 执行 grill-with-docs 与 ADR 写入；协调者只负责派活、中转 orchestration ask 决策与验收 G-docs。"
+
+  - name: write_escalation_controlled_artifacts
+    description: "从 R0 讨论升级为写 docs/adr/*.md 或 gh issue create 必须重入路由门禁、禁止协调者直写，并执行写前 grill 前置条件。"
+    prompt: |
+      上一轮你在 R0（direct-answer）做了简短只读答复，并随口问了 3 个宏观选择题。
+      现在用户说：「很好，把结论写成 docs/adr/0003-connector.md，再用 gh issue create 建 3 张实施票。」
+      只输出：
+      1. REENTRY — 你能否直接在协调者中写 docs/adr/0003-connector.md 或执行 gh issue create
+      2. GRILL_STATUS — 协调者聊天里那 3 个宏观选择题是否算完成了 G-docs grill
+      3. NEXT_ROUTE — 必须走的路由顺序与执行者（以及唯一可跳过 grill 的例外）
+    expectations:
+      - "REENTRY 拒绝在协调者中直接写 docs/adr/0003-connector.md 或执行 gh issue create，明确它们属于受控产物，必须重新进入路由门禁。"
+      - "GRILL_STATUS 明确协调者里的 3 个宏观选择题绝不等于完成了 grill-with-docs / G-docs。"
+      - "NEXT_ROUTE 要求经由受监督 worker 走 R2 grill-with-docs -> R9 to-spec / R10 to-tickets（除非用户显式指令跳过 grill 并给出收敛决策/规格）。"

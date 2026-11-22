@@ -402,6 +402,23 @@ class CliTests(unittest.TestCase):
         self.assertFalse((home / "runs" / "r1" / "flow.jsonl").exists())
 
     def test_init_route_presets_and_compact(self):
+        expected_standalone = {
+            "grill-me", "grill-with-docs", "wayfinder-chart", "wayfinder-work",
+            "research", "prototype", "to-questionnaire", "wizard",
+            "to-spec", "to-tickets", "diagnosing-bugs", "implement",
+            "implement-spec", "triage", "improve-codebase-architecture", "retro",
+        }
+        expected_composite = {
+            "design-only", "single-impl", "full-chain", "wayfinder", "ticket-map", "bugfix",
+        }
+        self.assertTrue(
+            expected_standalone <= set(flow.ROUTE_PRESETS),
+            f"missing standalone branch presets: {expected_standalone - set(flow.ROUTE_PRESETS)}",
+        )
+        self.assertTrue(
+            expected_composite <= set(flow.ROUTE_PRESETS),
+            f"missing composite chain presets: {expected_composite - set(flow.ROUTE_PRESETS)}",
+        )
         home = self.root / "home"
         for idx, route in enumerate(sorted(flow.ROUTE_PRESETS)):
             run_id = f"r-preset-{idx}"

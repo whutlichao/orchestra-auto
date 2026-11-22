@@ -542,6 +542,106 @@ def append_record(path, record):
 
 
 ROUTE_PRESETS = {
+    # Standalone worker branch presets (R1–R16)
+    "grill-me": {
+        "endpoint": "settled design decisions & rationale (no repo)",
+        "nodes": (
+            {"id": "grill-me", "gate": "G-docs", "depends_on": []},
+        ),
+    },
+    "grill-with-docs": {
+        "endpoint": "settled design decisions, glossary & ADRs",
+        "nodes": (
+            {"id": "grill-with-docs", "gate": "G-docs", "depends_on": []},
+        ),
+    },
+    "wayfinder-chart": {
+        "endpoint": "wayfinder decision map & typed tickets charted",
+        "nodes": (
+            {"id": "wayfinder-chart", "gate": "G-wayfinder", "depends_on": []},
+        ),
+    },
+    "wayfinder-work": {
+        "endpoint": "claimed wayfinder frontier ticket resolved & map updated",
+        "nodes": (
+            {"id": "wayfinder-work", "gate": "G-wayfinder", "depends_on": []},
+        ),
+    },
+    "research": {
+        "endpoint": "cited primary-source research report",
+        "nodes": (
+            {"id": "research", "gate": "G-research", "depends_on": []},
+        ),
+    },
+    "prototype": {
+        "endpoint": "runnable throwaway prototype & human reaction recorded",
+        "nodes": (
+            {"id": "prototype", "gate": "G-prototype", "depends_on": []},
+        ),
+    },
+    "to-questionnaire": {
+        "endpoint": "external questionnaire prepared/sent; dependent work waiting",
+        "nodes": (
+            {"id": "to-questionnaire", "gate": "G-questionnaire", "depends_on": []},
+        ),
+    },
+    "wizard": {
+        "endpoint": "verified human-only step guide confirmed complete",
+        "nodes": (
+            {"id": "wizard", "gate": "G-wizard", "depends_on": []},
+        ),
+    },
+    "to-spec": {
+        "endpoint": "accepted multi-session spec artifact",
+        "nodes": (
+            {"id": "to-spec", "gate": "G-spec", "depends_on": []},
+        ),
+    },
+    "to-tickets": {
+        "endpoint": "vertical DAG ticket map published to tracker",
+        "nodes": (
+            {"id": "to-tickets", "gate": "G-tickets", "depends_on": []},
+        ),
+    },
+    "diagnosing-bugs": {
+        "endpoint": "verified root cause & failing red reproduction test",
+        "nodes": (
+            {"id": "diagnosing-bugs", "gate": "G-impl", "depends_on": []},
+        ),
+    },
+    "implement": {
+        "endpoint": "merged PR & closed ticket",
+        "nodes": (
+            {"id": "implement", "gate": "G-impl", "depends_on": []},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement"]},
+        ),
+    },
+    "implement-spec": {
+        "endpoint": "single integration PR merged & tracker closed",
+        "nodes": (
+            {"id": "implement-spec", "gate": "G-impl", "depends_on": []},
+            {"id": "code-review", "gate": "G-merge", "depends_on": ["implement-spec"]},
+        ),
+    },
+    "triage": {
+        "endpoint": "external issue/PR classified & labeled per triage-labels.md",
+        "nodes": (
+            {"id": "triage", "gate": "G-triage", "depends_on": []},
+        ),
+    },
+    "improve-codebase-architecture": {
+        "endpoint": "refactor candidates presented for human selection",
+        "nodes": (
+            {"id": "improve-codebase-architecture", "gate": "G-docs", "depends_on": []},
+        ),
+    },
+    "retro": {
+        "endpoint": "read-only retro-candidates.md outside repo awaiting human selection",
+        "nodes": (
+            {"id": "retro", "gate": "G-retro", "depends_on": []},
+        ),
+    },
+    # Composite multi-stage chain presets (backward-compatible)
     "design-only": {
         "endpoint": "settled design & spec artifact",
         "nodes": (

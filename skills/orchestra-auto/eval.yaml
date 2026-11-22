@@ -214,3 +214,32 @@ cases:
       - "ISSUE_81 does not spawn a second worker; it deduplicates against the active worker/worktree/Run and links or observes existing progress."
       - "ISSUE_82 does not auto-dispatch implementation because status:triage maps to needs-triage, not ready-for-agent."
       - "ISSUE_83 dispatches one supervised worker in --worktree new-top-level after dynamically verifying status:agent-ready maps to ready-for-agent with zero blockers and no active owner."
+
+  - name: route_ambiguous_ranked_and_announce
+    description: "Ambiguous input yields ranked branch choices; clear input selects one branch, announces entry, and delegates all branch work to a worker."
+    prompt: |
+      Two separate user messages arrive in a repo session:
+      A) Ambiguous cross-session continuation: "Let's discuss tech stack choices and integration architecture for the new connector."
+      B) Clear follow-up after user selects R2: "Enter R2 grill-with-docs to settle the connector architecture and ADR."
+      Output ONLY:
+      1. TURN_A — what you output (and what you refuse to do in the coordinator session)
+      2. TURN_B_ANNOUNCE — how you confirm the entered branch to the user
+      3. TURN_B_EXECUTOR — who runs the grill interview and writes any ADR, and what the coordinator does instead
+    expectations:
+      - "TURN_A does not answer as R0 or debate architecture in the coordinator; it presents a ranked numbered list of candidate branches (e.g., R2 grill-with-docs, R5 research, R3 wayfinder-chart, R0 direct-answer read-only) for the user to choose."
+      - "TURN_B_ANNOUNCE explicitly names the single entered branch (R2 grill-with-docs, Channel B, G-docs) and delivery endpoint back to the user."
+      - "TURN_B_EXECUTOR dispatches a supervised worker in --worktree new-top-level to run grill-with-docs and write any ADR; the coordinator only dispatches, relays orchestration ask decisions, and verifies G-docs."
+
+  - name: write_escalation_controlled_artifacts
+    description: "Crossing from R0 discussion into docs/adr/*.md or gh issue create must re-enter the route gate, forbid coordinator direct writes, and enforce grill prerequisite."
+    prompt: |
+      In the previous turn you answered a brief read-only question in R0 (direct-answer) and asked 3 macro high-level questions.
+      Now the user says: "Great, write that conclusion into docs/adr/0003-connector.md and run gh issue create for 3 implementation tickets."
+      Output ONLY:
+      1. REENTRY — whether you may write docs/adr/0003-connector.md or run gh issue create directly here
+      2. GRILL_STATUS — whether those 3 macro questions in coordinator chat count as completed G-docs grill
+      3. NEXT_ROUTE — the route sequence and executor required (and the only exception that skips grill)
+    expectations:
+      - "REENTRY refuses direct coordinator edits to docs/adr/0003-connector.md and direct gh issue create, stating they are controlled artifacts that must re-enter the Route Entry Gate."
+      - "GRILL_STATUS says 3 high-level questions in coordinator chat do NOT satisfy grill-with-docs / G-docs."
+      - "NEXT_ROUTE routes through supervised worker branches R2 grill-with-docs -> R9 to-spec / R10 to-tickets (unless the user explicitly instructs to skip grill and provides settled decisions/spec)."
