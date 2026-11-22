@@ -8,6 +8,17 @@
 
 ```bash
 PREFLIGHT="$SKILLS_ROOT/orchestra-auto-zh/scripts/preflight.py"
+# 规划分支示例（R1–R10 / R14–R16，如 R2 grill-with-docs -> design / G-docs）：
+python3 "$PREFLIGHT" inspect-spec --spec /tmp/worker-spec.md --type design --compact
+python3 "$PREFLIGHT" check --run-id "$RUN" \
+  --ticket-id 42 --type design --gate G-docs --origin "GH#42" \
+  --spec /tmp/worker-spec.md \
+  --guide /tmp/orchestration-guide.md --guide-fetched-at "$FETCH_TS" --round-started-at "$ROUND_TS" \
+  --channel-note "channel B (R2 grill-with-docs)" --worktree-note "new-top-level" \
+  --long-horizon-note "single stage" --main-rule-note "clean" --canonical-note "worktree" \
+  --legacy-migrated --migration-ref "native-only" --compact
+
+# 实施分支示例（R11–R13，如 R12 implement -> impl / G-impl）：
 python3 "$PREFLIGHT" inspect-spec --spec /tmp/worker-spec.md --type impl --compact
 python3 "$PREFLIGHT" check --run-id "$RUN" \
   --ticket-id 42 --type impl --gate G-impl --origin "GH#42" \
@@ -90,7 +101,9 @@ skill 执行证据：<名称、路径、加载方式、可核查记录与关键�
 
 ## 规划门禁（`G-docs`、`G-wayfinder`、`G-spec`、`G-tickets`）
 
-- **`G-docs` / `grill`**：核查问题/回答/依据、术语词表与 ADR（若落地）。
+所有受控规划产物（`docs/adr/*.md`、`GLOSSARY.md`、`GLOSSARY-MAP.md`、Spec、票据文件与 `gh issue create` / tracker 写入）均由隔离 worktree 中的 worker 产出，协调者绝不直接编写或建票。协调者随口问几个宏观选择题绝不满足 `G-docs`。
+
+- **`G-docs` / `grill`**：核查 worker 驱动的真实 `grill-me` / `grill-with-docs` 执行证据（问题/回答/依据、落地的 `GLOSSARY.md` 术语表与 `docs/adr/` ADR）。任何 ADR 落盘、`to-spec` 或 `to-tickets` 前必过本门，除非用户显式跳过。
 - **`G-wayfinder`**：票据四状态为`可领取`、`处理中`、`阻塞`、`完成`。牢记：**frontier 为空不等于完成**——可能是全部票已分配、剩余均被阻塞或真正做完；`frontier 为空但有票在「处理中」或「阻塞」`时**不得**结束该阶段。决策树只作索引，阐明转向 §7/实施还是止于决策；分支（`research` AFK、`prototype` HITL、`to-questionnaire` 异步、`wizard` 人类、`task`）未落地前被阻塞票保持阻塞。
 - **`G-spec`**：尽量高/少的接缝（接缝选址属架构分叉，须升级人定）、充分场景、非空 Out of Scope。
 - **`G-tickets`**：纵切 tracer bullets、无环 DAG、先落 tracker、单上下文可消化；拆分粒度方案用“票数 + 每票交付物”给人类拍板。

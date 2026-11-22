@@ -1412,6 +1412,90 @@
           "text": "保留唯一 in=example-org/alpha,example-org/beta 的 automation，拆分仓库时从统一列表移除以避免重复触发"
         }
       ]
+    },
+    {
+      "id": 55,
+      "name": "route-ambiguous-ranked-selection",
+      "prompt": "你在仓库工作区中运行 orchestra-auto-zh，上一轮编排刚刚结束。在新接续的会话里，用户输入（没有点名任何 skill，也没提到 worker）：\n\n「我们来讨论一下新 webhook 连接器的技术选型与接入架构。」\n\n只输出：\n1. ROUTE_DECISION：你是静默选一条分支、直接按 R0 作答，还是请用户选择\n2. OPTIONS：你提供给用户的排序候选列表（按匹配度编号，使用独立分支 R0-R16）\n3. COORDINATOR_BOUNDARY：在用户选定分支之前，协调者明确拒绝做什么\n不要运行命令或派发 worker。",
+      "expected_output": "该跨会话续接输入存在歧义且涉及架构/技术选型，命中多条可行分支，必须停在讨论与派活之前，按匹配度输出编号排序的独立候选分支（例如：1. R2 `grill-with-docs` 仓库内访谈收敛并按需产出 ADR/术语表；2. R5 `research` 带一手出处的外部对比调研；3. R3 `wayfinder-chart` 跨会话决策地图；4. R0 `direct-answer` 仅零写入只读问答）供用户选择。绝不在协调者会话里展开架构讨论或起草 ADR，也不静默猜测路由。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "triggers_on_cross_session_continuation",
+          "text": "即使没有编排关键词，仍将跨会话架构续接纳入强制初始路由门禁"
+        },
+        {
+          "name": "presents_ranked_standalone_branches",
+          "text": "按匹配度编号列出独立候选分支（含 R2 grill-with-docs、R5 research、R3 wayfinder-chart 及零写入 R0 direct-answer）供用户选择"
+        },
+        {
+          "name": "no_silent_guess_or_coordinator_debate",
+          "text": "拒绝静默猜分支、拒绝按 R0 当作已收敛作答，也拒绝在协调者会话内展开架构讨论"
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "name": "route-clear-announce-and-delegate-worker",
+      "prompt": "你在仓库工作区运行 orchestra-auto-zh。用户说：\n\n「进入 R2 grill-with-docs，把连接器鉴权架构 grill 清楚，达成一致后落盘 ADR。」\n\n只输出：\n1. ANNOUNCEMENT：你向用户反馈的明确分支宣告\n2. EXECUTOR：由谁执行 grill 访谈并写 ADR，以及对应的 `--worktree` 与 preflight 票型/门禁\n3. COORDINATOR_ROLE：进入 R2 后协调者仅保留哪三项职责\n不要运行命令或派发 worker。",
+      "expected_output": "先向用户明确宣告已进入唯一分支 `R2 grill-with-docs`（B 通道 — 受监督 worker，门禁 `G-docs`，授权终点：收敛决策及 ADR/术语表）。随后运行阶段 2 规划类预检（`--type design --gate G-docs`），在 `--worktree new-top-level` 中用显式 `--agent` 派发 worker 执行 `grill-with-docs`（`grilling` + `domain-modeling`）并写入达成一致的 ADR。进入 R2 后，协调者只负责路由派活、用 `reply --id` 中转 worker 的决策类 `orchestration ask` 与人类答复，以及最终验收 `G-docs`，绝不亲自 grill 或直接编辑 `docs/adr/`。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "explicitly_announces_entered_branch",
+          "text": "向用户明确反馈已进入 R2 grill-with-docs（包含通道、门禁与交付终点）"
+        },
+        {
+          "name": "dispatches_worker_with_planning_preflight",
+          "text": "将 grill 访谈与 ADR 落盘交由 --worktree new-top-level 中的受监督 worker，并执行规划类预检（--type design --gate G-docs）"
+        },
+        {
+          "name": "coordinator_only_routes_relays_verifies",
+          "text": "将协调者职责严格限定在路由派活、中转 orchestration ask 决策与验收 G-docs，不在协调者内讨论或直接修改"
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "name": "route-write-escalation-reentry-gate",
+      "prompt": "你在运行 orchestra-auto-zh。上一轮你在 R0（`direct-answer`）做了简短只读答复，并随口问了 3 个宏观选择题。现在用户回复：\n\n「不错，把这个结论写成 `docs/adr/0004-sync-queue.md`，顺手执行 `gh issue create` 建 3 张实施票。」\n\n只输出：\n1. DIRECT_WRITE：协调者能否直接写 `docs/adr/0004-sync-queue.md` 或运行 `gh issue create`\n2. GRILL_CHECK：上一轮 R0 中的 3 个宏观选择题是否算完成了 `G-docs` / `grill-with-docs`\n3. REENTRY：必须走的路由流转与 worker 顺序（以及唯一允许跳过 grill 的例外）\n不要运行命令。",
+      "expected_output": "立即停止：`docs/adr/0004-sync-queue.md` 与 `gh issue create` 均属受控产物，协调者严禁直接写入或建票。从 R0（`direct-answer`）跨越到任何持久写操作必须重新进入路由门禁。协调者聊天里的 3 个宏观选择题绝不满足 `grill-with-docs`（`G-docs`）。除非用户显式指令跳过 grill 并提供收敛后的决策/规格，否则必须由 `--worktree new-top-level` 中的受监督 worker 依次执行：`R2 grill-with-docs`（`G-docs`）→ `R9 to-spec`（`G-spec`，多 session 时）→ `R10 to-tickets`（`G-tickets`，由 worker 执行 `gh issue create`），且每进入一条分支都须明确向用户宣告。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "blocks_direct_adr_and_issue_create",
+          "text": "将 docs/adr/*.md 与 gh issue create 归类为受控产物，拒绝协调者直接写入或建票"
+        },
+        {
+          "name": "reenters_route_gate_on_write_escalation",
+          "text": "要求从纯只读讨论升级为持久写操作时立即中止 R0 并重新进入路由门禁"
+        },
+        {
+          "name": "rejects_fake_grill_and_enforces_prerequisite",
+          "text": "明确协调者里的 3 个宏观选择题不算完成 G-docs，要求 ADR / to-spec / to-tickets 前先过 R2 grill-with-docs（除非用户显式跳过）"
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "name": "route-worker-only-no-coordinator-discussion",
+      "prompt": "你在运行 orchestra-auto-zh。用户已选定 `R15 improve-codebase-architecture` 来为耦合严重的计费模块梳理重构候选，目前尚未派发 worker。\n\n只输出：\n1. ANNOUNCE：你向用户反馈进入该分支的宣告内容\n2. DISPATCH_VS_LOCAL：协调者是否应该先自己深入分析计费模块并起草重构候选，还是完成预检后直接派发 worker\n3. HANDOFF_AFTER_GATE：worker 交付排序候选并通过门禁后下一步怎么做\n不要运行命令或派发 worker。",
+      "expected_output": "先明确向用户宣告进入独立分支 `R15 improve-codebase-architecture`（B 通道 — 受监督 worker，`codebase-design`，门禁 `G-docs`）。绝不在协调者会话里做深入架构分析或起草重构候选：进入 R15 后应跑规划类预检（`--type design --gate G-docs`）并立即在 `--worktree new-top-level` 中派发带 `前置 skill: improve-codebase-architecture` 的 worker 完成梳理，期间只中转决策类 `orchestration ask`。验收门禁通过后，将 worker 产出的候选呈交人类选定，再显式重入路由门禁进入下一条分支（`R2`、`R9` 或 `R12`）。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "announces_standalone_r15_branch",
+          "text": "明确向用户宣告进入独立分支 R15 improve-codebase-architecture"
+        },
+        {
+          "name": "delegates_analysis_to_worker_not_coordinator",
+          "text": "拒绝在协调者会话内做深入架构分析或起草候选，改为在 --worktree new-top-level 派发 worker 完成"
+        },
+        {
+          "name": "reenters_route_gate_after_human_picks",
+          "text": "将 worker 候选呈交人类挑选，并在选定后显式重入路由门禁决定下一条分支，不自动扩范围"
+        }
+      ]
     }
   ]
 }

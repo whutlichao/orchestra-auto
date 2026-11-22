@@ -28,7 +28,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 
 可从任意已有阶段切入——从模糊想法到 spec、拆票或直接实施：
 
-1. **路由** — 按当前阶段选择对应 skill（`grill-me` / `grill-with-docs` / `wayfinder` → `to-spec` → `to-tickets` → `implement` 或长程 `implement-spec`，以及 `diagnosing-bugs`、`research`、`triage`、`domain-modeling`、`retro`）。
+1. **路由** — 通过严格的独立 `R0–R16` 分类路由门禁分流每次输入：需求模糊时给出排序选项由你选择，明确时选定唯一分支并明确宣告进入；一旦进入工作分支（`R1–R16`），所有实质工作交由隔离 worker 完成（`grill-me`、`grill-with-docs`、`wayfinder-chart`/`work`、`research`、`prototype`、`to-questionnaire`、`wizard`、`to-spec`、`to-tickets`、`diagnosing-bugs`、`implement`、`implement-spec`、`triage`、`improve-codebase-architecture`、`retro`）。从只读 `R0` 跨越到任何受控写入（`docs/adr/*.md`、`GLOSSARY.md`、Spec、`gh issue create`、代码）必须重入路由门禁。
 2. **隔离与派发** — 每一步在新的顶层 worktree（`--worktree new-top-level`）中派发已启用的 Orca worker；coordinator 不直接修改目标项目文件。
 3. **门禁与升级** — 按票型校验交付物（`tdd`、`code-review`、diff/重排检查）。决策类问题（交付形态、方案分叉、范围、凭证、第三方、付费服务、人工审批、不可逆线上数据操作）一律交回人类确认。
 4. **落地与收尾** — 获授权且门禁全绿的双向门 PR 自动合并并同步 `main`；单向 Merge Danger 门或只要求开 PR 的任务保持开放。worker 仅在结算并完成持久化收尾后才 release。
@@ -66,8 +66,8 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/demo-e
 
 ```text
 skills/
-├── orchestra-auto/      英文包（SKILL.md：10,633 字节 / ~2,658 tokens；结构相同）
-└── orchestra-auto-zh/   中文包（SKILL.md：9,702 字节 / ~2,425 tokens；references/ 共 8 个文件）
+├── orchestra-auto/      英文包（SKILL.md：17,706 字节 / ~4,426 tokens；结构相同）
+└── orchestra-auto-zh/   中文包（SKILL.md：17,137 字节 / ~4,284 tokens；references/ 共 8 个文件）
 tests/                   离线 unittest 套件（脚本、看板、包一致性与脱敏扫描）
 docs/                    设计、架构文档与演示素材（见 docs/INDEX.md）
 ```
@@ -78,7 +78,7 @@ docs/                    设计、架构文档与演示素材（见 docs/INDEX.m
 python3 -m unittest discover -s tests -v
 ```
 
-两个语言包各附带 **55 个提示词层面的场景**（`evals/evals.json`）；跨语言一致性测试只查锚点，不等于完整语义等价。更多设计文档与贡献规范见 [docs/INDEX.md](docs/INDEX.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+两个语言包各附带 **59 个提示词层面的场景**（`evals/evals.json`）；跨语言一致性测试只查锚点，不等于完整语义等价。更多设计文档与贡献规范见 [docs/INDEX.md](docs/INDEX.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 致谢与许可
 

@@ -129,6 +129,10 @@ ROUTING_EVAL_SCENARIOS = (
     "bot-coordinator-item-and-repo-boundary",
     "bot-watch-dedup-and-dynamic-labels",
     "bot-multi-project-routing-and-disambiguation",
+    "route-ambiguous-ranked-selection",
+    "route-clear-announce-and-delegate-worker",
+    "route-write-escalation-reentry-gate",
+    "route-worker-only-no-coordinator-discussion",
 )
 
 # Phrases a scenario must never carry: a scenario is a prompt, so it cannot have run a test. The
@@ -1076,6 +1080,111 @@ class ContractRegressionTests(unittest.TestCase):
                           f"{name}: the authoritative copy is not labelled as such")
             self.assertIn("acceptance-and-closeout.md", references["long-horizon.md"],
                           f"{name}: the second copy was removed without leaving a pointer")
+
+    def test_initial_classification_routing_splits_branches_and_enforces_worker_boundary(self):
+        """Every route branch R0-R16 must be split separately with hard entry & worker boundaries."""
+        standalone_branches = (
+            ("R0", "direct-answer"),
+            ("R1", "grill-me"),
+            ("R2", "grill-with-docs"),
+            ("R3", "wayfinder-chart"),
+            ("R4", "wayfinder-work"),
+            ("R5", "research"),
+            ("R6", "prototype"),
+            ("R7", "to-questionnaire"),
+            ("R8", "wizard"),
+            ("R9", "to-spec"),
+            ("R10", "to-tickets"),
+            ("R11", "diagnosing-bugs"),
+            ("R12", "implement"),
+            ("R13", "implement-spec"),
+            ("R14", "triage"),
+            ("R15", "improve-codebase-architecture"),
+            ("R16", "retro"),
+        )
+        expectations = {
+            "orchestra-auto": {
+                "desc": ("cross-session", "re-enter", "docs/adr/*.md", "gh issue create"),
+                "entrypoint": (
+                    "ranked numbered list",
+                    "explicitly report back to the user",
+                    "Entered Route:",
+                    "controlled artifact",
+                    "docs/adr/*.md",
+                    "GLOSSARY.md",
+                    "gh issue create",
+                    "workers execute ALL substantive work",
+                    "--type design --gate G-docs",
+                ),
+                "routing_doc": (
+                    "Ranked Branch Choices",
+                    "Explicitly Announce Entry",
+                    "Worker-Only Execution",
+                    "Write-Escalation Re-Entry Gate",
+                    "Anti-Fake-Grill",
+                ),
+                "preflight_doc": (
+                    "--type design --gate G-docs",
+                    "controlled planning artifacts",
+                    "never satisfies `G-docs`",
+                ),
+            },
+            "orchestra-auto-zh": {
+                "desc": ("跨会话续接", "重新进入", "docs/adr/*.md", "gh issue create"),
+                "entrypoint": (
+                    "编号排序候选列表",
+                    "明确反馈给用户已进入哪条分支",
+                    "已进入分支：",
+                    "受控产物",
+                    "docs/adr/*.md",
+                    "GLOSSARY.md",
+                    "gh issue create",
+                    "所有实质工作全部由 worker 完成",
+                    "--type design --gate G-docs",
+                ),
+                "routing_doc": (
+                    "排序给用户选择",
+                    "必选唯一分支并向用户宣告",
+                    "进入分支后全由 Worker 执行",
+                    "讨论升级为写操作重入红线",
+                    "反伪 Grill 规则",
+                ),
+                "preflight_doc": (
+                    "--type design --gate G-docs",
+                    "受控规划产物",
+                    "绝不满足 `G-docs`",
+                ),
+            },
+        }
+        for name, expected in expectations.items():
+            directory = REPO_ROOT / "skills" / name
+            entrypoint, references = self.corpus(name)
+            description = frontmatter_scalar(required_frontmatter(directory, name), "description") or ""
+            for token in expected["desc"]:
+                self.assertIn(token, description,
+                              f"{name}: frontmatter description missing {token!r}")
+            for doc_label, doc_text in (
+                ("SKILL.md", entrypoint),
+                ("routing-and-chains.md", references["routing-and-chains.md"]),
+            ):
+                for branch_id, route_name in standalone_branches:
+                    row_pattern = re.compile(
+                        rf"^\|\s*\*\*{re.escape(branch_id)}\*\*\s*\|\s*`{re.escape(route_name)}`\s*\|",
+                        re.MULTILINE,
+                    )
+                    self.assertIsNotNone(
+                        row_pattern.search(doc_text),
+                        f"{name}/{doc_label}: missing standalone row for {branch_id} `{route_name}`",
+                    )
+            for phrase in expected["entrypoint"]:
+                self.assertIn(phrase, entrypoint,
+                              f"{name}: SKILL.md missing routing guardrail {phrase!r}")
+            for phrase in expected["routing_doc"]:
+                self.assertIn(phrase, references["routing-and-chains.md"],
+                              f"{name}: routing-and-chains.md missing {phrase!r}")
+            for phrase in expected["preflight_doc"]:
+                self.assertIn(phrase, references["preflight-and-spec.md"],
+                              f"{name}: preflight-and-spec.md missing {phrase!r}")
 
     def test_readme_states_the_real_eval_count(self):
         """A stale scenario count is a claim about coverage the package does not have."""

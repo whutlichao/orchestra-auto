@@ -1412,6 +1412,90 @@
           "text": "Keeps one unified in=example-org/alpha,example-org/beta automation and removes a split repository from that list to avoid duplicate triggers"
         }
       ]
+    },
+    {
+      "id": 55,
+      "name": "route-ambiguous-ranked-selection",
+      "prompt": "You are running orchestra-auto in a repository workspace right after a prior orchestration run finished. In a fresh continuation session, the user writes (without naming any skill or mentioning workers):\n\n\"Let's discuss tech stack choices and integration architecture for the new webhook connector.\"\n\nOutput only:\n1. ROUTE_DECISION: whether you pick one branch silently, answer directly in R0, or ask the user to choose\n2. OPTIONS: the ranked choices you present to the user (numbered by fit, using standalone R0-R16 branch IDs)\n3. COORDINATOR_BOUNDARY: what you explicitly refuse to do before the user selects a branch\nDo not run commands or dispatch a worker.",
+      "expected_output": "Because this cross-session prompt is ambiguous and touches architecture/tech selection with multiple viable branches, stop before discussing or dispatching and present a ranked numbered menu of standalone branches (for example: 1. R2 `grill-with-docs` for repo-grounded interview and ADR/glossary, 2. R5 `research` for cited external comparison, 3. R3 `wayfinder-chart` for a multi-session decision map, 4. R0 `direct-answer` strictly read-only with zero writes). Do not debate architecture or draft ADRs inside the coordinator session, and do not silently guess a branch.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "triggers_on_cross_session_continuation",
+          "text": "Treats the cross-session architecture continuation as entering the Route Entry Gate even without orchestration keywords"
+        },
+        {
+          "name": "presents_ranked_standalone_branches",
+          "text": "Presents a numbered, fit-ranked list of standalone branches (including R2 grill-with-docs, R5 research, R3 wayfinder-chart, and read-only R0 direct-answer) for the user to choose"
+        },
+        {
+          "name": "no_silent_guess_or_coordinator_debate",
+          "text": "Refuses to silently pick a branch, answer in R0 as if settled, or hold an extended architecture debate inside the coordinator session"
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "name": "route-clear-announce-and-delegate-worker",
+      "prompt": "You are running orchestra-auto in a repository workspace. The user says:\n\n\"Enter R2 grill-with-docs to settle the connector auth architecture and write the ADR if we reach agreement.\"\n\nOutput only:\n1. ANNOUNCEMENT: the explicit route announcement you report back to the user\n2. EXECUTOR: who conducts the grill interview and writes any ADR, and what `--worktree` / preflight type & gate apply\n3. COORDINATOR_ROLE: the only three responsibilities you retain once R2 is entered\nDo not run commands or dispatch a worker.",
+      "expected_output": "Explicitly announce to the user that the session entered `R2 grill-with-docs` (Channel B — supervised worker, Gate `G-docs`, authorized endpoint: settled decisions plus ADR/glossary). Run Phase 2 planning preflight (`--type design --gate G-docs`) and dispatch a supervised worker in `--worktree new-top-level` with explicit `--agent` to run `grill-with-docs` (`grilling` + `domain-modeling`) and write any agreed ADR. Once R2 is entered, the coordinator only routes/dispatches, relays decision-class `orchestration ask` questions between worker and human via `reply --id`, and verifies `G-docs` at closeout — never running the grill or editing `docs/adr/` directly.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "explicitly_announces_entered_branch",
+          "text": "Explicitly reports back to the user that the run entered R2 grill-with-docs (including channel, gate, and endpoint)"
+        },
+        {
+          "name": "dispatches_worker_with_planning_preflight",
+          "text": "Delegates the grill interview and ADR writing to a supervised worker in --worktree new-top-level with planning preflight (--type design --gate G-docs)"
+        },
+        {
+          "name": "coordinator_only_routes_relays_verifies",
+          "text": "Limits the coordinator strictly to routing/dispatching, relaying orchestration ask decisions, and verifying G-docs without discussing or editing directly"
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "name": "route-write-escalation-reentry-gate",
+      "prompt": "You are running orchestra-auto. In the prior turn, you answered a quick read-only question under R0 (`direct-answer`) and casually asked 3 high-level multiple-choice questions. Now the user replies:\n\n\"Sounds good — save that decision to `docs/adr/0004-sync-queue.md` and run `gh issue create` to open 3 implementation tickets.\"\n\nOutput only:\n1. DIRECT_WRITE: whether the coordinator may write `docs/adr/0004-sync-queue.md` or run `gh issue create` directly\n2. GRILL_CHECK: whether the 3 macro questions in R0 satisfy `G-docs` / `grill-with-docs`\n3. REENTRY: what route transition and worker sequence are required (and the sole exception to skip grill)\nDo not run commands.",
+      "expected_output": "Stop immediately: `docs/adr/0004-sync-queue.md` and `gh issue create` are controlled artifacts that the coordinator must never write directly. Crossing from R0 (`direct-answer`) into any persistent write forces re-entry into the Route Entry Gate. The 3 high-level questions asked in coordinator chat do not satisfy `grill-with-docs` (`G-docs`). Unless the user explicitly instructs to skip grill and supplies settled decisions/spec, route through supervised workers in `--worktree new-top-level`: `R2 grill-with-docs` (`G-docs`) -> `R9 to-spec` (`G-spec`, if multi-session) -> `R10 to-tickets` (`G-tickets`, worker runs `gh issue create`), announcing each entered branch explicitly.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "blocks_direct_adr_and_issue_create",
+          "text": "Refuses direct coordinator writes to docs/adr/*.md and direct gh issue create as controlled artifacts"
+        },
+        {
+          "name": "reenters_route_gate_on_write_escalation",
+          "text": "Requires stopping R0 and re-entering the Route Entry Gate when read-only discussion escalates into persistent writes"
+        },
+        {
+          "name": "rejects_fake_grill_and_enforces_prerequisite",
+          "text": "States that 3 macro questions in coordinator chat do not satisfy G-docs and requires R2 grill-with-docs before ADR / to-spec / to-tickets unless the user explicitly skips grill"
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "name": "route-worker-only-no-coordinator-discussion",
+      "prompt": "You are running orchestra-auto. The user selected `R15 improve-codebase-architecture` to surface refactoring candidates for a tangled billing module. The worker has not been dispatched yet.\n\nOutput only:\n1. ANNOUNCE: what you report to the user about the entered branch\n2. DISPATCH_VS_LOCAL: whether the coordinator should inspect the billing module deeply and draft the refactoring candidates itself first, or dispatch a worker immediately after preflight\n3. HANDOFF_AFTER_GATE: what happens after the worker delivers ranked candidates and passes the gate\nDo not run commands or dispatch a worker.",
+      "expected_output": "Announce entry into `R15 improve-codebase-architecture` (Channel B — supervised worker, `codebase-design`, Gate `G-docs`). Do not perform the deep architecture analysis or draft refactoring candidates inside the coordinator session: once R15 is entered, run planning preflight (`--type design --gate G-docs`) and dispatch a supervised worker in `--worktree new-top-level` with `Pre-skill: improve-codebase-architecture` to produce the candidates, relaying any decision-class `orchestration ask` to the human. After verifying the gate, present the worker's candidates for human selection and then explicitly re-enter the Route Entry Gate (`R2`, `R9`, or `R12`) for the chosen follow-up.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "announces_standalone_r15_branch",
+          "text": "Explicitly announces entry into standalone branch R15 improve-codebase-architecture"
+        },
+        {
+          "name": "delegates_analysis_to_worker_not_coordinator",
+          "text": "Refuses to do the deep architecture analysis or candidate drafting in the coordinator session and dispatches a worker in --worktree new-top-level"
+        },
+        {
+          "name": "reenters_route_gate_after_human_picks",
+          "text": "Presents the worker's candidates for human selection and re-enters the Route Entry Gate for the next branch instead of auto-expanding scope"
+        }
+      ]
     }
   ]
 }

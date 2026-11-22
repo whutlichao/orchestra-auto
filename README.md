@@ -28,7 +28,7 @@ npx skills add whutlichao/orchestra-auto --skill orchestra-auto-zh
 
 Enter at whichever stage you already have — from rough idea to spec, tickets, or direct implementation:
 
-1. **Route** — Picks the matching step (`grill-me` / `grill-with-docs` / `wayfinder` → `to-spec` → `to-tickets` → `implement` or long-horizon `implement-spec`, plus `diagnosing-bugs`, `research`, `triage`, `domain-modeling`, `retro`).
+1. **Route** — Classifies every request through a strict standalone `R0–R16` route gate: ambiguous inputs yield ranked choices for you to pick, clear inputs select one branch and explicitly announce entry, and once a worker branch (`R1–R16`) is entered, workers execute all substantive work (`grill-me`, `grill-with-docs`, `wayfinder-chart`/`work`, `research`, `prototype`, `to-questionnaire`, `wizard`, `to-spec`, `to-tickets`, `diagnosing-bugs`, `implement`, `implement-spec`, `triage`, `improve-codebase-architecture`, `retro`). Crossing from read-only `R0` chat into any controlled write (`docs/adr/*.md`, `GLOSSARY.md`, specs, `gh issue create`, code) re-enters the gate.
 2. **Isolate & dispatch** — Dispatches one worker per step in a fresh top-level worktree (`--worktree new-top-level`) using an enabled Orca agent. The coordinator never edits project files directly.
 3. **Gate & escalate** — Verifies deliverables by ticket type (`tdd`, `code-review`, diff/reflow checks). Decision-class questions (scope, approach forks, credentials, third parties, paid services, manual approvals, irreversible live data) always come back to you.
 4. **Land & closeout** — Authorized two-way green PRs merge and sync `main`; one-way Merge Danger doors and PR-only requests stay open for a human. Workers release only after settlement and durable closeout.
@@ -66,8 +66,8 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/demo-exam
 
 ```text
 skills/
-├── orchestra-auto/      English bundle (SKILL.md: 10,633 bytes / ~2,658 tokens; references/: eight files)
-└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 9,702 bytes / ~2,425 tokens; same structure)
+├── orchestra-auto/      English bundle (SKILL.md: 17,706 bytes / ~4,426 tokens; references/: eight files)
+└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 17,137 bytes / ~4,284 tokens; same structure)
 tests/                   Offline unittest suite (scripts, dashboard, package parity, leak scan)
 docs/                    Design docs, architecture specs, and demo assets (see docs/INDEX.md)
 ```
@@ -78,7 +78,7 @@ Run the full offline test suite (no network or credentials needed):
 python3 -m unittest discover -s tests -v
 ```
 
-Each bundle also ships **55 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+Each bundle also ships **59 prompt-level scenarios** in `evals/evals.json` (the cross-language parity test checks anchors, not full semantic equivalence). See [docs/INDEX.md](docs/INDEX.md) for architecture docs and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Credits & License
 
