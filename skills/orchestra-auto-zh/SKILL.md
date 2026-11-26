@@ -90,7 +90,7 @@ python3 "$SCRIPTS/preflight.py" check --run-id "$RUN" --ticket-id "$T" --type im
 
 ### 阶段 3：派发、中转与等待（§4.5 / §5）
 
-1. 先写台账 `intent` → 执行 `worker-start --spec-file /tmp/spec.md --worktree new-top-level --name <slug> --setup run --agent <agent> --retry-request <id> --json`（按需加 `--repo <target_repo>`、`--item <n>`、`--model <id>` 或 `--effort <level>`）→ 写 `result` → 记录 `progress.py` 与 `preflight.py post-dispatch --compact`。
+1. 先写台账 `intent` → 执行 `worker-start --environment local --spec-file /tmp/spec.md --worktree new-top-level --name <slug> --setup run --agent <agent> --retry-request <id> --json`（当 shell 可能设置 `ORCA_ENVIRONMENT` 或 `ORCA_PAIRING_CODE` 时，本地 `worker-start`/`run-create`/`task-create`/`task-list`/`worker-list` 显式加 `--environment local`，远端配对服务器派活则改用 `--on <server>`；按需加 `--repo <target_repo>`、`--item <n>`、`--for <message_id>`、`--model <id>` 或 `--effort <level>`）→ 写 `result` → 记录 `progress.py` 与 `preflight.py post-dispatch --compact`。
 2. 确认启动证据后结束当前 turn 等原生唤醒。
 3. 先分类再 `reply --id <msg>`：决策类呈人定夺（含交互式 `grill`/`wayfinder`/`prototype` 问题——绝不在协调者内直接讨论拍板），细节类直接回答，阻塞票仅冻结本票不影响无关并行票。
 4. 遇无推进或 `worker-start` 失败，先执行 `health.py collect --run-id "$RUN" --evaluate --compact` 或 `ledger.py status --run-id "$RUN" --compact`，依规程处置后再定夺。

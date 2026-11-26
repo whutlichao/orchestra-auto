@@ -1332,7 +1332,7 @@ def retry_pending(ledger_home=None, ledger_module=None, run_id=None):
 
 
 def _orca_json(orca_cli, argv, runner=None):
-    cmd = [orca_cli, *argv]
+    cmd = [orca_cli, *_COMMON.with_local_environment(argv, has_executable=False)]
     result = runner(cmd) if runner else _COMMON.run_command(cmd)
     if result.get("returncode", 1) != 0:
         return None

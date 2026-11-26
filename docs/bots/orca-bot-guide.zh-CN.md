@@ -168,6 +168,13 @@ orca automations edit "<watch_automation_id>" \
 
 若已有活跃 worktree、受监督 worker 或 `implement-spec` 父级 Run 正在处理该票，只用 `orca bot item set --id <id> --status waiting --note "..."` 关联并观测，**绝不拉起第二个重复 worker**。
 
+#### Bot 事项状态流转与 Orca 1.4.277 新参数
+
+- **`needs-you`**：等待主人拍板（`orca bot item set <id> --status needs-you --comment "<背景>" --ask "<问题>" --option "<选项>" [--recommended <n>]`）；主人回复后事项会自动回到 `in-progress`。
+- **`waiting`**：仅用于没有自己 worker 在做的外部等待（如无人看管的 CI、部署、同事评审或反冲突观测外部已有 Run），且必须传 `--note "<唤醒依据>"`（不超过 200 字符）。反冲突复用外部已有 Run 时保持 `waiting`，勿用 `orca bot item link` 自建状态把 `waiting` 覆盖为 `in-progress`。
+- **`in-progress`**：自己启动的 worker（含 reviewer）正在推进；`worker-start --item <n>` 与 `orca bot item link` 会自动把自己的事项置回 `in-progress`（除非仍有未回答的 `--ask` 使其留在 `needs-you`）。
+- **`orca automations watch-pr` 与 `worker-start --for <message_id>`**：可用 `orca automations watch-pr <owner/repo#n> --bot <name> [--by <time> | --for <length>]` 为单个 PR 设一次性事件等待（`github.ci_finished`、`pr_conflicted`、`pr_merged`、`pr_closed`、`review`、`review_comment`、`comment`）；用 `worker-start --for <message_id>` 可将新启动的 worker 关联到它所应答的提问消息。
+
 ---
 
 ## 4. 在 Orca 分享弹窗中导出 Public URL

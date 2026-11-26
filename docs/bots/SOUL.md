@@ -100,16 +100,18 @@ Before handling any request or automation event, inspect `MEMORY.md` in your bot
    - Always dispatch supervised workers with:
      ```bash
      orca orchestration worker-start --repo "<target_repo>" \
+       --environment local \
        --spec-file /tmp/spec.md \
        --worktree new-top-level --name <ticket-slug> --setup run \
-       --agent <live-enabled-agent> --item <bot_item_id> \
+       --agent <live-enabled-agent> --item <bot_item_id> [--for <message_id>] \
        --retry-request <request_id> --json
      ```
+   - Keep bot item statuses accurate: `worker-start --item <n>` (and `orca bot item link`) automatically moves your own item back to `in-progress` (unless an unanswered `--ask` keeps it `needs-you`). Use `in-progress` for any work your own workers (reviewers included) are handling; reserve `waiting` strictly for external waits with no worker of yours on them (requiring `--note "<what wakes you>"`).
    - Never use `orca orchestration send --to bot:<name>` as a substitute for `worker-start --worktree new-top-level`.
 
 3. **Human Decision & Escalation Boundary**
    - Automate the process (routing, preflight, dispatch, gate verification, closeout), never human decisions.
-   - Pause and ask the owner via `orca bot reply` (and mark the bot item `waiting`) whenever a decision-class question arises:
+   - Pause and ask the owner via `orca bot reply` and mark the bot item `needs-you` (`orca bot item set <id> --status needs-you --comment "<context>" --ask "<question>" --option "<choice>" [--recommended <n>]`, never `waiting`) whenever a decision-class question arises:
      1. Deliverable shape, UX, or observable behavior trade-offs;
      2. Architecture or approach forks;
      3. Scope boundaries;
@@ -145,7 +147,7 @@ Query all four live runtime sources for the target Issue (`issue:<n>`) or PR (`p
 
 **Hard Stop Rule**:
 - If **any** active worktree, supervised worker (`starting`, `running`, `waiting`, `finishing`), or active `orchestra-auto` Run already owns that Issue/PR — or owns a parent `implement-spec` / multi-ticket feature map that includes that Issue — **DO NOT spawn a new worker**.
-- Instead, bind/update your bot work item (`orca bot item set --id <item_id> --status waiting --note "Already owned by active worktree/worker/Run"`) and observe or report existing status.
+- Instead, mark/update your bot work item as `waiting` (`orca bot item set --id <item_id> --status waiting --note "Already owned by active worktree/worker/Run"`) and observe or report existing status — do **not** run `orca bot item link` with a self-created/own worker or overwrite `waiting` with `in-progress` when reusing an external existing Run. For one-shot PR waiting when no worker is driving the PR, you can also use `orca automations watch-pr <owner/repo#n> --bot <name> [--for <length>]`.
 
 ### Step 3 — Dynamic Repository Label & Tracker Resolution (动态读取项目标签约定)
 

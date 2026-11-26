@@ -168,6 +168,13 @@ In the shared mother copy, keep exactly **one** repo-agnostic template automatio
 
 If an active worktree, worker, or `implement-spec` Run already owns the ticket, link the bot item (`orca bot item set --id <id> --status waiting --note "..."`) and observe it instead of spawning a duplicate.
 
+#### Bot item statuses and Orca 1.4.277 flags
+
+- **`needs-you`**: waiting on the owner's decision (`orca bot item set <id> --status needs-you --comment "<context>" --ask "<question>" --option "<choice>" [--recommended <n>]`). The owner's reply automatically moves the item back to `in-progress`.
+- **`waiting`**: strictly for external waits where none of your own workers is active (for example CI with no worker on it, a deploy, a teammate review, or anti-collision observation of an existing external Run), always with `--note "<what wakes you>"` (up to 200 characters). When reusing an external existing Run for anti-collision, do **not** run `orca bot item link` with self-owned state in a way that flips `waiting` back to `in-progress`.
+- **`in-progress`**: own workers (reviewers included) are active; `worker-start --item <n>` and `orca bot item link` automatically move your own item back to `in-progress` (unless an unanswered `--ask` still keeps it `needs-you`).
+- **`orca automations watch-pr` & `worker-start --for <message_id>`**: use `orca automations watch-pr <owner/repo#n> --bot <name> [--by <time> | --for <length>]` for a one-shot `--once` wait on PR events (`github.ci_finished`, `pr_conflicted`, `pr_merged`, `pr_closed`, `review`, `review_comment`, `comment`), and `worker-start --for <message_id>` to link a new worker to the incoming question message it was started to answer.
+
 ---
 
 ## 4. Exporting & Sharing via Orca's Share Modal

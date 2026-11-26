@@ -2558,9 +2558,11 @@ def _terminal_accounting(entry):
 
 def _collect_workers(run_id, orca_cli, run_fn):
     cli = orca_cli or _COMMON.resolve_orca_cli()
-    res = run_fn(
-        [cli, "orchestration", "worker-list", "--run", run_id, "--include-remote", "--json"]
+    argv = _COMMON.with_local_environment(
+        ["orchestration", "worker-list", "--run", run_id, "--include-remote", "--json"],
+        has_executable=False,
     )
+    res = run_fn([cli, *argv])
     if res.get("returncode", 1) != 0:
         return _unknown_section(
             f"orca worker-list failed: {(res.get('stderr') or '').strip() or 'unavailable'}"

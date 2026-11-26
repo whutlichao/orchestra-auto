@@ -45,7 +45,8 @@ python3 "$CLOSEOUT" failure-plan --run-id <run_id> \
 同类 setup 连续 2 次失败、命中 `authority_fault` 或单票 2 连败触发熔断时，停下报告人类。
 
 - **失败重试契约（`1.4.265`）**：完成结算收尾且根因已消除后，必须在原 Task 上使用 `worker-start --task <task_id> --retry-of <dispatch_id> --worktree <placement> --agent <agent>` 重试（`--retry-of` 必传 `--task`，不可用 `--spec`，且不继承放置参数）。Orca 会在单条 `--retry-of` 链连败 3 次后熔断；本 skill 更严格的单票 2 连败熔断会先停下问人，熔断后须经人类明确要求方可通过 `task-update --status ready --run <owning_run_id>` 重开原 Task。
-- **自动释放与常驻生命周期（`orchestration.worker-auto-release.v1`）**：未保持打开的 worker 会在 `worker_done` 后约 2 分钟触发自动释放（见 `worker-show`/`worker-list` 的 `autoReleaseAt`）；而 `new-top-level` worker 默认保持打开，需在收尾后显式 `worker-release`（同时清除 `worker-keep-open`）。释放后只要记录仍在，`worker-read --source auto` 仍可读取输出。
+- **`stopReason: lost` 与 `unverifiable` 存活度安全恢复（`1.4.277`）**：`exited` 确认进程已退出，而 `lost` 并非穷尽退出证明（可能是关闭窗格、重启后无法确认退出或继续、启动失败或 app-server 断连），原 agent 仍可能在运行。当升级消息报告 `stopReason: lost` 且 `liveness: unverifiable`（或 `worker-list` 出现 `attention: ["unverifiable"]`）时，**严禁**自动 `send`、自动 `worker-start --retry-of` 或自主 stop/abandon/release；须先查 `worker-show --dispatch <dispatch_id> --json` 并向用户报告不确定性。排查终端资源账目可用 `worker-list --terminal-state <active|reclaimable|retained|release_pending|release_unknown|released>` 过滤。
+- **自动释放与常驻生命周期（`orchestration.worker-auto-release.v1`）**：未保持打开的 worker（**同样适用于 chat worker** 与终端 worker）会在 `worker_done` 后约 2 分钟触发自动释放（见 `worker-show`/`worker-list` 的 `autoReleaseAt`）；worker 重新工作时（如 `send` 或 `--terminal` 复用）会清除 `autoReleaseAt`，再次空闲/结算时重设。`new-top-level` worker（`keepOpenByDefault`）及 `--keep-open` / `worker-keep-open` 会保持打开直至收尾后显式 `worker-release`（同时清除 `worker-keep-open`）。释放后只要记录仍在，`worker-read --source auto` 仍可读取输出。
 
 ## 2. Run 健康状态机（`health.py`）
 

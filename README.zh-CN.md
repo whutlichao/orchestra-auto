@@ -66,8 +66,8 @@ python3 skills/orchestra-auto-zh/scripts/progress.py --state "$AUDIT_ROOT/demo-e
 
 ```text
 skills/
-├── orchestra-auto/      英文包（SKILL.md：17,706 字节 / ~4,426 tokens；结构相同）
-└── orchestra-auto-zh/   中文包（SKILL.md：17,137 字节 / ~4,284 tokens；references/ 共 8 个文件）
+├── orchestra-auto/      英文包（SKILL.md：17,959 字节 / ~4,489 tokens；结构相同）
+└── orchestra-auto-zh/   中文包（SKILL.md：17,416 字节 / ~4,354 tokens；references/ 共 8 个文件）
 tests/                   离线 unittest 套件（脚本、看板、包一致性与脱敏扫描）
 docs/                    设计、架构文档与演示素材（见 docs/INDEX.md）
 ```
