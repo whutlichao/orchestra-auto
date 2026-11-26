@@ -238,19 +238,19 @@ def needs_hidden_window(shots):
 
 
 def shot_command(cli, plugin, shot):
-    argv = [cli, "plugin", "shot", plugin]
+    subargs = ["plugin", "shot", plugin]
     if shot["panel"] is not None:
-        argv += ["--panel", shot["panel"]]
+        subargs += ["--panel", shot["panel"]]
     if shot["scenario"] is not None:
-        argv += ["--scenario", shot["scenario"]]
+        subargs += ["--scenario", shot["scenario"]]
     if shot["act"] is not None:
-        argv += ["--act", json.dumps(shot["act"], ensure_ascii=False)]
+        subargs += ["--act", json.dumps(shot["act"], ensure_ascii=False)]
     if shot["width"] is not None:
-        argv += ["--width", str(shot["width"])]
+        subargs += ["--width", str(shot["width"])]
     if shot["theme"] is not None:
-        argv += ["--theme", shot["theme"]]
-    argv += ["--out", shot["out"], "--json"]
-    return argv
+        subargs += ["--theme", shot["theme"]]
+    subargs += ["--out", shot["out"], "--json"]
+    return [cli, *_COMMON.with_local_environment(subargs, has_executable=False)]
 
 
 def _run(argv, timeout=CLI_TIMEOUT_SECONDS):

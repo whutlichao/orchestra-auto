@@ -508,3 +508,185 @@ class MessagingVersionAdaptationTests(unittest.TestCase):
                 self.assertEqual(item["result"], "pass", item["note"])
                 self.assertEqual(item["observed"]["semantic_basis"], "documented_contract")
                 self.assertEqual(item["observed"]["session_source"], "live_terminal_binding")
+
+    def test_live_1_4_277_guide_and_help_wording_pass_without_human_override(self):
+        """Captured Orca 1.4.277 guide/help phrasing must satisfy _check_messaging directly."""
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        guide_1_4_277 = (
+            "## When Orca wakes you\n"
+            "- In a chat, each message arrives whole as its own message: act on it. A wake\n"
+            "  that names a `check` command (a terminal, or one message too large for a chat\n"
+            "  message) means run that command.\n"
+            "- Lost track? `ORCA orchestration inbox --terminal run:<run_id> --limit 50`\n"
+            "  shows mail `check` already handled.\n"
+        )
+        check_help_1_4_277 = (
+            "Usage: orca orchestration check [--terminal <handle>] [--run <run_id>] "
+            "[--ack <delivery_id>] [--unread | --peek | --all] [--types <type,...>] "
+            "[--format] [--wait] [--timeout-ms <n>] [--retry-request <id>] [--json]\n"
+            "  default: return the bound Run's oldest unread FIFO batch and mark it handled.\n"
+            "  --peek: return only unread messages without marking them read.\n"
+            "  --retry-request <id>  Reissue an earlier request by its ID; replays its result instead of repeating it\n"
+            "Notes:\n"
+            "  A consuming check marks the batch it returns as handled, so the next check returns newer mail; no --ack is needed.\n"
+            "  If a check response was lost, rerun it with the --retry-request it printed to get the same batch. "
+            "To find mail after losing context, run orca orchestration inbox --terminal <mailbox> --limit <n> --full and name the mailbox: "
+            "run:<run_id> for a coordinator's bound Run, or dispatch:<dispatch_id> for a worker, including mail it read before it bound a helper Run.\n"
+        )
+        inbox_help_1_4_277 = (
+            "Usage: orca orchestration inbox [--limit <n>] [--terminal <handle>] [--run <run_id>] [--full] [--json]\n"
+            "Options:\n"
+            "  --pairing-code <code>  Run against a remote Orca server using an orca://pair?... code\n"
+            "  --environment <selector> Run against a saved paired Orca server (id or name), or `local` for this machine's own Orca over ORCA_ENVIRONMENT/ORCA_PAIRING_CODE; terminal handles belong to the server that issued them\n"
+            "  --terminal <handle>  Runtime-issued terminal handle\n"
+            "  --full                 Print the full record Orca returned instead of the concise view\n"
+        )
+
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, argv, timeout=None):
+                self.calls.append(list(argv))
+                outputs = {
+                    ("--version",): "1.4.277\n",
+                    ("skills", "get", "orchestration", "--environment", "local"): guide_1_4_277,
+                    ("orchestration", "check", "--help"): check_help_1_4_277,
+                    ("orchestration", "inbox", "--help"): inbox_help_1_4_277,
+                    ("status", "--json", "--environment", "local"): json.dumps({
+                        "ok": True,
+                        "result": {"caller": {"orcaSessionId": "session-14277", "live": True}},
+                    }),
+                }
+                value = outputs.get(tuple(argv[1:]))
+                return {"returncode": 0 if value is not None else 1,
+                        "stdout": value or "", "stderr": ""}
+
+        migration = {"legacy_migration_complete": True, "migration_evidence_ref": "native"}
+        for package in PACKAGES:
+            spec = importlib.util.spec_from_file_location(
+                "contract_1_4_277", ROOT / "skills" / package / "scripts" / "preflight.py"
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            runner = Runner()
+            env = {
+                "ORCA_STRUCTURED_SESSION": "1",
+                "ORCA_AGENT_SESSION_ID": "session-14277",
+                "ORCA_ENVIRONMENT": "paired-remote",
+            }
+            with self.subTest(package=package), patch.dict(os.environ, env, clear=True):
+                item = module._check_messaging({"messaging": migration}, runner)
+                self.assertEqual(item["result"], "pass", item["note"])
+                self.assertEqual(item["observed"]["semantic_basis"], "documented_contract")
+                self.assertEqual(item["observed"]["session_source"], "live_structured_chat")
+                self.assertIn(["orca", "--version"], runner.calls)
+                self.assertIn(["orca", "status", "--json", "--environment", "local"], runner.calls)
+                self.assertIn(["orca", "orchestration", "check", "--help"], runner.calls)
+                self.assertIn(["orca", "orchestration", "inbox", "--help"], runner.calls)
+
+    def test_local_environment_flag_injected_only_when_remote_env_is_set(self):
+        """Scripts must pin --environment local only when ORCA_ENVIRONMENT/ORCA_PAIRING_CODE is non-empty."""
+        import importlib.util
+        import json
+        from unittest.mock import patch
+
+        def load_script(package, filename):
+            spec = importlib.util.spec_from_file_location(
+                f"env_test_{package}_{filename}",
+                ROOT / "skills" / package / "scripts" / filename,
+            )
+            assert spec is not None and spec.loader is not None
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+
+        for package in PACKAGES:
+            with self.subTest(package=package):
+                common = load_script(package, "_common.py")
+                health = load_script(package, "health.py")
+                closeout = load_script(package, "closeout.py")
+                ledger = load_script(package, "ledger.py")
+                visual = load_script(package, "visual-evidence.py")
+                preflight = load_script(package, "preflight.py")
+
+                for blank_env in ({}, {"ORCA_ENVIRONMENT": "  ", "ORCA_PAIRING_CODE": ""}):
+                    with patch.dict(os.environ, blank_env, clear=True):
+                        self.assertEqual(
+                            common.with_local_environment(["orca", "status", "--json"]),
+                            ["orca", "status", "--json"],
+                        )
+                        self.assertEqual(
+                            visual.shot_command("orca", "/tmp/p", {
+                                "panel": None, "scenario": "ready", "act": None,
+                                "width": None, "theme": None, "out": "/tmp/out.png",
+                            }),
+                            ["orca", "plugin", "shot", "/tmp/p", "--scenario", "ready", "--out", "/tmp/out.png", "--json"],
+                        )
+
+                for remote_env in ({"ORCA_ENVIRONMENT": "studio-mac"}, {"ORCA_PAIRING_CODE": "orca://pair?id=1"}):
+                    with patch.dict(os.environ, remote_env, clear=True):
+                        self.assertEqual(common.with_local_environment(["orca", "--version"]), ["orca", "--version"])
+                        self.assertEqual(
+                            common.with_local_environment(["orca", "agent", "hooks", "status", "--json"]),
+                            ["orca", "agent", "hooks", "status", "--json"],
+                        )
+                        self.assertEqual(
+                            common.with_local_environment(["orca", "orchestration", "worker-list", "--on", "srv", "--environment", "srv"]),
+                            ["orca", "orchestration", "worker-list", "--on", "srv", "--environment", "srv"],
+                        )
+
+                        seen_health = []
+                        health._orca_json(
+                            "orca", ["orchestration", "worker-list", "--run", "RUN_1", "--json"],
+                            runner=lambda cmd: seen_health.append(cmd) or {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {}})},
+                        )
+                        self.assertEqual(
+                            seen_health,
+                            [["orca", "orchestration", "worker-list", "--run", "RUN_1", "--json", "--environment", "local"]],
+                        )
+
+                        seen_closeout = []
+                        closeout._collect_workers(
+                            "RUN_1", "orca",
+                            lambda cmd: seen_closeout.append(cmd) or {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {"workers": []}})},
+                        )
+                        self.assertEqual(
+                            seen_closeout,
+                            [["orca", "orchestration", "worker-list", "--run", "RUN_1", "--include-remote", "--json", "--environment", "local"]],
+                        )
+
+                        seen_preflight = []
+                        class FakePreflightRunner:
+                            def run(self, argv, timeout=None):
+                                seen_preflight.append(list(argv))
+                                return {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {}}), "stderr": ""}
+                        preflight._check_status(FakePreflightRunner())
+                        preflight._run(FakePreflightRunner(), ["orca", "agent", "hooks", "status", "--json"])
+                        self.assertEqual(
+                            seen_preflight,
+                            [
+                                ["orca", "status", "--json", "--environment", "local"],
+                                ["orca", "agent", "hooks", "status", "--json"],
+                            ],
+                        )
+
+                        self.assertEqual(
+                            visual.shot_command("orca", "/tmp/p", {
+                                "panel": None, "scenario": "ready", "act": None,
+                                "width": None, "theme": None, "out": "/tmp/out.png",
+                            }),
+                            ["orca", "plugin", "shot", "/tmp/p", "--scenario", "ready", "--out", "/tmp/out.png", "--json", "--environment", "local"],
+                        )
+
+                        seen_ledger = []
+                        with patch.object(ledger.subprocess, "run", side_effect=lambda cmd, **kw: seen_ledger.append(cmd) or type("R", (), {"returncode": 0, "stdout": json.dumps({"ok": True, "result": {}}), "stderr": ""})()):
+                            ledger.LiveAuthority(orca_cli="orca")._call(["orchestration", "task-list", "--run", "RUN_1", "--json"])
+                        self.assertEqual(
+                            seen_ledger,
+                            [["orca", "orchestration", "task-list", "--run", "RUN_1", "--json", "--environment", "local"]],
+                        )

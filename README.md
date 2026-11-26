@@ -66,8 +66,8 @@ python3 skills/orchestra-auto/scripts/progress.py --state "$AUDIT_ROOT/demo-exam
 
 ```text
 skills/
-├── orchestra-auto/      English bundle (SKILL.md: 17,706 bytes / ~4,426 tokens; references/: eight files)
-└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 17,137 bytes / ~4,284 tokens; same structure)
+├── orchestra-auto/      English bundle (SKILL.md: 17,959 bytes / ~4,489 tokens; references/: eight files)
+└── orchestra-auto-zh/   Chinese bundle (SKILL.md: 17,416 bytes / ~4,354 tokens; same structure)
 tests/                   Offline unittest suite (scripts, dashboard, package parity, leak scan)
 docs/                    Design docs, architecture specs, and demo assets (see docs/INDEX.md)
 ```

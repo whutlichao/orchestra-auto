@@ -2595,9 +2595,10 @@ class LiveAuthority:
 
     def _call(self, argv):
         command = _orca_command(self.orca_cli)
+        local_argv = _COMMON.with_local_environment(argv, has_executable=False)
         try:
             completed = subprocess.run(
-                [command, *argv], capture_output=True, text=True,
+                [command, *local_argv], capture_output=True, text=True,
                 timeout=self.timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as error:

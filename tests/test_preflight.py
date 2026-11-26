@@ -145,7 +145,7 @@ def make_state_database(profile_dir, rows=None, create_table=True, name="state.d
     """Write a temporary settings fixture; never a live Orca database.
 
     The table and column names are the version-scoped schema first recorded with Orca CLI
-    1.4.244 on 2026-10-29 and re-verified with Orca CLI 1.4.265 on 2026-11-20. A test may
+    1.4.244 on 2026-10-29 and re-verified with Orca CLI 1.4.277 on 2026-11-26. A test may
     deliberately break any of them to prove that an unreadable database fails instead of
     falling back.
     """
@@ -832,8 +832,8 @@ class LiveSettingsTests(PreflightTestCase):
             if item["id"] == "live-settings"
         )
         verification = item["observed"]["schema_verification"]
-        self.assertIn("1.4.265", verification["source"])
-        self.assertEqual(verification["verified_at"], "2026-11-20")
+        self.assertIn("1.4.277", verification["source"])
+        self.assertEqual(verification["verified_at"], "2026-11-26")
         self.assertIn("version-scoped", verification["scope"])
         self.assertIn("version-scoped", item["note"])
 

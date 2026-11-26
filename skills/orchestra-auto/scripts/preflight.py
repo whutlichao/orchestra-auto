@@ -132,8 +132,8 @@ OBSERVATIONS = ("review-exemption-recheck", "dashboard-backfill", "inbox-health"
 #: and guide recorded here; a different Orca version may differ, so a read that does not
 #: match fails and reports instead of guessing or falling back.
 LIVE_SETTINGS_VERIFICATION = {
-    "source": "Orca CLI 1.4.265 on macOS",
-    "verified_at": "2026-11-20",
+    "source": "Orca CLI 1.4.277 on macOS",
+    "verified_at": "2026-11-26",
     "scope": "version-scoped; verify against the current CLI and guide before reuse",
 }
 #: The documented settings table. The read below spells it literally so no identifier is
@@ -187,7 +187,7 @@ class LocalRunner:
         self.orca = orca or resolve_orca_cli()
 
     def run(self, argv, timeout=CLI_TIMEOUT_SECONDS):
-        command = list(argv)
+        command = _COMMON.with_local_environment(argv, has_executable=True)
         if command and command[0] == "orca":
             command[0] = self.orca
         return _COMMON.run_command(command, timeout=timeout)
@@ -195,8 +195,9 @@ class LocalRunner:
 
 def _run(runner, argv):
     """Run one probe, normalising an injected runner's reply and failures."""
+    command = _COMMON.with_local_environment(argv, has_executable=True)
     try:
-        result = runner.run(list(argv), timeout=CLI_TIMEOUT_SECONDS)
+        result = runner.run(command, timeout=CLI_TIMEOUT_SECONDS)
     except Exception as error:  # a runner failure is evidence, never a pass
         return {"returncode": 127, "stdout": "", "stderr": str(error)}
     if not isinstance(result, dict):

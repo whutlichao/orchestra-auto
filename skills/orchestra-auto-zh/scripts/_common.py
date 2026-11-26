@@ -21,6 +21,7 @@ RFC3339_UTC = "%Y-%m-%dT%H:%M:%SZ"
 CLI_ENV = "ORCA_CLI_COMMAND"
 DEFAULT_CLI = "orca"
 CLI_TIMEOUT_SECONDS = 30
+REMOTE_ENVIRONMENT_ENVS = ("ORCA_ENVIRONMENT", "ORCA_PAIRING_CODE")
 
 _SIBLING_CACHE = {}
 
@@ -35,6 +36,40 @@ def resolve_orca_cli():
             os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("ORCA_AGENT_SESSION_ID")):
         return "orca-ide"
     return DEFAULT_CLI
+
+
+def has_remote_environment_override(env=None):
+    """Return True when ``ORCA_ENVIRONMENT`` or ``ORCA_PAIRING_CODE`` is non-empty."""
+    source = os.environ if env is None else env
+    return any(isinstance(source.get(key), str) and bool(source.get(key, "").strip())
+               for key in REMOTE_ENVIRONMENT_ENVS)
+
+
+def _has_environment_or_pairing_flag(args):
+    return any(
+        arg == "--environment" or arg.startswith("--environment=")
+        or arg == "--pairing-code" or arg.startswith("--pairing-code=")
+        for arg in args
+    )
+
+
+def _is_non_retargetable_orca_command(subargs):
+    if not subargs:
+        return True
+    if any(arg in ("--version", "-v", "--help", "-h") for arg in subargs):
+        return True
+    return tuple(subargs[:2]) == ("agent", "hooks")
+
+
+def with_local_environment(argv, *, has_executable=True, env=None):
+    """Append ``--environment local`` when remote env vars would retarget local Orca."""
+    args = list(argv)
+    if not has_remote_environment_override(env):
+        return args
+    subargs = args[1:] if has_executable else args
+    if _has_environment_or_pairing_flag(subargs) or _is_non_retargetable_orca_command(subargs):
+        return args
+    return [*args, "--environment", "local"]
 
 
 def utc_now():
